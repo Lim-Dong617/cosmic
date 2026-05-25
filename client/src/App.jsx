@@ -7,11 +7,26 @@ import {
     CheckCircle, AlertCircle, X, Trash2, Copy, Check, Eye, Table,
     Zap, Sparkles, Brain, ChevronDown, Plus, BarChart3, RefreshCw,
     FileSpreadsheet, Target, Info, Edit3, Scissors, GripVertical, Save,
-    History, LogOut, BookOpen, GitBranch
+    History, LogOut, BookOpen, GitBranch, Layers
 } from 'lucide-react';
 import NesmaApp from './NesmaApp';
 import HistoryPanel from './HistoryPanel';
 import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
+
+const MAX_UPLOAD_MB = 300;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
+const initialAnalysisProgress = {
+    visible: false,
+    status: 'idle',
+    title: '',
+    phase: '',
+    percent: 0,
+    current: 0,
+    total: 0,
+    detail: '',
+    stats: ''
+};
 
 function App({ user, token, onLogout }) {
     // ═══════════ 状态管理 ═══════════
@@ -96,6 +111,7 @@ function App({ user, token, onLogout }) {
 
     // 失败批次重试
     const [failedBatchInfo, setFailedBatchInfo] = useState([]); // [{index, functions, texts, names, error}]
+    const [analysisProgress, setAnalysisProgress] = useState(initialAnalysisProgress);
 
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -191,6 +207,82 @@ function App({ user, token, onLogout }) {
         setTimeout(() => setToastMessage(''), 2500);
     };
 
+    const updateAnalysisProgress = useCallback((patch) => {
+        setAnalysisProgress(prev => ({
+            ...prev,
+            visible: true,
+            status: patch.status || prev.status || 'running',
+            ...patch
+        }));
+    }, []);
+
+    const resetAnalysisProgress = useCallback(() => {
+        setAnalysisProgress(initialAnalysisProgress);
+    }, []);
+
+    const AnalysisProgressPanel = () => {
+        if (!analysisProgress.visible) return null;
+        const percent = Math.max(0, Math.min(100, Math.round(analysisProgress.percent || 0)));
+        const isDone = analysisProgress.status === 'done';
+        const isWaiting = analysisProgress.status === 'waiting';
+        const statusText = isDone ? '已完成' : isWaiting ? '等待确认' : '进行中';
+
+        return (
+            <div className={`analysis-progress-panel ${isDone ? 'done' : isWaiting ? 'waiting' : ''}`}>
+                <div className="analysis-progress-head">
+                    <div className="analysis-progress-title">
+                        {isDone ? <CheckCircle size={16} /> : isWaiting ? <AlertCircle size={16} /> : <Loader2 size={16} className="spinner" />}
+                        <span>{analysisProgress.title || '分析进度'}</span>
+                        <em>{statusText}</em>
+                    </div>
+                    <strong>{percent}%</strong>
+                </div>
+                <div className="analysis-progress-bar">
+                    <span style={{ width: `${percent}%` }} />
+                </div>
+                <div className="analysis-progress-meta">
+                    <div>
+                        <b>{analysisProgress.phase || '准备中'}</b>
+                        <p>{analysisProgress.detail || '正在准备分析任务...'}</p>
+                    </div>
+                    {(analysisProgress.total > 0 || analysisProgress.stats) && (
+                        <div className="analysis-progress-count">
+                            {analysisProgress.total > 0 && <span>{analysisProgress.current}/{analysisProgress.total}</span>}
+                            {analysisProgress.stats && <small>{analysisProgress.stats}</small>}
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    };
+
+    const allocateQuantityTargets = useCallback((items, total) => {
+        const targetTotal = Math.max(0, parseInt(total, 10) || 0);
+        if (!Array.isArray(items) || items.length === 0) return [];
+        const weights = items.map(item => Math.max(1, item.estimated || item.estimatedFunctions || 8));
+        const weightTotal = weights.reduce((sum, weight) => sum + weight, 0) || items.length;
+        const raw = weights.map(weight => (weight / weightTotal) * targetTotal);
+        const targets = raw.map(value => Math.floor(value));
+        let remaining = targetTotal - targets.reduce((sum, value) => sum + value, 0);
+        const order = raw
+            .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+            .sort((a, b) => b.fraction - a.fraction);
+        for (let i = 0; i < remaining; i++) {
+            targets[order[i % order.length].index] += 1;
+        }
+        return targets;
+    }, []);
+
+    const updateQuantityTotalTarget = useCallback((nextTotal) => {
+        const safeTotal = Math.max(0, parseInt(nextTotal, 10) || 0);
+        setTotalTargetCount(safeTotal);
+        setQuantityPlan(prev => {
+            if (!prev || prev.length === 0) return prev;
+            const targets = allocateQuantityTargets(prev, safeTotal);
+            return prev.map((item, index) => ({ ...item, target: targets[index] || 0 }));
+        });
+    }, [allocateQuantityTargets]);
+
     // ═══════════ 文件处理 ═══════════
     const handleDragEnter = useCallback((e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); }, []);
     const handleDragLeave = useCallback((e) => {
@@ -217,8 +309,8 @@ function App({ user, token, onLogout }) {
             setErrorMessage(`不支持的文件格式: ${ext}，请上传 .docx, .txt 或 .md 文件`);
             return;
         }
-        if (file.size > 50 * 1024 * 1024) {
-            setErrorMessage('文件大小超过限制（最大50MB）');
+        if (file.size > MAX_UPLOAD_BYTES) {
+            setErrorMessage(`文件大小超过限制（最大${MAX_UPLOAD_MB}MB）`);
             return;
         }
 
@@ -230,6 +322,7 @@ function App({ user, token, onLogout }) {
             setUploadProgress(0);
             const res = await axios.post('/api/parse-word', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
+                timeout: 300000,
                 onUploadProgress: (e) => setUploadProgress(Math.round((e.loaded * 100) / e.total))
             });
 
@@ -238,8 +331,8 @@ function App({ user, token, onLogout }) {
                 setDocumentName(res.data.filename);
                 setUploadProgress(100);
                 setMessages(prev => [...prev,
-                { role: 'system', content: `📄 已导入文档: ${res.data.filename}\n📊 大小: ${(res.data.fileSize / 1024).toFixed(1)} KB | 字符数: ${res.data.wordCount}\n\n${res.data.text.substring(0, 600)}${res.data.text.length > 600 ? '\n\n...(点击"预览文档"查看完整内容)' : ''}` },
-                { role: 'assistant', content: '✅ 文档已就绪！您可以在下方输入**特殊拆分要求**，或直接点击**「开始智能拆分」**按钮。' }
+                { role: 'system', content: `已导入文档: ${res.data.filename}\n大小: ${(res.data.fileSize / 1024).toFixed(1)} KB | 字符数: ${res.data.wordCount}\n\n${res.data.text.substring(0, 600)}${res.data.text.length > 600 ? '\n\n...(点击"预览文档"查看完整内容)' : ''}` },
+                { role: 'assistant', content: '文档已就绪。您可以在下方输入**特殊拆分要求**，或直接点击**「开始智能拆分」**按钮。' }
                 ]);
                 setIsWaitingForAnalysis(true);
                 // 自动创建对话记录
@@ -514,7 +607,16 @@ function App({ user, token, onLogout }) {
         setIsLoading(true);
         setIsWaitingForAnalysis(false);
         setCurrentStep(1);
-        setMessages([{ role: 'system', content: '🔬 **三级模块识别中...**\n正在分析文档的一级/二级/三级模块层级结构...' }]);
+        updateAnalysisProgress({
+            title: 'COSMIC analysis',
+            phase: 'Module recognition',
+            percent: 8,
+            current: 1,
+            total: 5,
+            detail: 'Analyzing level 1/2/3 module structure...',
+            stats: `${documentContent.length.toLocaleString()} chars`
+        });
+        setMessages([{ role: 'system', content: '**三级模块识别中...**\n正在分析文档的一级/二级/三级模块层级结构...' }]);
 
         let recognizedModules = null;
 
@@ -527,12 +629,20 @@ function App({ user, token, onLogout }) {
             if (modRes.data.success && modRes.data.moduleData?.modules?.length > 0) {
                 recognizedModules = modRes.data.moduleData;
                 setModuleStructure(recognizedModules);
+                updateAnalysisProgress({
+                    phase: 'Module recognition complete',
+                    percent: 24,
+                    current: 1,
+                    total: 5,
+                    detail: `Found ${recognizedModules.modules.length} modules. Preparing extraction structure.`,
+                    stats: `${recognizedModules.modules.length} modules`
+                });
 
                 // 如果是数量优先模式，自动生成数量规划
                 let generatedPlan = null;
                 if (extractionMode === 'quantity') {
                     const mods = recognizedModules.modules;
-                    const totalEst = mods.reduce((s, m) => s + (m.estimatedFunctions || 8), 0) || 1;
+                    const targets = allocateQuantityTargets(mods, totalTargetCount);
                     const plan = mods.map(m => ({
                         level1: m.level1,
                         level2: m.level2,
@@ -540,37 +650,32 @@ function App({ user, token, onLogout }) {
                         businessObjects: m.businessObjects || [],
                         triggerTypes: m.triggerTypes || [],
                         estimated: m.estimatedFunctions || 8,
-                        target: Math.max(3, Math.round((m.estimatedFunctions || 8) / totalEst * totalTargetCount))
+                        target: targets[mods.indexOf(m)] || 0
                     }));
-                    const planTotal = plan.reduce((s, p) => s + p.target, 0);
-                    if (plan.length > 0) {
-                        const maxIdx = plan.reduce((mi, p, i) => p.target > plan[mi].target ? i : mi, 0);
-                        plan[maxIdx].target += totalTargetCount - planTotal;
-                        if (plan[maxIdx].target < 3) plan[maxIdx].target = 3;
-                    }
                     generatedPlan = plan;
                     setQuantityPlan(plan);
                 }
 
                 const modSummary = recognizedModules.modules.map((m, i) =>
                     `${i + 1}. **${m.level3}**（${m.level1} > ${m.level2}）: ${m.businessObjects?.join('、') || '若干业务对象'
-                    }${generatedPlan ? `，目标 **${generatedPlan[i]?.target || '?'}** 个功能过程` : `，预估 ~${m.estimatedFunctions || '?'} 个功能过程`}`
+                    }${generatedPlan ? (generatedPlan[i]?.target > 0 ? `，目标 **${generatedPlan[i]?.target}** 个功能过程` : `，本轮 **跳过**`) : `，预估 ~${m.estimatedFunctions || '?'} 个功能过程`}`
                 ).join('\n');
 
+                const skippedModules = generatedPlan ? generatedPlan.filter(p => (p.target || 0) <= 0) : [];
                 const planTip = generatedPlan
-                    ? `\n\n📊 **已生成数量规划**（总目标 ${totalTargetCount} 个）。可点击「**调整规划**」按钮修改各模块目标数量。`
+                    ? `\n\n**已生成数量规划**（总目标 ${totalTargetCount} 个）。可点击「**调整规划**」按钮修改各模块目标数量。${skippedModules.length > 0 ? `\n\n注意：因目标数小于模块数，本轮将跳过 ${skippedModules.length} 个模块：${skippedModules.map(m => m.level3).join('、')}` : ''}`
                     : '';
 
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `## 🗂️ 三级模块结构识别完成\n\n共识别到 **${recognizedModules.modules.length}** 个三级模块节点：\n\n${modSummary}${planTip}\n\n这些模块将作为"脚手架"指导功能过程提取，确保不遗漏任何模块。`
+                    content: `## 三级模块结构识别完成\n\n共识别到 **${recognizedModules.modules.length}** 个三级模块节点：\n\n${modSummary}${planTip}\n\n这些模块将作为"脚手架"指导功能过程提取。数量目标不足覆盖全部模块时，系统会明确标记本轮跳过的模块。`
                 }]);
             }
         } catch (e) {
             console.warn('COSMIC模块识别失败，将跳过模块脚手架:', e.message);
             setMessages(prev => [...prev, {
                 role: 'system',
-                content: '⚠️ 三级模块识别失败，将使用默认章节模式（功能过程可能略有遗漏）。'
+                content: '三级模块识别失败，将使用默认章节模式（功能过程可能略有遗漏）。'
             }]);
         }
 
@@ -581,10 +686,26 @@ function App({ user, token, onLogout }) {
         }]);
 
         try {
+            updateAnalysisProgress({
+            phase: 'Chapter detection',
+            percent: 32,
+            current: 2,
+            total: 5,
+            detail: 'Splitting the document into chapters and selecting likely functional sections.'
+        });
             const res = await axios.post('/api/split-chapters', { documentContent });
             if (res.data.success) {
                 const chapterList = res.data.chapters;
                 setChapters(chapterList);
+                updateAnalysisProgress({
+                    status: 'waiting',
+                    phase: 'Waiting for chapter confirmation',
+                    percent: 40,
+                    current: 2,
+                    total: 5,
+                    detail: `Found ${chapterList.length} chapters. Confirm the selection to start function extraction.`,
+                    stats: `selected ${chapterList.filter(ch => ch.selected).length}/${chapterList.length}`
+                });
 
                 const chapterSummary = chapterList.map((ch, i) =>
                     `${ch.selected ? '☑' : '☐'} **${i + 1}.** ${ch.title} (${ch.charCount}字)`
@@ -592,7 +713,7 @@ function App({ user, token, onLogout }) {
 
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `## 📑 章节识别完成\n\n共识别到 **${chapterList.length}** 个章节：\n\n${chapterSummary}\n\n${recognizedModules ? `✅ 已加载三级模块脚手架（${recognizedModules.modules.length}个模块），提取将更全面。` : ''}\n\n已自动选中包含功能描述的章节。`,
+                    content: `## 章节识别完成\n\n共识别到 **${chapterList.length}** 个章节：\n\n${chapterSummary}\n\n${recognizedModules ? `已加载三级模块脚手架（${recognizedModules.modules.length}个模块），提取将更全面。` : ''}\n\n已自动选中包含功能描述的章节。`,
                     showChapterActions: true
                 }]);
                 setCurrentStep(2); // 等待用户确认
@@ -601,7 +722,7 @@ function App({ user, token, onLogout }) {
             // 章节识别失败，退回到全文模式
             setMessages(prev => [...prev, {
                 role: 'system',
-                content: '⚠️ 章节自动识别失败，将使用全文模式提取功能过程。'
+                content: '章节自动识别失败，将使用全文模式提取功能过程。'
             }]);
             setChapters([{ title: '全文', content: documentContent, charCount: documentContent.length, selected: true }]);
             await startFunctionExtractionFromChapters([{ title: '全文', content: documentContent, selected: true }]);
@@ -631,14 +752,65 @@ function App({ user, token, onLogout }) {
 
         setIsLoading(true);
         setCurrentStep(2);
+        updateAnalysisProgress({
+            status: 'running',
+            title: 'COSMIC analysis',
+            phase: 'Function extraction',
+            percent: 42,
+            current: 0,
+            total: selectedChapters.length,
+            detail: 'Extracting functional processes from selected chapters.',
+            stats: `0 functions`
+        });
 
         let allFunctions = '';
         let totalCount = 0;
+        const quantityTotalTarget = extractionMode === 'quantity'
+            ? (quantityPlan ? quantityPlan.reduce((s, p) => s + p.target, 0) : totalTargetCount)
+            : 0;
+        const quantityChapterTargets = [];
+        if (extractionMode === 'quantity' && quantityTotalTarget > 0) {
+            const totalChars = selectedChapters.reduce((s, ch) => s + (ch.charCount || ch.content?.length || 1), 0) || selectedChapters.length;
+            let assigned = 0;
+            selectedChapters.forEach((chapter, idx) => {
+                const remainingChapters = selectedChapters.length - idx;
+                const remainingTarget = quantityTotalTarget - assigned;
+                let target;
+                if (idx === selectedChapters.length - 1) {
+                    target = Math.max(1, remainingTarget);
+                } else {
+                    const weighted = Math.round(((chapter.charCount || chapter.content?.length || 1) / totalChars) * quantityTotalTarget);
+                    target = Math.max(1, Math.min(weighted, remainingTarget - (remainingChapters - 1)));
+                }
+                quantityChapterTargets[idx] = target;
+                assigned += target;
+            });
+        }
+        const skippedQuantityModules = extractionMode === 'quantity' && quantityPlan
+            ? quantityPlan.filter(p => (p.target || 0) <= 0)
+            : [];
+        if (skippedQuantityModules.length > 0) {
+            setMessages(prev => [...prev, {
+                role: 'system',
+                content: `**数量目标不足覆盖全部模块**\n本轮将跳过 ${skippedQuantityModules.length} 个三级模块：${skippedQuantityModules.map(m => m.level3).join('、')}\n\n如需覆盖这些模块，请在「调整规划」中给它们分配目标数量，或提高目标总数。`
+            }]);
+        }
 
         try {
             for (let i = 0; i < selectedChapters.length; i++) {
                 if (signal.aborted) return;
                 const chapter = selectedChapters[i];
+                const chapterTargetCount = quantityChapterTargets[i] || 0;
+                updateAnalysisProgress({
+                    phase: 'Function extraction',
+                    percent: 42 + Math.round((i / Math.max(selectedChapters.length, 1)) * 22),
+                    current: i + 1,
+                    total: selectedChapters.length,
+                    detail: extractionMode === 'quantity' && chapterTargetCount > 0
+                        ? `Analyzing chapter: ${chapter.title} (target ${chapterTargetCount})`
+                        : `Analyzing chapter: ${chapter.title}`,
+                    stats: `${totalCount} functions found`
+                });
 
                 setMessages(prev => {
                     const filtered = prev.filter(m => !m.content.startsWith('🔍'));
@@ -655,7 +827,8 @@ function App({ user, token, onLogout }) {
                     userConfig: getUserConfig(),
                     extractionMode,
                     moduleStructure: moduleStructure || null,
-                    targetCount: extractionMode === 'quantity' ? (quantityPlan ? quantityPlan.reduce((s, p) => s + p.target, 0) : totalTargetCount) : 0
+                    quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
+                    targetCount: chapterTargetCount
                 }, { signal });
 
                 if (res.data.success && res.data.functionList) {
@@ -674,6 +847,14 @@ function App({ user, token, onLogout }) {
 
                     allFunctions += (allFunctions ? '\n' : '') + chapterFunctions;
                     totalCount += res.data.count || 0;
+                    updateAnalysisProgress({
+                        phase: 'Function extraction',
+                        percent: 42 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 22),
+                        current: i + 1,
+                        total: selectedChapters.length,
+                        detail: `Finished chapter: ${chapter.title}`,
+                        stats: `${totalCount} functions found`
+                    });
                 }
 
                 // 章节间等待，避免频率限制（DeepSeek平台限流严格）
@@ -719,6 +900,15 @@ function App({ user, token, onLogout }) {
 
             setParsedFunctions(parsed);
             setCurrentStep(3);
+            updateAnalysisProgress({
+                status: 'waiting',
+                phase: 'Function list ready',
+                percent: 66,
+                current: 3,
+                total: 5,
+                detail: `Extracted ${parsed.length} functional processes. Review them before COSMIC splitting.`,
+                stats: `${parsed.filter(f => f.selected !== false).length}/${parsed.length} selected`
+            });
 
             // 构建简洁的统计摘要，不再dump原始文本
             const triggerStats = {};
@@ -734,7 +924,7 @@ function App({ user, token, onLogout }) {
                 const filtered = prev.filter(m => !m.content.startsWith('🔍'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `## 📋 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${parsed.length}** 个功能过程。\n\n📊 触发类型分布：${triggerSummary}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
+                    content: `## 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${parsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
                     showFunctionListActions: true
                 }];
             });
@@ -748,7 +938,7 @@ function App({ user, token, onLogout }) {
                 setCurrentStep(3);
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `⚠️ 功能过程提取部分完成（已提取 ${parsed.length} 个）。\n错误: ${error.response?.data?.error || error.message}\n\n请点击**「查看/编辑功能列表」**按钮检查。`,
+                    content: `功能过程提取部分完成（已提取 ${parsed.length} 个）。\n错误: ${error.response?.data?.error || error.message}\n\n请点击**「查看/编辑功能列表」**按钮检查。`,
                     showFunctionListActions: true
                 }]);
             } else {
@@ -767,6 +957,7 @@ function App({ user, token, onLogout }) {
 
     // ═══════════ 两步骤模式：阶段2 - COSMIC分段拆分（批次模式，断网安全） ═══════════
     const COSMIC_BATCH_SIZE = 2; // 每批拆分2个功能过程（V3.2必须逐个完整输出ERWX，批次越小越可靠）
+    const COSMIC_BATCH_CONCURRENCY = 2; // 保持小批次质量策略，仅把独立批次做受控并发
 
     const startCosmicSplit = async () => {
         // 先同步结构化数据回 text
@@ -786,6 +977,16 @@ function App({ user, token, onLogout }) {
         setIsLoading(true);
         setCurrentStep(4);
         setTableData([]);
+        updateAnalysisProgress({
+            status: 'running',
+            title: 'COSMIC split',
+            phase: 'Preparing batches',
+            percent: 68,
+            current: 0,
+            total: 0,
+            detail: 'Preparing selected functional processes for batch splitting.',
+            stats: `${activeFunctions.length} functions`
+        });
 
         // 将功能过程分批
         const totalFunctions = activeFunctions.length;
@@ -800,29 +1001,119 @@ function App({ user, token, onLogout }) {
         }
 
         const totalBatches = batches.length;
+        updateAnalysisProgress({
+            status: 'running',
+            title: 'COSMIC split',
+            phase: 'Batch splitting',
+            percent: 70,
+            current: 0,
+            total: totalBatches,
+            detail: `Split into ${totalBatches} batches. Starting batch processing.`,
+            stats: `${totalFunctions} functions`
+        });
         setMessages(prev => [...prev, {
             role: 'system',
-            content: `🔄 **阶段2：COSMIC分段拆分**\n共 **${totalFunctions}** 个功能过程，分为 **${totalBatches}** 个批次（每批 ${COSMIC_BATCH_SIZE} 个），逐批拆分中...\n\n💡 *分段模式：即使中途断网，已完成的批次数据也会保留。*`
+            content: `**阶段2：COSMIC分段拆分**\n共 **${totalFunctions}** 个功能过程，分为 **${totalBatches}** 个批次（每批 ${COSMIC_BATCH_SIZE} 个），逐批拆分中...\n\n*分段模式：即使中途断网，已完成的批次数据也会保留。*`
         }]);
 
         let allTableData = [];
         let completedBatches = 0;
         let failedBatches = [];
+        const batchTimings = [];
         setFailedBatchInfo([]); // 清空上次的失败记录
 
+        const waitWithAbort = (ms) => new Promise((resolve, reject) => {
+            const t = setTimeout(resolve, ms);
+            signal.addEventListener('abort', () => {
+                clearTimeout(t);
+                reject(new DOMException('Aborted', 'AbortError'));
+            }, { once: true });
+        });
+
+        const buildBatchContext = (batch) => {
+            const functionLevelMap = {};
+            let headingContext = null;
+            batch.functions.forEach(f => {
+                if (f.functionName) {
+                    const levels = getModuleLevels(f);
+                    if (levels.level1 || levels.level2 || levels.level3) {
+                        functionLevelMap[f.functionName] = levels;
+                        if (!headingContext) {
+                            headingContext = { level1: levels.level1, level2: levels.level2, level3: levels.level3 };
+                        }
+                    }
+                }
+            });
+            return {
+                headingContext,
+                functionLevelMap: Object.keys(functionLevelMap).length > 0 ? functionLevelMap : null
+            };
+        };
+
+        const runCosmicBatch = async (bi, previousResultsSnapshot) => {
+            const batch = batches[bi];
+            const startedAt = Date.now();
+            const batchFuncNames = batch.functions.map(f => f.functionName).join('、');
+            const { headingContext, functionLevelMap } = buildBatchContext(batch);
+
+            try {
+                const res = await axios.post('/api/cosmic-split-batch', {
+                    batchFunctions: batch.texts,
+                    batchIndex: bi,
+                    totalBatches,
+                    documentContent: documentContent.substring(0, 6000),
+                    userGuidelines,
+                    previousResults: previousResultsSnapshot,
+                    userConfig: getUserConfig(),
+                    headingContext,
+                    functionLevelMap
+                }, { signal });
+
+                return {
+                    ok: true,
+                    index: bi,
+                    batch,
+                    names: batchFuncNames,
+                    data: res.data.tableData || [],
+                    durationMs: Date.now() - startedAt
+                };
+            } catch (batchError) {
+                if (batchError.name === 'AbortError' || batchError.name === 'CanceledError' || signal.aborted) {
+                    throw batchError;
+                }
+                return {
+                    ok: false,
+                    index: bi,
+                    batch,
+                    names: batchFuncNames,
+                    error: batchError.response?.data?.error || batchError.message,
+                    durationMs: Date.now() - startedAt
+                };
+            }
+        };
+
         try {
+            if (COSMIC_BATCH_CONCURRENCY <= 1) {
             for (let bi = 0; bi < totalBatches; bi++) {
                 if (signal.aborted) return;
 
                 const batch = batches[bi];
                 const batchFuncNames = batch.functions.map(f => f.functionName).join('、');
+                updateAnalysisProgress({
+                    phase: 'Batch splitting',
+                    percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                    current: bi + 1,
+                    total: totalBatches,
+                    detail: `Processing batch ${bi + 1}: ${batch.functions.map(f => f.functionName).join(', ')}`,
+                    stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
+                });
 
                 // 更新进度
                 setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **批次'));
+                    const filtered = prev.filter(m => !m.content.startsWith('**批次'));
                     return [...filtered, {
                         role: 'system',
-                        content: `🔄 **批次 ${bi + 1}/${totalBatches}** | 正在拆分：${batchFuncNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
+                        content: `**批次 ${bi + 1}/${totalBatches}** | 正在拆分：${batchFuncNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
                     }];
                 });
 
@@ -868,6 +1159,14 @@ function App({ user, token, onLogout }) {
                             }
                         }
                         completedBatches++;
+                        updateAnalysisProgress({
+                            phase: 'Batch splitting',
+                            percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                            current: completedBatches,
+                            total: totalBatches,
+                            detail: `Finished batch ${bi + 1}.`,
+                            stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
+                        });
                     }
                 } catch (batchError) {
                     if (batchError.name === 'AbortError' || batchError.name === 'CanceledError' || signal.aborted) return;
@@ -881,14 +1180,22 @@ function App({ user, token, onLogout }) {
                         functions: batch.functions,  // 保存完整的功能过程数据
                         texts: batch.texts            // 保存拆分用文本
                     });
+                    updateAnalysisProgress({
+                        phase: 'Batch skipped',
+                        percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                        current: bi + 1,
+                        total: totalBatches,
+                        detail: `Batch ${bi + 1} failed and was skipped. Continuing remaining batches.`,
+                        stats: `${failedBatches.length} failed, ${allTableData.length} CFP`
+                    });
 
                     // 如果已有部分数据，继续下一批（容错）
                     if (allTableData.length > 0) {
                         setMessages(prev => {
-                            const filtered = prev.filter(m => !m.content.startsWith('🔄 **批次'));
+                            const filtered = prev.filter(m => !m.content.startsWith('**批次'));
                             return [...filtered, {
                                 role: 'system',
-                                content: `⚠️ **批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已跳过该批次，继续处理剩余批次...`
+                                content: `**批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已跳过该批次，继续处理剩余批次...`
                             }];
                         });
                         // 失败后等更久再尝试下一批
@@ -917,24 +1224,126 @@ function App({ user, token, onLogout }) {
             }
 
             // 最终汇总
+            } else {
+                for (let windowStart = 0; windowStart < totalBatches; windowStart += COSMIC_BATCH_CONCURRENCY) {
+                    if (signal.aborted) return;
+
+                    const windowIndexes = [];
+                    for (let bi = windowStart; bi < Math.min(windowStart + COSMIC_BATCH_CONCURRENCY, totalBatches); bi++) {
+                        windowIndexes.push(bi);
+                    }
+                    const activeNames = windowIndexes
+                        .map(bi => `${bi + 1}: ${batches[bi].functions.map(f => f.functionName).join(', ')}`)
+                        .join(' | ');
+
+                    updateAnalysisProgress({
+                        phase: 'Batch splitting',
+                        percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                        current: completedBatches,
+                        total: totalBatches,
+                        detail: `Processing ${windowIndexes.length} batch(es): ${activeNames}`,
+                        stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
+                    });
+
+                    setMessages(prev => {
+                        const filtered = prev.filter(m => !m.content.startsWith('**批次'));
+                        return [...filtered, {
+                            role: 'system',
+                            content: `**批次 ${windowIndexes.map(i => i + 1).join(', ')}/${totalBatches}** | 并发拆分中\n\n${activeNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
+                        }];
+                    });
+
+                    const previousResultsSnapshot = [...allTableData];
+                    const windowResults = await Promise.all(windowIndexes.map(bi => runCosmicBatch(bi, previousResultsSnapshot)));
+                    windowResults.sort((a, b) => a.index - b.index);
+
+                    for (const result of windowResults) {
+                        if (result.ok) {
+                            const newData = result.data || [];
+                            if (newData.length > 0) {
+                                const expectedNames = new Set([
+                                    ...result.batch.functions.map(f => f.functionName.toLowerCase().trim()),
+                                    ...result.batch.functions.map(f => normalizeProcName(f.functionName))
+                                ]);
+                                const deduped = deduplicateData(allTableData, newData, expectedNames);
+                                if (deduped.length > 0) {
+                                    allTableData = [...allTableData, ...deduped];
+                                }
+                            }
+                            completedBatches++;
+                            batchTimings.push({ index: result.index, durationMs: result.durationMs, count: newData.length });
+                            updateAnalysisProgress({
+                                phase: 'Batch splitting',
+                                percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                                current: completedBatches,
+                                total: totalBatches,
+                                detail: `Finished batch ${result.index + 1} in ${(result.durationMs / 1000).toFixed(1)}s.`,
+                                stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
+                            });
+                        } else {
+                            console.error(`批次 ${result.index + 1} 失败:`, result.error);
+                            failedBatches.push({
+                                index: result.index,
+                                names: result.names,
+                                error: result.error,
+                                functions: result.batch.functions,
+                                texts: result.batch.texts
+                            });
+                            updateAnalysisProgress({
+                                phase: 'Batch skipped',
+                                percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                                current: completedBatches,
+                                total: totalBatches,
+                                detail: `Batch ${result.index + 1} failed and was skipped. Continuing remaining batches.`,
+                                stats: `${failedBatches.length} failed, ${allTableData.length} CFP`
+                            });
+                            setMessages(prev => {
+                                const filtered = prev.filter(m => !m.content.startsWith('**批次'));
+                                return [...filtered, {
+                                    role: 'system',
+                                    content: `**批次 ${result.index + 1} 失败**: ${result.error}\n\n已记录为失败批次，继续处理剩余批次...`
+                                }];
+                            });
+                        }
+                    }
+
+                    setTableData(allTableData);
+
+                    if (completedBatches === 0 && failedBatches.length === totalBatches) {
+                        throw new Error(failedBatches[0]?.error || 'All COSMIC batches failed');
+                    }
+
+                    if (windowStart + COSMIC_BATCH_CONCURRENCY < totalBatches) {
+                        try {
+                            await waitWithAbort(5000);
+                        } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                    }
+                }
+            }
+
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
-            let summaryContent = `🎉 **COSMIC分段拆分完成！**\n\n`;
-            summaryContent += `📦 共 **${totalBatches}** 个批次，成功 **${completedBatches}** 个`;
+            let summaryContent = `**COSMIC分段拆分完成**\n\n`;
+            summaryContent += `共 **${totalBatches}** 个批次，成功 **${completedBatches}** 个`;
             if (failedBatches.length > 0) {
                 summaryContent += `，失败 **${failedBatches.length}** 个`;
             }
             summaryContent += `\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
             summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
+            if (batchTimings.length > 0) {
+                const avgSeconds = batchTimings.reduce((sum, item) => sum + item.durationMs, 0) / batchTimings.length / 1000;
+                const slowest = batchTimings.reduce((max, item) => item.durationMs > max.durationMs ? item : max, batchTimings[0]);
+                summaryContent += `\n- 批次耗时：平均 ${avgSeconds.toFixed(1)}s，最慢第 ${slowest.index + 1} 批 ${(slowest.durationMs / 1000).toFixed(1)}s，并发数 ${COSMIC_BATCH_CONCURRENCY}`;
+            }
 
             if (failedBatches.length > 0) {
-                summaryContent += `\n\n⚠️ 以下批次拆分失败，可点击**「重试失败批次」**单独补充：\n`;
+                summaryContent += `\n\n以下批次拆分失败，可点击**「重试失败批次」**单独补充：\n`;
                 summaryContent += failedBatches.map(fb => `- 批次 ${fb.index + 1}: ${fb.names} (${fb.error})`).join('\n');
                 // 保存失败批次的完整信息到 state，供重试使用
                 setFailedBatchInfo(failedBatches);
             }
 
             setMessages(prev => {
-                const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                const filtered = prev.filter(m => !m.content.startsWith('**批次') && !m.content.startsWith('**阶段2'));
                 return [...filtered, {
                     role: 'assistant',
                     content: summaryContent,
@@ -942,6 +1351,15 @@ function App({ user, token, onLogout }) {
                 }];
             });
             setCurrentStep(0);
+            updateAnalysisProgress({
+                status: failedBatches.length > 0 ? 'waiting' : 'done',
+                phase: failedBatches.length > 0 ? 'Partial completion' : 'Completed',
+                percent: 100,
+                current: completedBatches,
+                total: totalBatches,
+                detail: failedBatches.length > 0 ? 'Some batches failed. You can retry failed batches.' : 'COSMIC split completed.',
+                stats: `${uniqueFunctions.length} functions, ${allTableData.length} CFP`
+            });
         } catch (error) {
             if (error.name === 'AbortError' || error.name === 'CanceledError') return;
             // 保存已累积的失败批次信息
@@ -952,10 +1370,10 @@ function App({ user, token, onLogout }) {
             if (allTableData.length > 0) {
                 const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
                 setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                    const filtered = prev.filter(m => !m.content.startsWith('**批次') && !m.content.startsWith('**阶段2'));
                     return [...filtered, {
                         role: 'assistant',
-                        content: `⚠️ **拆分部分完成**（${completedBatches}/${totalBatches} 批次成功，后续批次出错: ${error.response?.data?.error || error.message}）\n\n已完成部分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n\n💡 已完成的数据已保留${failedBatches.length > 0 ? '，可点击**「重试失败批次」**补充拆分丢失的功能过程。' : '，可点击**「重新COSMIC拆分」**继续。'}`,
+                        content: `**拆分部分完成**（${completedBatches}/${totalBatches} 批次成功，后续批次出错: ${error.response?.data?.error || error.message}）\n\n已完成部分：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n\n已完成的数据已保留${failedBatches.length > 0 ? '，可点击**「重试失败批次」**补充拆分丢失的功能过程。' : '，可点击**「重新COSMIC拆分」**继续。'}`,
                         showActions: true
                     }];
                 });
@@ -992,7 +1410,7 @@ function App({ user, token, onLogout }) {
 
         setMessages(prev => [...prev, {
             role: 'system',
-            content: `🔄 **重试失败批次**\n共 **${totalFuncCount}** 个功能过程（${totalRetry} 个批次），正在补充拆分...`
+            content: `**重试失败批次**\n共 **${totalFuncCount}** 个功能过程（${totalRetry} 个批次），正在补充拆分...`
         }]);
 
         let allTableData = [...tableData]; // 保留已有数据
@@ -1006,10 +1424,10 @@ function App({ user, token, onLogout }) {
                 const batch = retryBatches[ri];
 
                 setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **重试批次'));
+                    const filtered = prev.filter(m => !m.content.startsWith('**重试批次'));
                     return [...filtered, {
                         role: 'system',
-                        content: `🔄 **重试批次 ${ri + 1}/${totalRetry}**（原批次 ${batch.originalIndex + 1}）| 正在拆分：${batch.names}\n\n进度：${completedRetry}/${totalRetry} 完成`
+                        content: `**重试批次 ${ri + 1}/${totalRetry}**（原批次 ${batch.originalIndex + 1}）| 正在拆分：${batch.names}\n\n进度：${completedRetry}/${totalRetry} 完成`
                     }];
                 });
 
@@ -1070,10 +1488,10 @@ function App({ user, token, onLogout }) {
                     });
 
                     setMessages(prev => {
-                        const filtered = prev.filter(m => !m.content.startsWith('🔄 **重试批次'));
+                        const filtered = prev.filter(m => !m.content.startsWith('**重试批次'));
                         return [...filtered, {
                             role: 'system',
-                            content: `⚠️ **重试批次 ${ri + 1}（原批次 ${batch.originalIndex + 1}）再次失败**: ${errMsg}\n\n继续处理...`
+                            content: `**重试批次 ${ri + 1}（原批次 ${batch.originalIndex + 1}）再次失败**: ${errMsg}\n\n继续处理...`
                         }];
                     });
 
@@ -1104,18 +1522,18 @@ function App({ user, token, onLogout }) {
             // 汇总
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
             let summaryContent = completedRetry === totalRetry
-                ? `✅ **失败批次全部重试成功！**\n\n`
-                : `⚠️ **失败批次重试完成**（${completedRetry}/${totalRetry} 成功）\n\n`;
-            summaryContent += `📊 当前合计：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
+                ? `**失败批次全部重试成功**\n\n`
+                : `**失败批次重试完成**（${completedRetry}/${totalRetry} 成功）\n\n`;
+            summaryContent += `当前合计：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
             summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
 
             if (stillFailed.length > 0) {
-                summaryContent += `\n\n⚠️ 仍有 ${stillFailed.length} 个批次失败，可再次点击**「重试失败批次」**：\n`;
+                summaryContent += `\n\n仍有 ${stillFailed.length} 个批次失败，可再次点击**「重试失败批次」**：\n`;
                 summaryContent += stillFailed.map(fb => `- 批次 ${fb.index + 1}: ${fb.names}`).join('\n');
             }
 
             setMessages(prev => {
-                const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                const filtered = prev.filter(m => !m.content.startsWith('**重试'));
                 return [...filtered, {
                     role: 'assistant',
                     content: summaryContent,
@@ -1176,7 +1594,7 @@ function App({ user, token, onLogout }) {
 
                     setMessages([{
                         role: 'assistant',
-                        content: `## 📋 文档理解完成\n\n**项目**: ${understanding.projectName || '未识别'}\n**预估功能数**: ${understanding.totalEstimatedFunctions || 30}\n\n### 核心模块\n${moduleSummary || '暂无'}\n\n🚀 **开始COSMIC拆分...**`
+                        content: `## 文档理解完成\n\n**项目**: ${understanding.projectName || '未识别'}\n**预估功能数**: ${understanding.totalEstimatedFunctions || 30}\n\n### 核心模块\n${moduleSummary || '暂无'}\n\n**开始COSMIC拆分...**`
                     }]);
                     await new Promise((resolve, reject) => {
                         const t = setTimeout(resolve, 1000);
@@ -1185,7 +1603,7 @@ function App({ user, token, onLogout }) {
                 }
             } catch (e) {
                 if (e.name === 'AbortError' || signal.aborted) return;
-                setMessages([{ role: 'system', content: '⚠️ 文档理解跳过，直接进行COSMIC拆分...' }]);
+                setMessages([{ role: 'system', content: '文档理解跳过，直接进行COSMIC拆分...' }]);
             }
 
             // 阶段2: 循环拆分
@@ -1194,12 +1612,12 @@ function App({ user, token, onLogout }) {
                 const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
 
                 setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                    const filtered = prev.filter(m => !m.content.startsWith('**第 '));
                     return [...filtered, {
                         role: 'system',
                         content: extractionMode === 'quantity'
-                            ? `🔄 **第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / 目标 ${minFunctionCount} 个功能过程`
-                            : `🔄 **第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / ${[...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程`
+                            ? `**第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / 目标 ${minFunctionCount} 个功能过程`
+                            : `**第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / ${[...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程`
                     }];
                 });
 
@@ -1245,10 +1663,10 @@ function App({ user, token, onLogout }) {
             // 最终汇总
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
             setMessages(prev => {
-                const filtered = prev.filter(m => !m.content.startsWith('🔄'));
+                const filtered = prev.filter(m => !m.content.startsWith('**第 '));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `🎉 **分析完成！**\n\n经过 **${round}** 轮分析：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
+                    content: `**分析完成**\n\n经过 **${round}** 轮分析：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
                     showActions: true
                 }];
             });
@@ -1446,6 +1864,7 @@ function App({ user, token, onLogout }) {
         setModuleStructure(null);
         setQuantityPlan(null);
         setFailedBatchInfo([]);
+        resetAnalysisProgress();
     };
 
     const stopAnalysis = () => {
@@ -1718,7 +2137,7 @@ function App({ user, token, onLogout }) {
             const filtered = prev.filter(m => !m.showFunctionListActions);
             return [...filtered, {
                 role: 'assistant',
-                content: `✅ **功能列表已更新**（共 ${selectedCount} 个功能过程）\n\n请点击**「开始COSMIC拆分」**按钮进行ERWX拆分。`,
+                content: `**功能列表已更新**（共 ${selectedCount} 个功能过程）\n\n请点击**「开始COSMIC拆分」**按钮进行ERWX拆分。`,
                 showFunctionListActions: true
             }];
         });
@@ -1777,16 +2196,16 @@ function App({ user, token, onLogout }) {
                 resultContent += `- **遗漏功能数**: ${v.missedFunctions?.length || 0}\n\n`;
 
                 if (v.missedFunctions && v.missedFunctions.length > 0) {
-                    resultContent += `### ⚠️ 遗漏的功能过程:\n\n${missedList}\n\n`;
+                    resultContent += `### 遗漏的功能过程:\n\n${missedList}\n\n`;
                 }
                 if (v.suggestions && v.suggestions.length > 0) {
-                    resultContent += `### 💡 改进建议:\n${suggestionsText}\n\n`;
+                    resultContent += `### 改进建议:\n${suggestionsText}\n\n`;
                 }
 
                 if (v.missedFunctions && v.missedFunctions.length > 0) {
                     resultContent += `---\n\n点击 **「补充提取」** 按钮可自动提取遗漏的功能过程。`;
                 } else {
-                    resultContent += `\n✅ 功能过程提取完整度良好！`;
+                    resultContent += `\n功能过程提取完整度良好。`;
                 }
 
                 setMessages(prev => {
@@ -1827,7 +2246,7 @@ function App({ user, token, onLogout }) {
         setIsLoading(true);
         setMessages(prev => [...prev, {
             role: 'system',
-            content: `🔄 **补充提取中...**\n正在针对 ${coverageResult.missedFunctions.length} 个遗漏功能进行补充分析...`
+            content: `**补充提取中...**\n正在针对 ${coverageResult.missedFunctions.length} 个遗漏功能进行补充分析...`
         }]);
 
         try {
@@ -1844,10 +2263,10 @@ function App({ user, token, onLogout }) {
                 const newFuncListText = extractRes.data.functionList;
 
                 setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **补充提取中'));
+                    const filtered = prev.filter(m => !m.content.startsWith('**补充提取中'));
                     return [...filtered, {
                         role: 'system',
-                        content: `✅ 补充提取到 **${newFunctions.length}** 个新功能过程，正在进行COSMIC拆分...`
+                        content: `补充提取到 **${newFunctions.length}** 个新功能过程，正在进行COSMIC拆分...`
                     }];
                 });
 
@@ -1870,10 +2289,10 @@ function App({ user, token, onLogout }) {
 
                         const newTotalFuncs = [...new Set(newTableData.map(r => r.functionalProcess).filter(Boolean))].length;
                         setMessages(prev => {
-                            const filtered = prev.filter(m => !m.content.startsWith('✅ 补充提取到'));
+                            const filtered = prev.filter(m => !m.content.startsWith('补充提取到'));
                             return [...filtered, {
                                 role: 'assistant',
-                                content: `🎉 **补充拆分完成！**\n\n- 新增 **${deduped.filter(r => r.dataMovementType === 'E').length}** 个功能过程\n- 新增 **${deduped.length}** 个子过程（CFP）\n- 总计 **${newTotalFuncs}** 个功能过程 / **${newTableData.length}** CFP\n\n可继续点击 **「覆盖度验证」** 再次检查完整度。`,
+                                content: `**补充拆分完成**\n\n- 新增 **${deduped.filter(r => r.dataMovementType === 'E').length}** 个功能过程\n- 新增 **${deduped.length}** 个子过程（CFP）\n- 总计 **${newTotalFuncs}** 个功能过程 / **${newTableData.length}** CFP\n\n可继续点击 **「覆盖度验证」** 再次检查完整度。`,
                                 showActions: true
                             }];
                         });
@@ -1881,21 +2300,21 @@ function App({ user, token, onLogout }) {
                     } else {
                         setMessages(prev => [...prev, {
                             role: 'assistant',
-                            content: '⚠️ 补充的功能过程与已有数据重复，未产生新数据。'
+                        content: '补充的功能过程与已有数据重复，未产生新数据。'
                         }]);
                     }
                 } else {
                     setMessages(prev => [...prev, {
                         role: 'assistant',
-                        content: '⚠️ 补充功能的COSMIC拆分未返回有效数据，请尝试手动补充。'
+                        content: '补充功能的COSMIC拆分未返回有效数据，请尝试手动补充。'
                     }]);
                 }
             } else {
                 setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('🔄 **补充提取中'));
+                    const filtered = prev.filter(m => !m.content.startsWith('**补充提取中'));
                     return [...filtered, {
                         role: 'assistant',
-                        content: '⚠️ 补充提取未发现新的功能过程。可能遗漏的功能已在已有列表中被不同名称覆盖。'
+                        content: '补充提取未发现新的功能过程。可能遗漏的功能已在已有列表中被不同名称覆盖。'
                     }];
                 });
             }
@@ -1970,7 +2389,7 @@ function App({ user, token, onLogout }) {
                 functionCount: uniqueFuncs.length,
                 cfpCount: tableData.length
             });
-            showToast('✅ 已保存');
+            showToast('已保存');
         } catch (err) {
             showToast('保存失败: ' + (err.response?.data?.error || err.message));
         }
@@ -2014,7 +2433,7 @@ function App({ user, token, onLogout }) {
                 <div className="sidebar-header">
                     <div className="sidebar-logo">
                         <div className={`sidebar-logo-icon ${analysisMode === 'nesma' ? 'nesma-logo-icon' : ''}`}>
-                            {analysisMode === 'cosmic' ? '🔬' : '📐'}
+                            {analysisMode === 'cosmic' ? <Sparkles size={22} /> : <BarChart3 size={22} />}
                         </div>
                         <div>
                             <h1>{analysisMode === 'cosmic' ? 'COSMIC 拆分' : 'NESMA 拆分'}</h1>
@@ -2122,7 +2541,7 @@ function App({ user, token, onLogout }) {
                         {moduleStructure && moduleStructure.modules && (
                             <div style={{ padding: '8px 12px', borderRadius: 8, background: 'rgba(108,92,231,0.06)', border: '1px solid rgba(108,92,231,0.15)', marginBottom: 8 }}>
                                 <div style={{ fontSize: 11, color: 'var(--accent-violet)', fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                    🗂️ 已识别模块脚手架
+                                    <Layers size={13} /> 已识别模块脚手架
                                 </div>
                                 <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
                                     {moduleStructure.modules.length} 个三级模块 · 预估 ~{moduleStructure.totalEstimated || '?'} 个功能过程
@@ -2136,9 +2555,8 @@ function App({ user, token, onLogout }) {
                                     type="number"
                                     className="setting-input number-input"
                                     value={totalTargetCount}
-                                    onChange={e => setTotalTargetCount(Math.max(10, parseInt(e.target.value) || 50))}
-                                    min={10}
-                                    max={500}
+                                    onChange={e => updateQuantityTotalTarget(e.target.value)}
+                                    min={0}
                                 />
                             </div>
                         )}
@@ -2267,7 +2685,7 @@ function App({ user, token, onLogout }) {
                             {messages.length === 0 && !documentContent ? (
                                 /* Welcome Screen */
                                 <div className="welcome-screen">
-                                    <div className="welcome-icon">🔬</div>
+                                    <div className="welcome-icon"><Sparkles size={36} /></div>
                                     <h1 className="welcome-title">COSMIC 智能拆分系统</h1>
                                     <p className="welcome-subtitle">
                                         基于AI大模型的COSMIC功能规模度量工具，自动将需求文档拆分为标准的ERWX数据移动表格
@@ -2300,7 +2718,7 @@ function App({ user, token, onLogout }) {
                                         onDragOver={handleDragOver}
                                         onDrop={handleDrop}
                                     >
-                                        <div className="upload-zone-icon">📂</div>
+                                        <div className="upload-zone-icon"><Upload size={34} /></div>
                                         <h3>上传需求文档</h3>
                                         <p>拖拽文件到此处，或点击选择文件</p>
                                         <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>支持 .docx, .txt, .md 格式</p>
@@ -2316,6 +2734,7 @@ function App({ user, token, onLogout }) {
                             ) : (
                                 /* Messages */
                                 <>
+                                    <AnalysisProgressPanel />
                                     {messages.map((msg, idx) => (
                                         <div key={idx} className={`message ${msg.role}`}>
                                             <div className="message-avatar">
@@ -2408,16 +2827,16 @@ function App({ user, token, onLogout }) {
                                     {/* ── 提取模式切换行（借鉴NESMA） ── */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
                                         <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>提取模式：</span>
-                                        <button onClick={() => setExtractionMode('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--accent-violet)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s' }}>🎯 精准模式</button>
-                                        <button onClick={() => setExtractionMode('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s' }}>📊 数量优先</button>
+                                        <button onClick={() => setExtractionMode('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--accent-violet)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Target size={12} /> 精准模式</button>
+                                        <button onClick={() => setExtractionMode('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><BarChart3 size={12} /> 数量优先</button>
                                         {extractionMode === 'quantity' && (
                                             <>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>
                                                     <span style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}>目标总数：</span>
                                                     <input
-                                                        type="number" min={10} max={500} step={10}
+                                                        type="number" min={0} step={1}
                                                         value={totalTargetCount}
-                                                        onChange={e => setTotalTargetCount(Math.max(10, Math.min(500, parseInt(e.target.value) || 50)))}
+                                                        onChange={e => updateQuantityTotalTarget(e.target.value)}
                                                         style={{ width: 60, padding: '1px 4px', fontSize: 13, border: '1px solid rgba(245,158,11,0.4)', borderRadius: 4, background: 'transparent', color: '#d97706', fontWeight: 700, textAlign: 'center', outline: 'none' }}
                                                     />
                                                     <span style={{ fontSize: 11, color: '#f59e0b' }}>个</span>
@@ -2427,10 +2846,10 @@ function App({ user, token, onLogout }) {
                                                         onClick={() => setShowQuantityPlan(true)}
                                                         style={{ padding: '3px 10px', borderRadius: 8, fontSize: 11, border: '1px solid rgba(245,158,11,0.5)', cursor: 'pointer', background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontWeight: 600, transition: 'all 0.15s', whiteSpace: 'nowrap' }}
                                                     >
-                                                        📋 调整规划（{quantityPlan.length}个模块）
+                                                        <FileText size={12} /> 调整规划（{quantityPlan.length}个模块）
                                                     </button>
                                                 )}
-                                                <span style={{ fontSize: 11, color: '#f59e0b' }}>⚡ 系统将按模块比例分配目标，全面展开CRUD</span>
+                                                <span style={{ fontSize: 11, color: '#f59e0b', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Zap size={12} /> 目标少时筛选精简，目标多时扩展补足；目标为0的模块会提示跳过</span>
                                             </>
                                         )}
                                         {extractionMode === 'precise' && (
@@ -2774,7 +3193,7 @@ function App({ user, token, onLogout }) {
                         <div className="table-view-overlay" onClick={() => setShowQuantityPlan(false)}>
                             <div className="table-view-panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 760 }}>
                                 <div className="table-view-header">
-                                    <h2>📊 数量优先·模块规划</h2>
+                                    <h2><BarChart3 size={18} /> 数量优先·模块规划</h2>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                                         <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                                             共 {quantityPlan.length} 个三级模块 · 目标合计&nbsp;
@@ -2790,38 +3209,32 @@ function App({ user, token, onLogout }) {
                                 <div style={{ padding: '10px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'rgba(245,158,11,0.04)' }}>
                                     <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>重新按总目标数分配：</span>
                                     <input
-                                        type="number" min={10} max={500} step={10}
+                                        type="number" min={0} step={1}
                                         value={totalTargetCount}
-                                        onChange={e => setTotalTargetCount(Math.max(10, parseInt(e.target.value) || 50))}
+                                        onChange={e => updateQuantityTotalTarget(e.target.value)}
                                         style={{ width: 80, padding: '3px 6px', fontSize: 13, border: '1px solid var(--border-subtle)', borderRadius: 6, background: 'var(--bg-secondary)', color: 'var(--text-primary)', textAlign: 'center' }}
                                     />
                                     <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>个</span>
                                     <button
                                         onClick={() => {
                                             const mods = quantityPlan;
-                                            const totalEst = mods.reduce((s, m) => s + (m.estimated || 8), 0) || 1;
-                                            const plan = mods.map(m => ({
+                                            const targets = allocateQuantityTargets(mods, totalTargetCount);
+                                            const plan = mods.map((m, i) => ({
                                                 ...m,
-                                                target: Math.max(3, Math.round((m.estimated || 8) / totalEst * totalTargetCount))
+                                                target: targets[i] || 0
                                             }));
-                                            const planSum = plan.reduce((s, p) => s + p.target, 0);
-                                            if (plan.length > 0) {
-                                                const maxIdx = plan.reduce((mi, p, i) => p.target > plan[mi].target ? i : mi, 0);
-                                                plan[maxIdx].target += totalTargetCount - planSum;
-                                                if (plan[maxIdx].target < 3) plan[maxIdx].target = 3;
-                                            }
                                             setQuantityPlan(plan);
                                         }}
                                         style={{ padding: '4px 14px', borderRadius: 8, fontSize: 12, border: 'none', cursor: 'pointer', background: '#f59e0b', color: '#fff', fontWeight: 600 }}
                                     >
-                                        🔄 按比例重新分配
+                                        <RefreshCw size={13} /> 按比例重新分配
                                     </button>
                                     <button
                                         onClick={() => {
                                             const n = quantityPlan.length;
                                             const base = Math.floor(totalTargetCount / n);
                                             const rem = totalTargetCount - base * n;
-                                            setQuantityPlan(prev => prev.map((m, i) => ({ ...m, target: base + (i === 0 ? rem : 0) })));
+                                            setQuantityPlan(prev => prev.map((m, i) => ({ ...m, target: base + (i < rem ? 1 : 0) })));
                                         }}
                                         style={{ padding: '4px 14px', borderRadius: 8, fontSize: 12, border: '1px solid var(--border-subtle)', cursor: 'pointer', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', fontWeight: 500 }}
                                     >
@@ -2861,10 +3274,10 @@ function App({ user, token, onLogout }) {
                                             <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-muted)' }}>~{mod.estimated || '?'}</div>
                                             <div style={{ textAlign: 'center' }}>
                                                 <input
-                                                    type="number" min={1} max={200}
+                                                    type="number" min={0} max={200}
                                                     value={mod.target}
                                                     onChange={e => {
-                                                        const val = Math.max(1, parseInt(e.target.value) || 1);
+                                                        const val = Math.max(0, parseInt(e.target.value) || 0);
                                                         setQuantityPlan(prev => prev.map((m, i) => i === idx ? { ...m, target: val } : m));
                                                     }}
                                                     style={{
@@ -2880,8 +3293,8 @@ function App({ user, token, onLogout }) {
                                 </div>
 
                                 <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                                        💡 目标数量越大，AI会对该模块展开更多功能过程细节
+                                    <span style={{ fontSize: 12, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                        <Info size={13} /> 目标数量越大，AI会对该模块展开更多功能过程细节
                                     </span>
                                     <div style={{ display: 'flex', gap: 8 }}>
                                         <button className="btn btn-secondary" onClick={() => setShowQuantityPlan(false)}>关闭</button>

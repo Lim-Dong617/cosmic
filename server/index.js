@@ -22,6 +22,9 @@ const { initDatabase } = require('./database');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3001;
+const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '300', 10);
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+const REQUEST_BODY_LIMIT = `${MAX_UPLOAD_MB}mb`;
 
 // ═══════════════════════ 中间件 ═══════════════════════
 
@@ -30,8 +33,8 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
 // 挂载认证路由
 app.use('/api/auth', authRouter);
@@ -50,9 +53,18 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // 文件上传配置
+const uploadDir = process.env.UPLOAD_TMP_DIR || path.join(__dirname, '..', 'uploads');
+fs.mkdirSync(uploadDir, { recursive: true });
+
 const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 50 * 1024 * 1024 },
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, uploadDir),
+        filename: (req, file, cb) => {
+            const safeName = `${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname || '')}`;
+            cb(null, safeName);
+        }
+    }),
+    limits: { fileSize: MAX_UPLOAD_BYTES },
     fileFilter: (req, file, cb) => {
         file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
         const ext = path.extname(file.originalname).toLowerCase();
@@ -69,7 +81,7 @@ const upload = multer({
 const handleMulterError = (err, req, res, next) => {
     if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ error: '文件大小超过限制（最大50MB）' });
+            return res.status(400).json({ error: `文件大小超过限制（最大${MAX_UPLOAD_MB}MB）` });
         }
         return res.status(400).json({ error: `上传错误: ${err.message}` });
     } else if (err) {
@@ -791,6 +803,13 @@ function extractFunctionsFromText(text) {
     return functions;
 }
 
+function buildFunctionListText(functions) {
+    return functions.map(f => `##触发事件：${f.triggerEvent || '用户触发'}
+##功能用户：${f.functionalUser || '发起者：用户 接收者：用户'}
+##功能过程：${f.functionName}
+##功能过程描述：${f.description || ''}`).join('\n\n');
+}
+
 // ═══════════════════════ API路由 ═══════════════════════
 
 // 健康检查
@@ -824,6 +843,7 @@ app.post('/api/config', (req, res) => {
 // ═══════════════════════ 文档解析 ═══════════════════════
 
 app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req, res) => {
+    const uploadedPath = req.file?.path;
     try {
         if (!req.file) {
             return res.status(400).json({ error: '请上传文件' });
@@ -835,10 +855,10 @@ app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req
         console.log(`📄 解析文件: ${req.file.originalname}, 大小: ${req.file.size} bytes`);
 
         if (ext === '.docx') {
-            const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+            const result = await mammoth.extractRawText({ path: uploadedPath });
             text = result.value;
         } else if (ext === '.txt' || ext === '.md') {
-            text = req.file.buffer.toString('utf-8');
+            text = await fs.promises.readFile(uploadedPath, 'utf-8');
         } else if (ext === '.doc') {
             return res.status(400).json({ error: '不支持旧版.doc格式，请另存为.docx格式' });
         }
@@ -857,6 +877,10 @@ app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req
     } catch (error) {
         console.error('解析文档失败:', error);
         res.status(500).json({ error: '解析文档失败: ' + error.message });
+    } finally {
+        if (uploadedPath) {
+            fs.promises.unlink(uploadedPath).catch(() => {});
+        }
     }
 });
 
@@ -1109,7 +1133,7 @@ app.post('/api/split-chapters', (req, res) => {
 
 app.post('/api/extract-functions', async (req, res) => {
     try {
-        const { documentContent, chapterName = '', userGuidelines = '', userConfig = null, extractionMode = 'precise', moduleStructure = null, targetCount = 0 } = req.body;
+        const { documentContent, chapterName = '', userGuidelines = '', userConfig = null, extractionMode = 'precise', moduleStructure = null, quantityPlan = null, targetCount = 0 } = req.body;
         if (!documentContent) {
             return res.status(400).json({ error: '缺少文档内容' });
         }
@@ -1212,20 +1236,47 @@ app.post('/api/extract-functions', async (req, res) => {
         // 构建模块脚手架提示（来自三级模块识别结果）
         let moduleScaffoldHint = '';
         if (moduleStructure && moduleStructure.modules && moduleStructure.modules.length > 0) {
+            const planMap = {};
+            if (Array.isArray(quantityPlan)) {
+                quantityPlan.forEach(p => {
+                    const key = (p.level3 || '').trim();
+                    if (key) planMap[key] = Number(p.target) || 0;
+                });
+            }
             const scaffoldList = moduleStructure.modules.map(m => {
                 const objs = (m.businessObjects || []).join('、');
                 const triggers = (m.triggerTypes || []).join('、');
-                return `- ${m.level1} > ${m.level2} > ${m.level3}：业务对象[${objs}]，触发类型[${triggers}]，预估 ~${m.estimatedFunctions || '?'} 个功能过程`;
+                const hasPlan = Object.prototype.hasOwnProperty.call(planMap, (m.level3 || '').trim());
+                const targetText = hasPlan
+                    ? (planMap[(m.level3 || '').trim()] > 0 ? `，本轮目标 ${planMap[(m.level3 || '').trim()]} 个` : '，本轮目标 0 个（明确跳过）')
+                    : `，预估 ~${m.estimatedFunctions || '?'} 个功能过程`;
+                return `- ${m.level1} > ${m.level2} > ${m.level3}：业务对象[${objs}]，触发类型[${triggers}]${targetText}`;
             }).join('\n');
-            moduleScaffoldHint = `\n\n【三级模块脚手架】以下是文档识别到的三级模块结构，请确保每个模块的功能都被提取，不要遗漏任何模块：\n${scaffoldList}`;
+            const skippedList = Array.isArray(quantityPlan)
+                ? quantityPlan.filter(p => (Number(p.target) || 0) <= 0).map(p => p.level3).filter(Boolean)
+                : [];
+            moduleScaffoldHint = extractionMode === 'quantity'
+                ? `\n\n【三级模块脚手架】以下是文档识别到的三级模块结构，并包含本轮数量规划。目标大于0的模块必须尽量覆盖；目标为0的模块是用户可见的明确跳过项，不要从这些模块中提取功能过程。\n${scaffoldList}${skippedList.length > 0 ? `\n\n【本轮明确跳过的模块】${skippedList.join('、')}` : ''}`
+                : `\n\n【三级模块脚手架】以下是文档识别到的三级模块结构，请确保每个模块的功能都被提取，不要遗漏任何模块：\n${scaffoldList}`;
         }
 
-        let userPrompt = `请从以下${chapterInfo}需求文档中提取所有功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
+        let userPrompt;
+        if (extractionMode === 'quantity' && targetCount > 0) {
+            userPrompt = `请从以下${chapterInfo}需求文档中按目标数量提取功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
+            userPrompt += `\n\n【数量优先执行策略】\n`;
+            userPrompt += `- 本次目标：输出约 ${targetCount} 个功能过程，上下浮动不超过5%。\n`;
+            userPrompt += `- 如果文档可拆出的功能明显多于目标数：请筛选业务主干、核心接口、关键数据处理、主要查询统计、关键自动化任务；忽略低频、重复、边缘、纯展示、可由主流程覆盖的功能。\n`;
+            userPrompt += `- 如果文档可拆出的功能少于目标数：请在不虚构业务的前提下，按业务对象、CRUD、状态流转、查询统计、导入导出、定时任务、外部接口等维度合理扩展。\n`;
+            userPrompt += `- 目标少时不要追求覆盖所有细节；目标多时可以展开细粒度功能，但禁止无意义凑数或重复改名。\n`;
+            userPrompt += `- 输出数量必须优先服从本次目标，而不是“宁可多提取”。`;
+        } else {
+            userPrompt = `请从以下${chapterInfo}需求文档中提取所有功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
+        }
         if (userGuidelines) {
             userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
         }
         if (extractionMode === 'quantity' && targetCount > 0) {
-            userPrompt += `\n\n**目标数量：请严格输出约 ${targetCount} 个功能过程，上下浮动不超过5%。**`;
+            userPrompt += `\n\n**再次确认：本章节只输出约 ${targetCount} 个功能过程。目标少则筛选精简，目标多则合理扩展。**`;
         }
 
         const completion = await callAIWithRetry({
@@ -1242,8 +1293,16 @@ app.post('/api/extract-functions', async (req, res) => {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
             return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
         }
-        const reply = completion.choices[0].message.content;
-        const functions = extractFunctionsFromText(reply);
+        let reply = completion.choices[0].message.content;
+        let functions = extractFunctionsFromText(reply);
+        if (extractionMode === 'quantity' && targetCount > 0) {
+            const maxAllowed = Math.max(1, Math.ceil(targetCount * 1.05));
+            if (functions.length > maxAllowed) {
+                console.log(`✂️ 数量优先裁剪: ${functions.length} → ${maxAllowed}（目标 ${targetCount}）`);
+                functions = functions.slice(0, maxAllowed);
+                reply = buildFunctionListText(functions);
+            }
+        }
 
         console.log(`✅ 提取到 ${functions.length} 个功能过程`);
         res.json({
