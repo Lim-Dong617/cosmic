@@ -1,0 +1,291 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">COSMIC 智能拆分系统动态标志</title>
+  <desc id="desc">Animated COSMIC logo with flowing data streams, split arrows, and a pulsing system mark.</desc>
+  <defs>
+    <linearGradient id="frameStroke" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#2aa89f"/>
+      <stop offset=".45" stop-color="#e3bd5a"/>
+      <stop offset="1" stop-color="#0d4661"/>
+    </linearGradient>
+    <linearGradient id="arrowFill" x1="0" x2="1" y1=".2" y2=".75">
+      <stop offset="0" stop-color="#279f8d"/>
+      <stop offset=".62" stop-color="#126884"/>
+      <stop offset="1" stop-color="#0b3854"/>
+    </linearGradient>
+    <linearGradient id="goldLine" x1="0" x2="1">
+      <stop offset="0" stop-color="#f6d56f"/>
+      <stop offset="1" stop-color="#c79735"/>
+    </linearGradient>
+    <linearGradient id="blueLine" x1="0" x2="1">
+      <stop offset="0" stop-color="#77c8f4"/>
+      <stop offset="1" stop-color="#0d4c75"/>
+    </linearGradient>
+    <filter id="softLift" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#0d3854" flood-opacity=".17"/>
+    </filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <path id="topStreamPath" d="M143 151 C190 134 228 119 278 143 C306 157 334 160 372 156"/>
+    <path id="midStreamPath" d="M118 218 C171 201 209 185 260 201 C300 214 331 218 386 215"/>
+    <path id="bottomStreamPath" d="M132 285 C177 267 209 253 253 260 C304 269 332 283 371 277"/>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+
+    .line {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-dasharray: 560;
+      stroke-dashoffset: 560;
+      animation: drawStream 3.8s cubic-bezier(.55, 0, .2, 1) infinite;
+    }
+
+    .line.back {
+      opacity: .2;
+      stroke-dasharray: none;
+      stroke-dashoffset: 0;
+      animation: none;
+    }
+
+    .top-line {
+      animation-delay: .05s;
+    }
+
+    .mid-line {
+      animation-delay: .22s;
+    }
+
+    .bottom-line {
+      animation-delay: .39s;
+    }
+
+    .arrow {
+      animation: arrowPush 3.8s cubic-bezier(.55, 0, .2, 1) infinite;
+      transform-origin: 356px 216px;
+    }
+
+    .arrow-highlight {
+      opacity: .88;
+      animation: highlightPulse 3.8s ease-in-out infinite;
+    }
+
+    .icon {
+      animation: iconBreath 3.8s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    .folder {
+      animation-delay: .18s;
+    }
+
+    .data-node {
+      animation-delay: .38s;
+    }
+
+    .cloud {
+      animation-delay: .58s;
+    }
+
+    .gear {
+      animation: gearTurn 7.5s linear infinite;
+      transform-origin: 227px 121px;
+    }
+
+    .spark {
+      animation: sparkPulse 1.45s ease-in-out infinite;
+      transform-origin: center;
+    }
+
+    .bar {
+      animation: barRise 2.2s cubic-bezier(.2, .8, .2, 1) infinite;
+      transform-box: fill-box;
+      transform-origin: bottom;
+    }
+
+    .bar:nth-child(2) {
+      animation-delay: .13s;
+    }
+
+    .bar:nth-child(3) {
+      animation-delay: .26s;
+    }
+
+    .bar:nth-child(4) {
+      animation-delay: .39s;
+    }
+
+    .wordmark,
+    .tagline {
+      animation: textReveal 3.8s ease-in-out infinite;
+      transform-origin: center;
+    }
+
+    .tagline {
+      animation-delay: .12s;
+    }
+
+    .stream-dot {
+      filter: url(#glow);
+    }
+
+    @keyframes drawStream {
+      0% { stroke-dashoffset: 560; opacity: 0; }
+      18% { opacity: 1; }
+      58% { stroke-dashoffset: 0; opacity: 1; }
+      82% { stroke-dashoffset: -120; opacity: .75; }
+      100% { stroke-dashoffset: -260; opacity: 0; }
+    }
+
+    @keyframes arrowPush {
+      0% { transform: translateX(-14px) scale(.985); opacity: .72; }
+      31% { transform: translateX(0) scale(1); opacity: 1; }
+      68% { transform: translateX(3px) scale(1.012); opacity: 1; }
+      100% { transform: translateX(14px) scale(.995); opacity: .76; }
+    }
+
+    @keyframes highlightPulse {
+      0%, 100% { opacity: .25; }
+      35%, 70% { opacity: .95; }
+    }
+
+    @keyframes iconBreath {
+      0%, 100% { transform: translateY(1px) scale(.97); opacity: .84; }
+      44% { transform: translateY(-3px) scale(1.04); opacity: 1; }
+    }
+
+    @keyframes gearTurn {
+      from { transform: rotate(0); }
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes sparkPulse {
+      0%, 100% { transform: scale(.86); opacity: .56; }
+      48% { transform: scale(1.12); opacity: 1; }
+    }
+
+    @keyframes barRise {
+      0%, 100% { transform: scaleY(.55); opacity: .62; }
+      42% { transform: scaleY(1); opacity: 1; }
+    }
+
+    @keyframes textReveal {
+      0% { opacity: .18; transform: translateY(9px); }
+      22%, 75% { opacity: 1; transform: translateY(0); }
+      100% { opacity: .35; transform: translateY(-2px); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .line,
+      .arrow,
+      .arrow-highlight,
+      .icon,
+      .gear,
+      .spark,
+      .bar,
+      .wordmark,
+      .tagline {
+        animation: none;
+      }
+
+      .line {
+        stroke-dashoffset: 0;
+        opacity: 1;
+      }
+    }
+  </style>
+
+  <rect x="7" y="7" width="498" height="498" rx="55" fill="#ffffff"/>
+  <rect x="33" y="33" width="446" height="446" rx="38" fill="#f8fdff"/>
+
+  <g filter="url(#softLift)">
+    <g class="icon folder">
+      <circle cx="118" cy="117" r="42" fill="#0d4661"/>
+      <path d="M91 105 h27 l8 8 h39 a7 7 0 0 1 7 7 v27 a8 8 0 0 1-8 8 H91 a8 8 0 0 1-8-8 v-34 a8 8 0 0 1 8-8z" fill="#e5bf5c"/>
+      <path d="M91 112 h74 a6 6 0 0 1 6 6 v10 H83 v-8 a8 8 0 0 1 8-8z" fill="#f3d579"/>
+      <rect x="94" y="128" width="63" height="19" rx="4" fill="#f7e5a8" opacity=".58"/>
+    </g>
+
+    <g class="gear">
+      <path d="M227 82 l9 12 15-2 4 15 14 6-5 14 9 13-12 10 1 15-15 4-7 13-14-5-13 9-10-12-15 1-4-15-14-7 5-14-9-13 12-10-1-15 15-4 7-13 14 5z" fill="#c7a54c"/>
+      <circle cx="227" cy="134" r="27" fill="#f7fafc"/>
+      <circle cx="227" cy="134" r="13" fill="#0d4661"/>
+    </g>
+
+    <g class="spark">
+      <path d="M189 123 c18 2 26-6 28-23 c2 17 10 25 28 23 c-17 4-25 12-27 30 c-4-18-12-26-29-30z" fill="#2aa89f"/>
+    </g>
+
+    <g class="icon data-node">
+      <circle cx="84" cy="218" r="46" fill="#0d4661"/>
+      <circle cx="63" cy="202" r="5" fill="#e5bf5c"/>
+      <circle cx="63" cy="218" r="5" fill="#e5bf5c"/>
+      <circle cx="63" cy="234" r="5" fill="#e5bf5c"/>
+      <rect x="76" y="198" width="45" height="8" rx="4" fill="#8fd2e8"/>
+      <rect x="76" y="214" width="57" height="8" rx="4" fill="#8fd2e8"/>
+      <rect x="76" y="230" width="37" height="8" rx="4" fill="#8fd2e8"/>
+    </g>
+
+    <g class="icon cloud">
+      <path d="M68 306 c0-16 13-29 31-29 c4-18 20-31 40-31 c23 0 41 17 44 39 c16 2 28 14 28 30 c0 18-14 31-32 31 H99 c-18 0-31-14-31-40z" fill="#0d4661"/>
+      <path d="M83 311 c0-12 10-21 24-21 c4-13 16-22 31-22 c18 0 32 13 35 30 c12 1 22 10 22 22 c0 12-10 21-24 21 H105 c-13 0-22-9-22-30z" fill="#f8fdff"/>
+      <path d="M99 320 h71" stroke="#8fd2e8" stroke-width="9" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <g opacity=".95">
+    <use href="#topStreamPath" class="line back" stroke="#c79735" stroke-width="23"/>
+    <use href="#midStreamPath" class="line back" stroke="#269f91" stroke-width="25"/>
+    <use href="#bottomStreamPath" class="line back" stroke="#0d4c75" stroke-width="25"/>
+    <use href="#topStreamPath" class="line top-line" stroke="url(#goldLine)" stroke-width="18"/>
+    <use href="#midStreamPath" class="line mid-line" stroke="#269f91" stroke-width="20"/>
+    <use href="#bottomStreamPath" class="line bottom-line" stroke="url(#blueLine)" stroke-width="20"/>
+  </g>
+
+  <g class="stream-dot">
+    <circle r="7" fill="#f4d471">
+      <animateMotion dur="3.8s" repeatCount="indefinite" begin=".15s">
+        <mpath href="#topStreamPath"/>
+      </animateMotion>
+    </circle>
+    <circle r="7" fill="#ffffff" stroke="#269f91" stroke-width="3">
+      <animateMotion dur="3.8s" repeatCount="indefinite" begin=".32s">
+        <mpath href="#midStreamPath"/>
+      </animateMotion>
+    </circle>
+    <circle r="7" fill="#8fd2e8">
+      <animateMotion dur="3.8s" repeatCount="indefinite" begin=".49s">
+        <mpath href="#bottomStreamPath"/>
+      </animateMotion>
+    </circle>
+  </g>
+
+  <g class="arrow" filter="url(#softLift)">
+    <path d="M266 146 H368 v-41 l101 109 -101 109 v-42 H260 c-18 0-32-8-41-19 15 1 34 1 53-3 h91 v18 l60-64 -60-64 v18 h-92 c-19 0-38-4-55-12 12-6 28-9 50-9z" fill="url(#arrowFill)"/>
+    <path class="arrow-highlight" d="M270 158 h96 v-20 l72 76 -72 76 v-21 h-96 c-15 0-29-4-40-11 16 0 31-2 47-5 h101 v8 l45-47 -45-48 v8 h-100 c-15 0-30-2-44-6 10-6 22-10 36-10z" fill="#f1ce61"/>
+    <path d="M389 172 l39 42 -39 43" fill="none" stroke="#fff8d8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" opacity=".72"/>
+  </g>
+
+  <g transform="translate(314 283)">
+    <rect x="0" y="30" width="12" height="44" rx="3" fill="#0d4661" opacity=".84"/>
+    <rect class="bar" x="18" y="16" width="12" height="58" rx="3" fill="#2aa89f"/>
+    <rect class="bar" x="36" y="3" width="12" height="71" rx="3" fill="#e5bf5c"/>
+    <rect class="bar" x="54" y="-11" width="12" height="85" rx="3" fill="#0d4661"/>
+    <path d="M-6 80 H77" stroke="#0d4661" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <text class="wordmark" x="256" y="405" text-anchor="middle"
+        font-family="Montserrat, Avenir Next, Microsoft YaHei, Arial, sans-serif"
+        font-size="67" font-weight="700" letter-spacing="1.5" fill="#0d2f4b">COSMIC</text>
+  <text class="tagline" x="256" y="450" text-anchor="middle"
+        font-family="Microsoft YaHei, PingFang SC, Noto Sans CJK SC, Arial, sans-serif"
+        font-size="34" font-weight="700" fill="#0d4661">智能拆分系统</text>
+</svg>

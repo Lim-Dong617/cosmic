@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>COSMIC Logo Motion</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 50% 18%, rgba(42, 168, 159, .18), transparent 34%),
+          linear-gradient(145deg, #f3fbfd 0%, #ffffff 48%, #edf6f8 100%);
+        font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      }
+
+      .stage {
+        width: min(74vmin, 520px);
+        aspect-ratio: 1;
+        display: grid;
+        place-items: center;
+      }
+
+      object {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="stage" aria-label="COSMIC animated logo preview">
+      <object type="image/svg+xml" data="./cosmic-logo-motion.svg"></object>
+    </main>
+  </body>
+</html>

@@ -2432,8 +2432,12 @@ function App({ user, token, onLogout }) {
             <div className="sidebar">
                 <div className="sidebar-header">
                     <div className="sidebar-logo">
-                        <div className={`sidebar-logo-icon ${analysisMode === 'nesma' ? 'nesma-logo-icon' : ''}`}>
-                            {analysisMode === 'cosmic' ? <Sparkles size={22} /> : <BarChart3 size={22} />}
+                        <div className={`sidebar-logo-icon ${analysisMode === 'cosmic' ? 'cosmic-motion-logo-shell' : 'nesma-logo-icon'}`}>
+                            {analysisMode === 'cosmic' ? (
+                                <img className="cosmic-motion-logo cosmic-motion-logo-sidebar" src="/cosmic-logo-mark-motion.svg" alt="COSMIC" />
+                            ) : (
+                                <BarChart3 size={22} />
+                            )}
                         </div>
                         <div>
                             <h1>{analysisMode === 'cosmic' ? 'COSMIC 拆分' : 'NESMA 拆分'}</h1>
@@ -2685,7 +2689,9 @@ function App({ user, token, onLogout }) {
                             {messages.length === 0 && !documentContent ? (
                                 /* Welcome Screen */
                                 <div className="welcome-screen">
-                                    <div className="welcome-icon"><Sparkles size={36} /></div>
+                                    <div className="welcome-icon cosmic-welcome-logo">
+                                        <img className="cosmic-motion-logo cosmic-motion-logo-welcome" src="/cosmic-logo-mark-motion.svg" alt="COSMIC 智能拆分系统" />
+                                    </div>
                                     <h1 className="welcome-title">COSMIC 智能拆分系统</h1>
                                     <p className="welcome-subtitle">
                                         基于AI大模型的COSMIC功能规模度量工具，自动将需求文档拆分为标准的ERWX数据移动表格
