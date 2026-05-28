@@ -28,6 +28,253 @@ const initialAnalysisProgress = {
     stats: ''
 };
 
+const normalizeProcessOrderKey = (name) => (name || '')
+    .replace(/\[.*?\]\s*/g, '')
+    .replace(/^[\d]+[.、\s]+/, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+    .trim();
+
+const extractHeadingNumberParts = (title) => {
+    const text = String(title || '').trim();
+    if (!text) return null;
+    const match = text.match(/^(\d+(?:\.\d+)*)(?=\s|[^\d.]|$)/);
+    return match ? match[1].split('.').map(n => parseInt(n, 10)) : null;
+};
+
+const compareHeadingNumberParts = (a, b) => {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    const len = Math.max(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+        const av = a[i] ?? 0;
+        const bv = b[i] ?? 0;
+        if (av !== bv) return av - bv;
+    }
+    return 0;
+};
+
+const compareHeadingTitle = (a, b) => compareHeadingNumberParts(
+    extractHeadingNumberParts(a),
+    extractHeadingNumberParts(b)
+);
+
+const stripHeadingNumber = (title) => String(title || '')
+    .trim()
+    .replace(/^\d+(?:\.\d+)*[.、\s]*/, '')
+    .trim();
+
+const normalizeHeadingMatchText = (text) => String(text || '')
+    .replace(/^\d+(?:\.\d+)*[.、\s]*/, '')
+    .replace(/[（(].*?[)）]/g, '')
+    .replace(/[【】\[\]（）()\-—–_、，,。；;：:\s]/g, '')
+    .toLowerCase()
+    .trim();
+
+const isLikelyDocumentHeading = (line) => {
+    const trimmed = String(line || '').trim();
+    if (!trimmed || trimmed.length < 2 || trimmed.length > 80) return false;
+    if (!/^\d+(?:\.\d+)*[.、\s]\s*[^\d\s].+/.test(trimmed)) return false;
+    if (/[\u3002\uff0c\u3001\uff1b\uff1a\u2026\uff01\uff1f,;:!?)\uff09\u300b\u300f\u201d\u2019]$/.test(trimmed)) return false;
+    return !/应当|应该|需要|具体为|如下[\uff1a:]|以下[\uff1a:]|包括[\uff1a:]|说明[\uff1a:]|要求[\uff1a:]|其中[\uff0c,]/.test(trimmed);
+};
+
+const displayLevelsFromHeadingPath = (path) => {
+    if (!path.length) return { level1: '', level2: '', level3: '' };
+    if (path.length === 1) return { level1: path[0], level2: '', level3: '' };
+    if (path.length === 2) return { level1: path[0], level2: path[1], level3: '' };
+    if (path.length === 3) return { level1: path[0], level2: path[1], level3: path[2] };
+    return {
+        level1: path[0],
+        level2: path[path.length - 2],
+        level3: path[path.length - 1]
+    };
+};
+
+const extractDocumentHeadingOutline = (text) => {
+    if (!text) return [];
+    const lines = text.split('\n');
+    const headings = [];
+    for (let i = 0; i < lines.length; i++) {
+        const title = lines[i].trim();
+        if (!isLikelyDocumentHeading(title)) continue;
+        const num = title.match(/^(\d+(?:\.\d+)*)/)?.[1] || '';
+        headings.push({
+            title,
+            cleanTitle: stripHeadingNumber(title),
+            parts: num ? num.split('.').map(n => parseInt(n, 10)) : [],
+            lineIndex: i
+        });
+    }
+
+    const stack = [];
+    return headings.map((heading, index) => {
+        const depth = heading.parts.length;
+        stack[depth - 1] = heading.title;
+        stack.length = depth;
+        const nextLine = headings[index + 1]?.lineIndex ?? lines.length;
+        const path = stack.filter(Boolean);
+        return {
+            ...heading,
+            path,
+            levels: displayLevelsFromHeadingPath(path),
+            content: lines.slice(heading.lineIndex + 1, nextLine).join('\n')
+        };
+    });
+};
+
+const includesUsefulMatch = (haystack, needle) => {
+    if (!haystack || !needle) return false;
+    if (needle.length <= 2) return false;
+    return haystack.includes(needle) || needle.includes(haystack);
+};
+
+const matchFunctionToOriginalHeading = (func, outline = []) => {
+    if (!func || !outline.length) return null;
+    const functionName = normalizeHeadingMatchText(func.functionName);
+    const description = normalizeHeadingMatchText(func.description);
+    const sourceChapter = normalizeHeadingMatchText(func.sourceChapter);
+
+    let best = null;
+    let bestScore = 0;
+    for (const heading of outline) {
+        const headingTitle = normalizeHeadingMatchText(heading.cleanTitle || heading.title);
+        const headingFull = normalizeHeadingMatchText(heading.title);
+        const content = normalizeHeadingMatchText(heading.content).slice(0, 2000);
+        let score = 0;
+
+        if (sourceChapter && normalizeHeadingMatchText(heading.title) === sourceChapter) score += 160;
+        if (includesUsefulMatch(functionName, headingTitle)) score += 120 + Math.min(headingTitle.length, functionName.length);
+        if (description && includesUsefulMatch(description, headingTitle)) score += 70;
+        if (functionName && content.includes(functionName)) score += 95;
+        if (description && description.length >= 6 && content.includes(description.slice(0, Math.min(24, description.length)))) score += 50;
+        if (functionName && headingFull.includes(functionName.slice(0, Math.min(8, functionName.length)))) score += 30;
+
+        if (score > bestScore) {
+            bestScore = score;
+            best = heading;
+        }
+    }
+    return bestScore >= 50 ? best : null;
+};
+
+const buildFunctionOrderMap = (functions = []) => {
+    const map = new Map();
+    functions.forEach((func, index) => {
+        const key = normalizeProcessOrderKey(func.functionName || func.functionalProcess || func);
+        if (key && !map.has(key)) map.set(key, index);
+    });
+    return map;
+};
+
+const buildModuleOrderMap = (moduleStructure) => {
+    const map = new Map();
+    const modules = moduleStructure?.modules || [];
+    modules.forEach((m, index) => {
+        const key = [m.level1 || '', m.level2 || '', m.level3 || ''].join('\u0001');
+        if ((m.level1 || m.level2 || m.level3) && !map.has(key)) map.set(key, index);
+    });
+    return map;
+};
+
+const getGroupLevels = (rows) => {
+    const levels = { level1: '', level2: '', level3: '' };
+    for (const row of rows) {
+        if (!levels.level1 && row.level1) levels.level1 = row.level1;
+        if (!levels.level2 && row.level2) levels.level2 = row.level2;
+        if (!levels.level3 && row.level3) levels.level3 = row.level3;
+        if (levels.level1 && levels.level2 && levels.level3) break;
+    }
+    return levels;
+};
+
+const inheritMissingFunctionLevels = (functions = []) => {
+    let lastLevels = { level1: '', level2: '', level3: '', sourceChapter: '' };
+    return functions.map(func => {
+        const hasLevels = func.level1 || func.level2 || func.level3 || func.sourceChapter;
+        if (hasLevels) {
+            lastLevels = {
+                level1: func.level1 || lastLevels.level1,
+                level2: func.level2 || lastLevels.level2,
+                level3: func.level3 || lastLevels.level3,
+                sourceChapter: func.sourceChapter || lastLevels.sourceChapter
+            };
+            return func;
+        }
+        if (!lastLevels.level1 && !lastLevels.level2 && !lastLevels.level3 && !lastLevels.sourceChapter) {
+            return func;
+        }
+        return {
+            ...func,
+            level1: lastLevels.level1,
+            level2: lastLevels.level2,
+            level3: lastLevels.level3,
+            sourceChapter: lastLevels.sourceChapter
+        };
+    });
+};
+
+const orderCosmicTableData = (rows, functions = [], moduleStructure = null) => {
+    if (!Array.isArray(rows) || rows.length <= 1) return rows || [];
+
+    const groups = [];
+    let currentGroup = null;
+
+    rows.forEach((row, rowIndex) => {
+        const clonedRow = { ...row };
+        if (clonedRow.dataMovementType === 'E' && clonedRow.functionalProcess) {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = {
+                index: rowIndex,
+                processName: clonedRow.functionalProcess,
+                rows: [clonedRow]
+            };
+        } else if (currentGroup) {
+            currentGroup.rows.push(clonedRow);
+        } else {
+            groups.push({
+                index: rowIndex,
+                processName: clonedRow.functionalProcess || '',
+                rows: [clonedRow],
+                orphan: true
+            });
+        }
+    });
+    if (currentGroup) groups.push(currentGroup);
+
+    const functionOrder = buildFunctionOrderMap(functions);
+    const moduleOrder = buildModuleOrderMap(moduleStructure);
+    const maxRank = Number.MAX_SAFE_INTEGER;
+
+    const getModuleRank = (levels) => {
+        const key = [levels.level1 || '', levels.level2 || '', levels.level3 || ''].join('\u0001');
+        return moduleOrder.has(key) ? moduleOrder.get(key) : maxRank;
+    };
+
+    const compareGroups = (a, b) => {
+        const aLevels = getGroupLevels(a.rows);
+        const bLevels = getGroupLevels(b.rows);
+        const headingCmp = compareHeadingTitle(aLevels.level1, bLevels.level1)
+            || compareHeadingTitle(aLevels.level2, bLevels.level2)
+            || compareHeadingTitle(aLevels.level3, bLevels.level3);
+        if (headingCmp !== 0) return headingCmp;
+
+        const moduleCmp = getModuleRank(aLevels) - getModuleRank(bLevels);
+        if (moduleCmp !== 0) return moduleCmp;
+
+        const aFuncRank = functionOrder.get(normalizeProcessOrderKey(a.processName)) ?? maxRank;
+        const bFuncRank = functionOrder.get(normalizeProcessOrderKey(b.processName)) ?? maxRank;
+        if (aFuncRank !== bFuncRank) return aFuncRank - bFuncRank;
+
+        return a.index - b.index;
+    };
+
+    return groups
+        .sort(compareGroups)
+        .flatMap(group => group.rows);
+};
+
 function App({ user, token, onLogout }) {
     // ═══════════ 状态管理 ═══════════
     const idCounterRef = useRef(0);
@@ -117,6 +364,10 @@ function App({ user, token, onLogout }) {
     const fileInputRef = useRef(null);
     const dropZoneRef = useRef(null);
     const abortControllerRef = useRef(null);
+    const documentHeadingOutline = useMemo(
+        () => extractDocumentHeadingOutline(documentContent),
+        [documentContent]
+    );
 
     // ═══════════ 初始化 ═══════════
     useEffect(() => {
@@ -838,8 +1089,12 @@ function App({ user, token, onLogout }) {
                         .filter(line => line.trim())
                         .map(line => {
                             // 如果行内没有章节标记，加上来源
-                            if (chapter.title !== '全文' && !line.includes(`【${chapter.title}】`)) {
-                                return line.replace(/##功能过程：/, `##功能过程：[${chapter.title}] `);
+                            if (
+                                chapter.title !== '全文' &&
+                                /^##\s*功能过程[：:]/.test(line) &&
+                                !/^##\s*功能过程[：:]\s*[\[【]/.test(line)
+                            ) {
+                                return line.replace(/^##\s*功能过程[：:]\s*/, `##功能过程：[${chapter.title}] `);
                             }
                             return line;
                         })
@@ -870,7 +1125,7 @@ function App({ user, token, onLogout }) {
 
             setFunctionListText(allFunctions);
             // 自动解析为结构化数据
-            const parsed = parseFunctionListText(allFunctions);
+            const parsed = inheritMissingFunctionLevels(parseFunctionListText(allFunctions));
 
             // ── 将章节的 level1/level2/level3 注入到每个功能过程对象 ──
             // chapters 状态里已有后端返回的层级信息，通过 sourceChapter 匹配 title
@@ -898,7 +1153,8 @@ function App({ user, token, onLogout }) {
                 }
             });
 
-            setParsedFunctions(parsed);
+            const leveledParsed = inheritMissingFunctionLevels(parsed);
+            setParsedFunctions(leveledParsed);
             setCurrentStep(3);
             updateAnalysisProgress({
                 status: 'waiting',
@@ -906,13 +1162,13 @@ function App({ user, token, onLogout }) {
                 percent: 66,
                 current: 3,
                 total: 5,
-                detail: `Extracted ${parsed.length} functional processes. Review them before COSMIC splitting.`,
-                stats: `${parsed.filter(f => f.selected !== false).length}/${parsed.length} selected`
+                detail: `Extracted ${leveledParsed.length} functional processes. Review them before COSMIC splitting.`,
+                stats: `${leveledParsed.filter(f => f.selected !== false).length}/${leveledParsed.length} selected`
             });
 
             // 构建简洁的统计摘要，不再dump原始文本
             const triggerStats = {};
-            parsed.forEach(f => {
+            leveledParsed.forEach(f => {
                 const trigger = f.triggerEvent || '未知';
                 triggerStats[trigger] = (triggerStats[trigger] || 0) + 1;
             });
@@ -924,7 +1180,7 @@ function App({ user, token, onLogout }) {
                 const filtered = prev.filter(m => !m.content.startsWith('🔍'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `## 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${parsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
+                    content: `## 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${leveledParsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
                     showFunctionListActions: true
                 }];
             });
@@ -933,7 +1189,7 @@ function App({ user, token, onLogout }) {
             if (allFunctions) {
                 // 部分成功
                 setFunctionListText(allFunctions);
-                const parsed = parseFunctionListText(allFunctions);
+                const parsed = inheritMissingFunctionLevels(parseFunctionListText(allFunctions));
                 setParsedFunctions(parsed);
                 setCurrentStep(3);
                 setMessages(prev => [...prev, {
@@ -961,12 +1217,12 @@ function App({ user, token, onLogout }) {
 
     const startCosmicSplit = async () => {
         // 先同步结构化数据回 text
-        let activeFunctions = parsedFunctions.filter(f => f.selected !== false);
+        let activeFunctions = inheritMissingFunctionLevels(parsedFunctions).filter(f => f.selected !== false);
         if (activeFunctions.length === 0) {
             // 回退到旧模式：用纯文本
             let textForSplit = functionListText;
             if (!textForSplit) { showToast('请先提取功能过程列表'); return; }
-            activeFunctions = parseFunctionListText(textForSplit).filter(f => f.selected !== false);
+            activeFunctions = inheritMissingFunctionLevels(parseFunctionListText(textForSplit)).filter(f => f.selected !== false);
             if (activeFunctions.length === 0) { showToast('未找到功能过程'); return; }
         }
 
@@ -1154,7 +1410,7 @@ function App({ user, token, onLogout }) {
                             ]);
                             const deduped = deduplicateData(allTableData, newData, expectedNames);
                             if (deduped.length > 0) {
-                                allTableData = [...allTableData, ...deduped];
+                                allTableData = orderCosmicTableData([...allTableData, ...deduped], activeFunctions, moduleStructure);
                                 setTableData(allTableData);
                             }
                         }
@@ -1267,7 +1523,7 @@ function App({ user, token, onLogout }) {
                                 ]);
                                 const deduped = deduplicateData(allTableData, newData, expectedNames);
                                 if (deduped.length > 0) {
-                                    allTableData = [...allTableData, ...deduped];
+                                    allTableData = orderCosmicTableData([...allTableData, ...deduped], activeFunctions, moduleStructure);
                                 }
                             }
                             completedBatches++;
@@ -1307,6 +1563,7 @@ function App({ user, token, onLogout }) {
                         }
                     }
 
+                    allTableData = orderCosmicTableData(allTableData, activeFunctions, moduleStructure);
                     setTableData(allTableData);
 
                     if (completedBatches === 0 && failedBatches.length === totalBatches) {
@@ -1468,7 +1725,7 @@ function App({ user, token, onLogout }) {
                             ]);
                             const deduped = deduplicateData(allTableData, newData, retryExpectedNames);
                             if (deduped.length > 0) {
-                                allTableData = [...allTableData, ...deduped];
+                                allTableData = orderCosmicTableData([...allTableData, ...deduped], parsedFunctions, moduleStructure);
                                 setTableData(allTableData);
                             }
                         }
@@ -1639,7 +1896,7 @@ function App({ user, token, onLogout }) {
                         if (tableRes.data.success && tableRes.data.tableData.length > 0) {
                             const deduped = deduplicateData(allTableData, tableRes.data.tableData);
                             if (deduped.length > 0) {
-                                allTableData = [...allTableData, ...deduped];
+                                allTableData = orderCosmicTableData([...allTableData, ...deduped], parsedFunctions, moduleStructure);
                                 setTableData(allTableData);
                             }
                         }
@@ -1732,7 +1989,7 @@ function App({ user, token, onLogout }) {
                     if (tableRes.data.success && tableRes.data.tableData.length > 0) {
                         setTableData(prev => {
                             const deduped = deduplicateData(prev, tableRes.data.tableData);
-                            return [...prev, ...deduped];
+                            return orderCosmicTableData([...prev, ...deduped], parsedFunctions, moduleStructure);
                         });
                     }
                 } catch (e) { /* ignore */ }
@@ -1751,6 +2008,7 @@ function App({ user, token, onLogout }) {
         if (tableData.length === 0) { showToast('没有可导出的数据'); return; }
         try {
             let sequenceDiagrams = null;
+            const exportTableData = orderCosmicTableData(tableData, parsedFunctions, moduleStructure);
 
             // 如果勾选了「附带时序图」，先在客户端生成所有时序图PNG
             if (exportWithDiagrams) {
@@ -1759,7 +2017,7 @@ function App({ user, token, onLogout }) {
                 showToast('正在生成时序图，请稍候...');
                 try {
                     sequenceDiagrams = await generateAllDiagramImages(
-                        tableData,
+                        exportTableData,
                         (current, total) => {
                             setDiagramProgress(`生成时序图 ${current}/${total}`);
                         }
@@ -1774,7 +2032,7 @@ function App({ user, token, onLogout }) {
 
             const response = await axios.post('/api/export-excel',
                 {
-                    tableData,
+                    tableData: exportTableData,
                     filename: `COSMIC拆分_${documentName || '结果'}`,
                     sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
                 },
@@ -1800,6 +2058,7 @@ function App({ user, token, onLogout }) {
         if (tableData.length === 0) { showToast('没有可导出的数据'); return; }
         try {
             let sequenceDiagrams = null;
+            const exportTableData = orderCosmicTableData(tableData, parsedFunctions, moduleStructure);
 
             // 如果勾选了「附带时序图」，先在客户端生成所有时序图PNG
             if (exportWithDiagrams) {
@@ -1808,7 +2067,7 @@ function App({ user, token, onLogout }) {
                 showToast('正在生成时序图，请稍候...');
                 try {
                     sequenceDiagrams = await generateAllDiagramImages(
-                        tableData,
+                        exportTableData,
                         (current, total) => {
                             setDiagramProgress(`生成时序图 ${current}/${total}`);
                         }
@@ -1823,7 +2082,7 @@ function App({ user, token, onLogout }) {
 
             const response = await axios.post('/api/export-word',
                 {
-                    tableData,
+                    tableData: exportTableData,
                     filename: `COSMIC功能规格说明书_${documentName || '结果'}`,
                     documentName: documentName || '',
                     sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
@@ -1963,6 +2222,15 @@ function App({ user, token, onLogout }) {
         };
 
         functions.forEach(f => {
+            const originalHeading = matchFunctionToOriginalHeading(f, documentHeadingOutline);
+            if (originalHeading) {
+                f.level1 = originalHeading.levels.level1 || '';
+                f.level2 = originalHeading.levels.level2 || '';
+                f.level3 = originalHeading.levels.level3 || '';
+                f.sourceChapter = originalHeading.title || f.sourceChapter || '';
+                return;
+            }
+
             if (moduleStructure && moduleStructure.modules) {
                 let matched = null;
                 // 1. 有 sourceChapter 时先精确匹配
@@ -1987,11 +2255,20 @@ function App({ user, token, onLogout }) {
                 f.level3 = f.sourceChapter;
             }
         });
-        return functions;
+        return inheritMissingFunctionLevels(functions);
     };
 
     // 根据功能过程的 sourceChapter 获取三级模块信息
     const getModuleLevels = (func) => {
+        const originalHeading = matchFunctionToOriginalHeading(func, documentHeadingOutline);
+        if (originalHeading) {
+            return {
+                level1: originalHeading.levels.level1 || '',
+                level2: originalHeading.levels.level2 || '',
+                level3: originalHeading.levels.level3 || ''
+            };
+        }
+
         // 优先使用功能过程对象上已有的层级（由 parseFunctionListText 模糊匹配设定）
         if (func.level1 || func.level2 || func.level3) {
             return { level1: func.level1 || '', level2: func.level2 || '', level3: func.level3 || '' };
@@ -2049,7 +2326,8 @@ function App({ user, token, onLogout }) {
         return functions
             .filter(f => f.selected !== false)
             .map(f => {
-                return `##触发事件：${f.triggerEvent || '用户触发'}\n##功能用户：${f.functionalUser || '发起者：用户 接收者：用户'}\n##功能过程：${f.functionName}\n##功能过程描述：${f.description || ''}`;
+                const sourcePrefix = f.sourceChapter ? `[${f.sourceChapter}] ` : '';
+                return `##触发事件：${f.triggerEvent || '用户触发'}\n##功能用户：${f.functionalUser || '发起者：用户 接收者：用户'}\n##功能过程：${sourcePrefix}${f.functionName}\n##功能过程描述：${f.description || ''}`;
             })
             .join('\n\n');
     };
@@ -2146,8 +2424,10 @@ function App({ user, token, onLogout }) {
     // 打开编辑器时，从 functionListText 解析结构化数据
     const openFunctionEditor = () => {
         if (parsedFunctions.length === 0 && functionListText) {
-            const parsed = parseFunctionListText(functionListText);
+            const parsed = inheritMissingFunctionLevels(parseFunctionListText(functionListText));
             setParsedFunctions(parsed);
+        } else if (parsedFunctions.length > 0) {
+            setParsedFunctions(prev => inheritMissingFunctionLevels(prev));
         }
         setShowFunctionListEditor(true);
     };
@@ -2284,7 +2564,7 @@ function App({ user, token, onLogout }) {
                 if (splitRes.data.success && splitRes.data.tableData && splitRes.data.tableData.length > 0) {
                     const deduped = deduplicateData(tableData, splitRes.data.tableData);
                     if (deduped.length > 0) {
-                        const newTableData = [...tableData, ...deduped];
+                        const newTableData = orderCosmicTableData([...tableData, ...deduped], parsedFunctions, moduleStructure);
                         setTableData(newTableData);
 
                         const newTotalFuncs = [...new Set(newTableData.map(r => r.functionalProcess).filter(Boolean))].length;
@@ -2364,9 +2644,11 @@ function App({ user, token, onLogout }) {
     const handleLoadConversation = (conv) => {
         setCurrentConversationId(conv.id);
         setMessages(conv.messages || []);
-        setTableData(conv.table_data || []);
+        setTableData(orderCosmicTableData(conv.table_data || [], [], null));
         setDocumentName(conv.document_name || '');
         setFunctionListText(conv.function_list || '');
+        setParsedFunctions([]);
+        setModuleStructure(null);
         setCurrentStep(0);
         setIsWaitingForAnalysis(false);
         if (conv.analysis_mode) setAnalysisMode(conv.analysis_mode);
@@ -2380,14 +2662,15 @@ function App({ user, token, onLogout }) {
             if (!convId) { showToast('保存失败'); return; }
         }
         try {
-            const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+            const tableDataForSave = orderCosmicTableData(tableData, parsedFunctions, moduleStructure);
+            const uniqueFuncs = [...new Set(tableDataForSave.map(r => r.functionalProcess).filter(Boolean))];
             await authAxios.put(`/api/auth/conversations/${convId}`, {
                 title: documentName || '未命名分析',
                 messages: messages.map(m => ({ role: m.role, content: m.content })),
-                tableData,
+                tableData: tableDataForSave,
                 functionList: functionListText,
                 functionCount: uniqueFuncs.length,
-                cfpCount: tableData.length
+                cfpCount: tableDataForSave.length
             });
             showToast('已保存');
         } catch (err) {
@@ -3357,7 +3640,7 @@ function App({ user, token, onLogout }) {
                                             </button>
                                         </div>
                                     ) : (
-                                        parsedFunctions.map((func, idx) => (
+                                        inheritMissingFunctionLevels(parsedFunctions).map((func, idx) => (
                                             <div
                                                 key={func.id || idx}
                                                 className={`func-editor-row ${func.selected === false ? 'disabled' : ''} ${editingFunctionIndex === idx ? 'editing' : ''}`}

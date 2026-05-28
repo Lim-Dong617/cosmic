@@ -129,6 +129,100 @@ function normalizeProcessName(name) {
         .trim();
 }
 
+function extractHeadingNumberParts(title) {
+    const text = String(title || '').trim();
+    if (!text) return null;
+    const match = text.match(/^(\d+(?:\.\d+)*)(?=\s|[^\d.]|$)/);
+    return match ? match[1].split('.').map(n => parseInt(n, 10)) : null;
+}
+
+function compareHeadingNumberParts(a, b) {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    const len = Math.max(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+        const av = a[i] ?? 0;
+        const bv = b[i] ?? 0;
+        if (av !== bv) return av - bv;
+    }
+    return 0;
+}
+
+function compareHeadingTitle(a, b) {
+    return compareHeadingNumberParts(extractHeadingNumberParts(a), extractHeadingNumberParts(b));
+}
+
+function getGroupLevels(rows) {
+    const levels = { level1: '', level2: '', level3: '' };
+    for (const row of rows) {
+        if (!levels.level1 && row.level1) levels.level1 = row.level1;
+        if (!levels.level2 && row.level2) levels.level2 = row.level2;
+        if (!levels.level3 && row.level3) levels.level3 = row.level3;
+        if (levels.level1 && levels.level2 && levels.level3) break;
+    }
+    return levels;
+}
+
+function orderCosmicTableData(rows) {
+    if (!Array.isArray(rows) || rows.length <= 1) return rows || [];
+
+    const groups = [];
+    let currentGroup = null;
+
+    rows.forEach((row, rowIndex) => {
+        const clonedRow = { ...row };
+        if (clonedRow.dataMovementType === 'E' && clonedRow.functionalProcess) {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = {
+                index: rowIndex,
+                processName: clonedRow.functionalProcess,
+                rows: [clonedRow]
+            };
+        } else if (currentGroup) {
+            currentGroup.rows.push(clonedRow);
+        } else {
+            groups.push({
+                index: rowIndex,
+                processName: clonedRow.functionalProcess || '',
+                rows: [clonedRow],
+                orphan: true
+            });
+        }
+    });
+    if (currentGroup) groups.push(currentGroup);
+
+    return groups
+        .sort((a, b) => {
+            const aLevels = getGroupLevels(a.rows);
+            const bLevels = getGroupLevels(b.rows);
+            const headingCmp = compareHeadingTitle(aLevels.level1, bLevels.level1)
+                || compareHeadingTitle(aLevels.level2, bLevels.level2)
+                || compareHeadingTitle(aLevels.level3, bLevels.level3);
+            if (headingCmp !== 0) return headingCmp;
+            return a.index - b.index;
+        })
+        .flatMap(group => group.rows);
+}
+
+function orderSequenceDiagrams(sequenceDiagrams, tableData) {
+    if (!Array.isArray(sequenceDiagrams) || sequenceDiagrams.length <= 1) return sequenceDiagrams;
+    const processOrder = new Map();
+    for (const row of tableData) {
+        if (row.dataMovementType === 'E' && row.functionalProcess) {
+            const key = normalizeProcessName(row.functionalProcess);
+            if (key && !processOrder.has(key)) processOrder.set(key, processOrder.size);
+        }
+    }
+    const maxRank = Number.MAX_SAFE_INTEGER;
+    return [...sequenceDiagrams].sort((a, b) => {
+        const ar = processOrder.get(normalizeProcessName(a.processName)) ?? maxRank;
+        const br = processOrder.get(normalizeProcessName(b.processName)) ?? maxRank;
+        if (ar !== br) return ar - br;
+        return sequenceDiagrams.indexOf(a) - sequenceDiagrams.indexOf(b);
+    });
+}
+
 /**
  * 名称对齐：将AI输出的功能过程名映射回阶段1确认的标准名称
  * 解决AI在拆分时微调功能过程名称导致前端误去重、功能过程丢失
@@ -2282,11 +2376,14 @@ app.post('/api/export-excel', async (req, res) => {
             return res.status(400).json({ error: '没有可导出的数据' });
         }
 
+        const exportTableData = orderCosmicTableData(tableData);
+        const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
+
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('COSMIC拆分结果');
 
         // 检测是否有层级字段（level1/level2/level3）
-        const hasLevels = tableData.some(r => r.level1 || r.level2 || r.level3);
+        const hasLevels = exportTableData.some(r => r.level1 || r.level2 || r.level3);
 
         // 设置表头
         const headers = hasLevels
@@ -2342,8 +2439,8 @@ app.post('/api/export-excel', async (req, res) => {
         // 预处理：让没有层级的行继承所属功能过程的层级
         // 构建每个功能过程的层级映射
         let inheritL1 = '', inheritL2 = '', inheritL3 = '';
-        for (let i = 0; i < tableData.length; i++) {
-            const row = tableData[i];
+        for (let i = 0; i < exportTableData.length; i++) {
+            const row = exportTableData[i];
             if (row.dataMovementType === 'E' && row.functionalProcess) {
                 // E行：如果本行有层级就用本行的，否则继承上一个有层级的功能过程
                 if (row.level1 || row.level2 || row.level3) {
@@ -2374,7 +2471,7 @@ app.post('/api/export-excel', async (req, res) => {
         let prevL2 = '';
         let prevL3 = '';
 
-        tableData.forEach((row) => {
+        exportTableData.forEach((row) => {
             const funcUser = row.functionalUser || currentFuncUser;
             const trigger = row.triggerEvent || currentTrigger;
             const process = row.functionalProcess || '';
@@ -2457,8 +2554,8 @@ app.post('/api/export-excel', async (req, res) => {
         worksheet.views = [{ state: 'frozen', ySplit: 1 }];
 
         // ═══════════ 时序图工作表（如有） ═══════════
-        if (sequenceDiagrams && sequenceDiagrams.length > 0) {
-            console.log(`📊 正在嵌入 ${sequenceDiagrams.length} 张时序图到Excel...`);
+        if (orderedSequenceDiagrams && orderedSequenceDiagrams.length > 0) {
+            console.log(`📊 正在嵌入 ${orderedSequenceDiagrams.length} 张时序图到Excel...`);
             const ws2 = workbook.addWorksheet('功能时序图');
 
             // 设置列宽（图片要跨越多列，给足宽度）
@@ -2484,7 +2581,7 @@ app.post('/api/export-excel', async (req, res) => {
             titleRow.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
             titleRow.height = 36;
 
-            const subtitleRow = ws2.addRow(['', `共 ${sequenceDiagrams.length} 个功能过程`, '', '', '', '', '', '', '', '', '', '']);
+            const subtitleRow = ws2.addRow(['', `共 ${orderedSequenceDiagrams.length} 个功能过程`, '', '', '', '', '', '', '', '', '', '']);
             ws2.mergeCells(`B${subtitleRow.number}:L${subtitleRow.number}`);
             subtitleRow.getCell(2).font = { size: 11, color: { argb: 'FF636E72' } };
             subtitleRow.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
@@ -2496,7 +2593,7 @@ app.post('/api/export-excel', async (req, res) => {
             // 构建功能过程 → 统计信息映射
             const processStats = {};
             let curProc = '';
-            tableData.forEach(row => {
+            exportTableData.forEach(row => {
                 if (row.functionalProcess) curProc = row.functionalProcess;
                 if (!processStats[curProc]) processStats[curProc] = { E: 0, R: 0, W: 0, X: 0, total: 0 };
                 if (row.dataMovementType) {
@@ -2506,8 +2603,8 @@ app.post('/api/export-excel', async (req, res) => {
             });
 
             // 逐个插入时序图
-            for (let i = 0; i < sequenceDiagrams.length; i++) {
-                const diag = sequenceDiagrams[i];
+            for (let i = 0; i < orderedSequenceDiagrams.length; i++) {
+                const diag = orderedSequenceDiagrams[i];
                 const currentRow = ws2.rowCount + 1;
 
                 // ── 功能过程标题行 ──
@@ -2562,7 +2659,7 @@ app.post('/api/export-excel', async (req, res) => {
                         br: { col: 11, row: imgStartRow + rowsNeeded - 1 },
                     });
 
-                    console.log(`  ✅ 时序图 ${i + 1}/${sequenceDiagrams.length}: ${cleanName} (${rowsNeeded} 行)`);
+                    console.log(`  ✅ 时序图 ${i + 1}/${orderedSequenceDiagrams.length}: ${cleanName} (${rowsNeeded} 行)`);
                 } catch (imgErr) {
                     console.warn(`  ⚠️ 时序图 ${i + 1} 嵌入失败:`, imgErr.message);
                     const errR = ws2.addRow(['', `⚠️ 时序图嵌入失败: ${imgErr.message}`, '', '', '', '', '', '', '', '', '', '']);
@@ -2601,7 +2698,10 @@ app.post('/api/export-word', async (req, res) => {
             return res.status(400).json({ error: '没有可导出的数据' });
         }
 
-        console.log(`📝 开始生成Word文档，共 ${tableData.length} 行数据...`);
+        const exportTableData = orderCosmicTableData(tableData);
+        const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
+
+        console.log(`📝 开始生成Word文档，共 ${exportTableData.length} 行数据...`);
 
         // ── 1. 将 tableData 按功能过程分组 ──
         const functionGroups = [];
@@ -2609,7 +2709,7 @@ app.post('/api/export-word', async (req, res) => {
         let currentFuncUser = '';
         let currentTrigger = '';
 
-        for (const row of tableData) {
+        for (const row of exportTableData) {
             if (row.dataMovementType === 'E' && row.functionalProcess) {
                 if (row.functionalUser) currentFuncUser = row.functionalUser;
                 if (row.triggerEvent) currentTrigger = row.triggerEvent;
@@ -2638,8 +2738,8 @@ app.post('/api/export-word', async (req, res) => {
 
         // ── 3. 构建时序图映射 ──
         const diagramMap = new Map();
-        if (sequenceDiagrams && sequenceDiagrams.length > 0) {
-            for (const diag of sequenceDiagrams) {
+        if (orderedSequenceDiagrams && orderedSequenceDiagrams.length > 0) {
+            for (const diag of orderedSequenceDiagrams) {
                 if (diag.processName) {
                     diagramMap.set(diag.processName, diag);
                 }
@@ -2662,8 +2762,8 @@ app.post('/api/export-word', async (req, res) => {
         );
 
         // 副标题
-        const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
-        const totalCfp = tableData.length;
+        const uniqueFuncs = [...new Set(exportTableData.map(r => r.functionalProcess).filter(Boolean))];
+        const totalCfp = exportTableData.length;
         docChildren.push(
             new Paragraph({
                 children: [new TextRun({
@@ -2676,10 +2776,10 @@ app.post('/api/export-word', async (req, res) => {
         );
 
         // ERWX 统计概览
-        const eCount = tableData.filter(r => r.dataMovementType === 'E').length;
-        const rCount = tableData.filter(r => r.dataMovementType === 'R').length;
-        const wCount = tableData.filter(r => r.dataMovementType === 'W').length;
-        const xCount = tableData.filter(r => r.dataMovementType === 'X').length;
+        const eCount = exportTableData.filter(r => r.dataMovementType === 'E').length;
+        const rCount = exportTableData.filter(r => r.dataMovementType === 'R').length;
+        const wCount = exportTableData.filter(r => r.dataMovementType === 'W').length;
+        const xCount = exportTableData.filter(r => r.dataMovementType === 'X').length;
         docChildren.push(
             new Paragraph({
                 children: [new TextRun({
