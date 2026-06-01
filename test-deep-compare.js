@@ -1,5 +1,5 @@
 /**
- * 多文档深度对比测试：心流平台 vs 火山引擎
+ * 多文档深度对比测试：OpenRouter DeepSeek V4 Flash (free) vs 火山引擎
  * 
  * 测试目的：
  * 1. 用4个不同领域/复杂度的文档测试
@@ -17,11 +17,11 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const PLATFORMS = {
     iflow: {
-        name: '心流平台 (iflow)',
-        short: '心流',
-        apiKey: process.env.IFLOW_API_KEY,
-        baseURL: process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1',
-        model: 'deepseek-v3'
+        name: 'OpenRouter DeepSeek V4 Flash (free)',
+        short: 'OpenRouter',
+        apiKey: process.env.OPENROUTER_API_KEY || process.env.IFLOW_API_KEY,
+        baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+        model: process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free'
     },
     volcengine: {
         name: '火山引擎 (volcengine)',
@@ -314,14 +314,14 @@ async function main() {
     const docNames = Object.keys(TEST_DOCS);
 
     log(hr());
-    log('   COSMIC 拆分 - 心流 vs 火山引擎 多文档对比测试');
+    log('   COSMIC 拆分 - OpenRouter vs 火山引擎 多文档对比测试');
     log(hr());
     log();
     log(`📄 测试文档: ${docNames.length} 个 (${docNames.join('、')})`);
     log(`🔄 每文档: ${ROUNDS} 轮 × 2平台 = ${ROUNDS * 2} 次调用`);
     log(`📊 总计: ${docNames.length * ROUNDS * 2} 次 AI 调用`);
     log(`🌡️ Temperature: 0 (最大化可复现性)`);
-    log(`📋 心流模型: ${PLATFORMS.iflow.model}`);
+    log(`📋 OpenRouter模型: ${PLATFORMS.iflow.model}`);
     log(`📋 火山模型: ${PLATFORMS.volcengine.model}`);
     log(`🕐 开始时间: ${new Date().toLocaleString()}`);
     log();
@@ -411,29 +411,29 @@ async function main() {
         const volcFuncs = docResults.volcengine[0]?.success ? extractFunctions(docResults.volcengine[0].content) : [];
 
         if (iflowFuncs.length > 0 && volcFuncs.length > 0) {
-            const diff = compareFuncLists(iflowFuncs, volcFuncs, '心流', '火山');
+            const diff = compareFuncLists(iflowFuncs, volcFuncs, 'OpenRouter', '火山');
             log();
-            log(`  跨平台对比(第1轮): 共同${diff.common.length}个, 仅心流${diff.only1.length}个, 仅火山${diff.only2.length}个`);
+            log(`  跨平台对比(第1轮): 共同${diff.common.length}个, 仅OpenRouter${diff.only1.length}个, 仅火山${diff.only2.length}个`);
 
             if (diff.only1.length > 0) {
-                log(`     仅心流: ${diff.only1.join('、')}`);
+                log(`     仅OpenRouter: ${diff.only1.join('、')}`);
             }
             if (diff.only2.length > 0) {
                 log(`     仅火山: ${diff.only2.join('、')}`);
             }
             if (diff.fuzzyMatches.length > 0) {
-                diff.fuzzyMatches.forEach(m => log(`     ≈ 心流「${m['心流']}」≈ 火山「${m['火山']}」`));
+                diff.fuzzyMatches.forEach(m => log(`     ≈ OpenRouter「${m['OpenRouter']}」≈ 火山「${m['火山']}」`));
             }
 
             // 触发类型
             const iTriggers = {}, vTriggers = {};
             iflowFuncs.forEach(f => { const t = f.trigger || '?'; iTriggers[t] = (iTriggers[t] || 0) + 1; });
             volcFuncs.forEach(f => { const t = f.trigger || '?'; vTriggers[t] = (vTriggers[t] || 0) + 1; });
-            log(`     触发分布 — 心流:${JSON.stringify(iTriggers)} 火山:${JSON.stringify(vTriggers)}`);
+            log(`     触发分布 — OpenRouter:${JSON.stringify(iTriggers)} 火山:${JSON.stringify(vTriggers)}`);
 
             // 列出所有功能过程
             log();
-            log(`  心流提取(${iflowFuncs.length}个):`);
+            log(`  OpenRouter提取(${iflowFuncs.length}个):`);
             iflowFuncs.forEach((f, i) => log(`     ${i + 1}. ${f.funcName} [${f.trigger || '?'}]`));
             log(`  火山提取(${volcFuncs.length}个):`);
             volcFuncs.forEach((f, i) => log(`     ${i + 1}. ${f.funcName} [${f.trigger || '?'}]`));
@@ -446,7 +446,7 @@ async function main() {
             const iAvg = Math.round(iTimes.reduce((s, t) => s + t, 0) / iTimes.length);
             const vAvg = Math.round(vTimes.reduce((s, t) => s + t, 0) / vTimes.length);
             log();
-            log(`  ⏱️ 响应: 心流 ${(iAvg / 1000).toFixed(1)}s | 火山 ${(vAvg / 1000).toFixed(1)}s | 火山快 ${(iAvg / vAvg).toFixed(1)}倍`);
+            log(`  ⏱️ 响应: OpenRouter ${(iAvg / 1000).toFixed(1)}s | 火山 ${(vAvg / 1000).toFixed(1)}s | 火山快 ${(iAvg / vAvg).toFixed(1)}倍`);
         }
 
         log();
@@ -457,7 +457,7 @@ async function main() {
             iflowFuncs,
             volcFuncs,
             diff: iflowFuncs.length > 0 && volcFuncs.length > 0
-                ? compareFuncLists(iflowFuncs, volcFuncs, '心流', '火山')
+                ? compareFuncLists(iflowFuncs, volcFuncs, 'OpenRouter', '火山')
                 : null,
             iflowAvgTime: iTimes.length > 0 ? Math.round(iTimes.reduce((s, t) => s + t, 0) / iTimes.length) : 0,
             volcAvgTime: vTimes.length > 0 ? Math.round(vTimes.reduce((s, t) => s + t, 0) / vTimes.length) : 0,
@@ -494,7 +494,7 @@ async function main() {
 
     // 汇总表格
     log('  ┌──────────┬──────┬──────┬──────┬──────┬──────────┬──────────┐');
-    log('  │ 文档      │ 字符 │心流数│火山数│共同数│仅心流    │仅火山    │');
+    log('  │ 文档      │ 字符 │OR数  │火山数│共同数│仅OR      │仅火山    │');
     log('  ├──────────┼──────┼──────┼──────┼──────┼──────────┼──────────┤');
 
     let totalCommon = 0, totalOnlyI = 0, totalOnlyV = 0;
@@ -521,7 +521,7 @@ async function main() {
     // 响应时间汇总
     log('  ⏱️ 响应时间汇总:');
     log('  ┌──────────┬──────────┬──────────┬──────────┐');
-    log('  │ 文档      │ 心流(s)  │ 火山(s)  │ 倍数     │');
+    log('  │ 文档      │ OR(s)    │ 火山(s)  │ 倍数     │');
     log('  ├──────────┼──────────┼──────────┼──────────┤');
 
     for (const docName of docNames) {
@@ -541,7 +541,7 @@ async function main() {
         const dr = allDocResults[docName];
         const iCons = new Set(dr.iflowConsistent).size === 1 ? '✅' : '⚠️';
         const vCons = new Set(dr.volcConsistent).size === 1 ? '✅' : '⚠️';
-        log(`     ${docName}: 心流${iCons}(${dr.iflowConsistent.join(',')}) 火山${vCons}(${dr.volcConsistent.join(',')})`);
+        log(`     ${docName}: OpenRouter${iCons}(${dr.iflowConsistent.join(',')}) 火山${vCons}(${dr.volcConsistent.join(',')})`);
     }
     log();
 
@@ -554,7 +554,7 @@ async function main() {
         : '0';
 
     log(`     跨平台第1轮完全匹配率: ${matchRate}% (${totalCommon}/${totalCommon + totalOnlyI + totalOnlyV})`);
-    log(`     仅心流额外提取: ${totalOnlyI}个`);
+    log(`     仅OpenRouter额外提取: ${totalOnlyI}个`);
     log(`     仅火山额外提取: ${totalOnlyV}个`);
     log();
 
@@ -563,7 +563,7 @@ async function main() {
     for (const docName of docNames) {
         const dr = allDocResults[docName];
         if (dr.diff) {
-            dr.diff.only1.forEach(n => allDiffItems.push({ doc: docName, platform: '心流', name: n }));
+            dr.diff.only1.forEach(n => allDiffItems.push({ doc: docName, platform: 'OpenRouter', name: n }));
             dr.diff.only2.forEach(n => allDiffItems.push({ doc: docName, platform: '火山', name: n }));
         }
     }
@@ -587,7 +587,7 @@ async function main() {
     if (allIflowTimes.length > 0 && allVolcTimes.length > 0) {
         const avgIflow = Math.round(allIflowTimes.reduce((s, t) => s + t, 0) / allIflowTimes.length);
         const avgVolc = Math.round(allVolcTimes.reduce((s, t) => s + t, 0) / allVolcTimes.length);
-        log(`     2. 平均速度: 心流 ${(avgIflow / 1000).toFixed(1)}s vs 火山 ${(avgVolc / 1000).toFixed(1)}s, 火山快 ${(avgIflow / avgVolc).toFixed(1)}倍`);
+        log(`     2. 平均速度: OpenRouter ${(avgIflow / 1000).toFixed(1)}s vs 火山 ${(avgVolc / 1000).toFixed(1)}s, 火山快 ${(avgIflow / avgVolc).toFixed(1)}倍`);
     }
 
     const allConsistent = docNames.every(n => {

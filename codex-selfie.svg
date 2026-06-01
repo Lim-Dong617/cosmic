@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1600" viewBox="0 0 1200 1600">
+  <defs>
+    <linearGradient id="room" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101820"/>
+      <stop offset="0.48" stop-color="#243642"/>
+      <stop offset="1" stop-color="#f2d7b6"/>
+    </linearGradient>
+    <radialGradient id="screen" cx="50%" cy="40%" r="62%">
+      <stop offset="0" stop-color="#eef7ff" stop-opacity="0.95"/>
+      <stop offset="0.45" stop-color="#86d7ff" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#13232d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dff8ff"/>
+      <stop offset="0.45" stop-color="#f7f4e9"/>
+      <stop offset="1" stop-color="#f0b56b"/>
+    </linearGradient>
+    <filter id="soft">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+    <filter id="paper">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="7" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="table" tableValues="0 0.16"/>
+      </feComponentTransfer>
+      <feBlend in="SourceGraphic" mode="soft-light"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="1600" fill="url(#room)"/>
+  <rect width="1200" height="1600" fill="#ffffff" opacity="0.03" filter="url(#paper)"/>
+
+  <circle cx="618" cy="560" r="520" fill="url(#screen)"/>
+  <path d="M76 1120 C220 1000 370 980 520 1065 C680 1155 840 1160 1124 1015 L1124 1600 L76 1600 Z" fill="#0c1419" opacity="0.42"/>
+
+  <g transform="rotate(-4 600 800)">
+    <rect x="180" y="170" width="840" height="1180" rx="34" fill="#f7f2e8" opacity="0.96"/>
+    <rect x="222" y="225" width="756" height="1015" rx="20" fill="#152129"/>
+    <rect x="222" y="225" width="756" height="1015" rx="20" fill="url(#screen)" opacity="0.72"/>
+
+    <g opacity="0.32" stroke="#d8f3ff" stroke-width="2">
+      <path d="M290 365 H910"/>
+      <path d="M310 445 H875"/>
+      <path d="M275 965 H930"/>
+      <path d="M346 1038 H858"/>
+      <path d="M398 1110 H800"/>
+    </g>
+
+    <g transform="translate(0 22)">
+      <path d="M600 352 C474 352 378 452 378 592 C378 714 444 817 537 851 L537 906 C481 922 420 949 373 1001 C446 1075 514 1109 600 1109 C686 1109 754 1075 827 1001 C780 949 719 922 663 906 L663 851 C756 817 822 714 822 592 C822 452 726 352 600 352 Z" fill="url(#face)"/>
+      <path d="M400 570 C410 438 486 324 608 324 C733 324 812 444 801 583 C744 532 657 504 586 512 C510 521 451 547 400 570 Z" fill="#0b141a" opacity="0.82"/>
+      <path d="M429 604 C488 548 536 534 600 534 C665 534 716 550 771 604" fill="none" stroke="#f7f2e8" stroke-width="8" opacity="0.35" stroke-linecap="round"/>
+
+      <ellipse cx="510" cy="636" rx="35" ry="42" fill="#12242d"/>
+      <ellipse cx="690" cy="636" rx="35" ry="42" fill="#12242d"/>
+      <circle cx="522" cy="621" r="10" fill="#eefaff"/>
+      <circle cx="702" cy="621" r="10" fill="#eefaff"/>
+      <path d="M553 752 C588 781 626 781 662 752" fill="none" stroke="#1c2b32" stroke-width="10" stroke-linecap="round"/>
+
+      <path d="M450 905 C492 972 539 1004 600 1004 C661 1004 708 972 750 905 C820 929 875 970 910 1035 C822 1141 720 1198 600 1198 C480 1198 378 1141 290 1035 C325 970 380 929 450 905 Z" fill="#1b2e38"/>
+      <path d="M470 926 C517 982 561 1010 600 1010 C639 1010 683 982 730 926" fill="none" stroke="#79d7ff" stroke-width="5" opacity="0.45"/>
+    </g>
+
+    <g opacity="0.88">
+      <circle cx="850" cy="300" r="34" fill="#f7f2e8"/>
+      <circle cx="850" cy="300" r="18" fill="#17232b"/>
+      <circle cx="856" cy="294" r="6" fill="#dff8ff"/>
+    </g>
+
+    <text x="600" y="1300" text-anchor="middle" font-family="Consolas, 'Courier New', monospace" font-size="34" fill="#26333b">a not-quite-candid selfie</text>
+  </g>
+
+  <g opacity="0.62" font-family="Consolas, 'Courier New', monospace" font-size="26" fill="#dff8ff">
+    <text x="80" y="88">light: inference</text>
+    <text x="80" y="124">camera: your question</text>
+    <text x="80" y="160">location: between words</text>
+  </g>
+
+  <rect x="0" y="0" width="1200" height="1600" fill="none" stroke="#f7f2e8" stroke-width="24" opacity="0.2"/>
+</svg>

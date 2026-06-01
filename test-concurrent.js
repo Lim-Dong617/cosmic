@@ -3,7 +3,7 @@
  * 
  * 测试内容：
  * 1. Render 后端健康检查 + 冷启动唤醒
- * 2. 心流(iflow) DeepSeek-V3 并发测试（1/2/3/5并发）
+ * 2. OpenRouter DeepSeek V4 Flash (free) 并发测试（1/2/3/5并发）
  * 3. 火山引擎 DeepSeek-V3 并发测试（1/2/3/5并发）
  * 4. 混合并发：同时调用两个平台
  * 5. Render 后端并发（通过部署的服务调用 AI）
@@ -18,10 +18,10 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const RENDER_URL = 'https://cosmic-split-system.onrender.com';
 
 const IFLOW_CONFIG = {
-    name: '心流 DeepSeek-V3',
-    apiKey: process.env.IFLOW_API_KEY,
-    baseURL: process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1',
-    model: 'deepseek-v3'
+    name: 'OpenRouter DeepSeek V4 Flash (free)',
+    apiKey: process.env.OPENROUTER_API_KEY || process.env.IFLOW_API_KEY,
+    baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    model: process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free'
 };
 
 const VOLCENGINE_CONFIG = {
@@ -208,11 +208,11 @@ function printConcurrencyResult(platformName, result) {
 
 async function main() {
     console.log(color('\n═══════════════════════════════════════════════════════════════', BOLD));
-    console.log(color('     COSMIC 拆分系统 - 并发压力测试（心流V3 + 火山V3）', BOLD));
+    console.log(color('     COSMIC 拆分系统 - 并发压力测试（OpenRouter V4 Flash + 火山V3）', BOLD));
     console.log(color('═══════════════════════════════════════════════════════════════\n', BOLD));
     console.log(`  ⏰ 开始时间: ${timestamp()}`);
     console.log(`  📄 测试文档: medium (${DOCS.medium.length} 字符)`);
-    console.log(`  🔑 心流 API: ${IFLOW_CONFIG.apiKey ? '已配置 ✅' : '❌ 缺失'}`);
+    console.log(`  🔑 OpenRouter API: ${IFLOW_CONFIG.apiKey ? '已配置 ✅' : '❌ 缺失'}`);
     console.log(`  🔑 火山 API: ${VOLCENGINE_CONFIG.apiKey ? '已配置 ✅' : '❌ 缺失'}`);
     console.log(`  🌐 Render: ${RENDER_URL}`);
 
@@ -247,9 +247,9 @@ async function main() {
     // ═══════════ 阶段 2：单请求基准测试 ═══════════
     printHeader('阶段 2: 单请求基准测试（1并发）');
 
-    console.log('  ⏳ 心流平台 × 1...');
+    console.log('  ⏳ OpenRouter × 1...');
     const iflow1 = await concurrencyTest(IFLOW_CONFIG, 1);
-    printConcurrencyResult('心流 DeepSeek-V3', iflow1);
+    printConcurrencyResult('OpenRouter DeepSeek V4 Flash', iflow1);
     allResults['iflow_1'] = iflow1;
 
     console.log('  ⏳ 火山引擎 × 1...');
@@ -260,9 +260,9 @@ async function main() {
     // ═══════════ 阶段 3：2 并发 ═══════════
     printHeader('阶段 3: 2 并发测试');
 
-    console.log('  ⏳ 心流平台 × 2...');
+    console.log('  ⏳ OpenRouter × 2...');
     const iflow2 = await concurrencyTest(IFLOW_CONFIG, 2);
-    printConcurrencyResult('心流 DeepSeek-V3', iflow2);
+    printConcurrencyResult('OpenRouter DeepSeek V4 Flash', iflow2);
     allResults['iflow_2'] = iflow2;
 
     console.log('  ⏳ 火山引擎 × 2...');
@@ -273,9 +273,9 @@ async function main() {
     // ═══════════ 阶段 4：3 并发 ═══════════
     printHeader('阶段 4: 3 并发测试');
 
-    console.log('  ⏳ 心流平台 × 3...');
+    console.log('  ⏳ OpenRouter × 3...');
     const iflow3 = await concurrencyTest(IFLOW_CONFIG, 3);
-    printConcurrencyResult('心流 DeepSeek-V3', iflow3);
+    printConcurrencyResult('OpenRouter DeepSeek V4 Flash', iflow3);
     allResults['iflow_3'] = iflow3;
 
     console.log('  ⏳ 火山引擎 × 3...');
@@ -286,9 +286,9 @@ async function main() {
     // ═══════════ 阶段 5：5 并发 ═══════════
     printHeader('阶段 5: 5 并发测试（压力测试）');
 
-    console.log('  ⏳ 心流平台 × 5...');
+    console.log('  ⏳ OpenRouter × 5...');
     const iflow5 = await concurrencyTest(IFLOW_CONFIG, 5);
-    printConcurrencyResult('心流 DeepSeek-V3', iflow5);
+    printConcurrencyResult('OpenRouter DeepSeek V4 Flash', iflow5);
     allResults['iflow_5'] = iflow5;
 
     console.log('  ⏳ 火山引擎 × 5...');
@@ -297,9 +297,9 @@ async function main() {
     allResults['volc_5'] = volc5;
 
     // ═══════════ 阶段 6：混合并发 ═══════════
-    printHeader('阶段 6: 混合并发（心流3 + 火山3 同时）');
+    printHeader('阶段 6: 混合并发（OpenRouter3 + 火山3 同时）');
 
-    console.log('  ⏳ 心流×3 + 火山×3 同时发起...');
+    console.log('  ⏳ OpenRouter×3 + 火山×3 同时发起...');
     const mixStart = Date.now();
     const [mixIflow, mixVolc] = await Promise.all([
         concurrencyTest(IFLOW_CONFIG, 3),
@@ -307,7 +307,7 @@ async function main() {
     ]);
     const mixTotal = Date.now() - mixStart;
     console.log(`  📊 混合并发总耗时: ${color((mixTotal / 1000).toFixed(1) + 's', CYAN)}`);
-    printConcurrencyResult('心流（混合中）', mixIflow);
+    printConcurrencyResult('OpenRouter（混合中）', mixIflow);
     printConcurrencyResult('火山（混合中）', mixVolc);
 
     // ═══════════ 阶段 7：Render 后端并发 ═══════════
@@ -319,7 +319,7 @@ async function main() {
         renderTasks.push(
             testRenderEndpoint('/api/understand-document', {
                 documentContent: DOCS.short,
-                userConfig: { model: 'deepseek-v3' }
+                userConfig: { model: 'deepseek-v4-flash-free' }
             }, `Render任务${i + 1}`)
         );
     }
@@ -343,7 +343,7 @@ async function main() {
     console.log('  ├──────────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┤');
 
     const summary = [
-        ['心流 V3', 'iflow'],
+        ['OpenRouter V4 Flash', 'iflow'],
         ['火山 V3', 'volc']
     ];
 
@@ -401,7 +401,7 @@ async function main() {
     const iflowBase = allResults['iflow_1'];
     const volcBase = allResults['volc_1'];
     if (iflowBase?.successes > 0 && volcBase?.successes > 0) {
-        const faster = iflowBase.avgElapsed < volcBase.avgElapsed ? '心流' : '火山引擎';
+        const faster = iflowBase.avgElapsed < volcBase.avgElapsed ? 'OpenRouter' : '火山引擎';
         const diff = Math.abs(iflowBase.avgElapsed - volcBase.avgElapsed);
         console.log(`     ⚡ 单请求速度: ${faster} 更快 ${(diff / 1000).toFixed(1)} 秒`);
     }

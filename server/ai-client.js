@@ -4,20 +4,28 @@
 
 const OpenAI = require('openai');
 
+const KRILL_MODEL_NAME = process.env.KRILL_MODEL || process.env.ANTHROPIC_MODEL || 'deepseek-v4-flash:free';
+const KRILL_BASE_URL = process.env.KRILL_BASE_URL || process.env.ANTHROPIC_BASE_URL || 'https://api-slb.krill-ai.com/coding';
+const DEFAULT_MODEL_ALIAS = 'deepseek-v4-flash-free';
+
 // 火山引擎模型名称
-const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-250324';
+const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-2-251201';
 
 // 模型映射表
 const MODEL_MAP = {
-    'deepseek-v3': 'deepseek-v3',               // → 心流平台 (iflow)
-    'deepseek-v3.2': 'deepseek-v3',              // → 心流平台 (iflow)
+    'deepseek-v4-flash-free': KRILL_MODEL_NAME,
+    'deepseek-v4-flash': KRILL_MODEL_NAME,
+    'deepseek-v4-flash:free': KRILL_MODEL_NAME,
+    'deepseek/deepseek-v4-flash:free': KRILL_MODEL_NAME,
+    'deepseek-v3': KRILL_MODEL_NAME,               // 兼容旧入口：改走 Krill V4 Flash
+    'deepseek-v3.2': KRILL_MODEL_NAME,             // 兼容旧入口：改走 Krill V4 Flash
     'deepseek-r1': 'deepseek-r1',              // 深度思考模式
     'deepseek-reasoner': 'deepseek-r1',         // 别名
     'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
     'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
     'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek-V3
     // 兼容旧版大写名称
-    'DeepSeek-V3-671B': 'deepseek-v3',             // → 心流平台 (iflow)
+    'DeepSeek-V3-671B': KRILL_MODEL_NAME,     // 兼容旧名称：改走 Krill V4 Flash
     'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'
 };
 
@@ -30,11 +38,14 @@ const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
 // 火山引擎平台模型列表
 const VOLCENGINE_MODELS = new Set([VOLCENGINE_MODEL_NAME]);
 
+// Krill平台模型列表（Anthropic/Claude Code 兼容）
+const KRILL_MODELS = new Set([KRILL_MODEL_NAME]);
+
 // 必须使用流式调用的模型（R1 思考链很长，流式更稳定）
 const STREAM_ONLY_MODELS = new Set(['deepseek-r1', 'DeepSeek-R1-0528-Qwen3-8B']);
 
 /**
- * 获取 OpenAI 兼容客户端（指向心流平台）
+ * 获取 OpenAI 兼容客户端
  */
 function createClient(apiKey, baseUrl, model) {
     // 根据模型选择对应平台的密钥和URL
@@ -67,6 +78,115 @@ function createClient(apiKey, baseUrl, model) {
     return new OpenAI({ apiKey: key, baseURL: url });
 }
 
+function isKrillModel(model) {
+    return model && KRILL_MODELS.has(model);
+}
+
+function normalizeAnthropicMessages(messages = []) {
+    const systemParts = [];
+    const chatMessages = [];
+
+    for (const message of messages) {
+        const role = message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user';
+        const content = typeof message.content === 'string'
+            ? message.content
+            : Array.isArray(message.content)
+                ? message.content.map(part => part.text || part.content || '').join('\n')
+                : String(message.content || '');
+
+        if (!content) continue;
+        if (role === 'system') {
+            systemParts.push(content);
+        } else {
+            chatMessages.push({ role, content });
+        }
+    }
+
+    if (!chatMessages.length) {
+        chatMessages.push({ role: 'user', content: '' });
+    }
+
+    return {
+        system: systemParts.join('\n\n') || undefined,
+        messages: chatMessages
+    };
+}
+
+function krillUrl(path) {
+    return `${KRILL_BASE_URL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+function extractAnthropicText(data) {
+    if (typeof data?.content === 'string') return data.content;
+    if (Array.isArray(data?.content)) {
+        return data.content
+            .map(part => part?.text || part?.content || '')
+            .filter(Boolean)
+            .join('');
+    }
+    return data?.completion || data?.message?.content || '';
+}
+
+async function callKrillAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey }) {
+    const key = apiKey || process.env.KRILL_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+    if (!key) {
+        throw new Error('缺少 KRILL_API_KEY / ANTHROPIC_AUTH_TOKEN');
+    }
+
+    const normalized = normalizeAnthropicMessages(messages);
+    const body = {
+        model: modelName,
+        messages: normalized.messages,
+        max_tokens,
+        temperature
+    };
+    if (normalized.system) body.system = normalized.system;
+
+    const response = await fetch(krillUrl('/v1/messages'), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${key}`,
+            'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify(body)
+    });
+
+    const raw = await response.text();
+    let data = null;
+    try {
+        data = raw ? JSON.parse(raw) : null;
+    } catch (error) {
+        throw new Error(`Krill响应不是JSON: ${raw.slice(0, 300)}`);
+    }
+
+    if (!response.ok) {
+        const message = data?.error?.message || data?.message || data?.msg || raw;
+        const error = new Error(`Krill API错误 [${response.status}]: ${message}`);
+        error.status = response.status;
+        throw error;
+    }
+
+    const content = extractAnthropicText(data);
+    if (stream && res) {
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        return null;
+    }
+
+    return {
+        choices: [{
+            message: { role: 'assistant', content },
+            finish_reason: data?.stop_reason || 'stop'
+        }],
+        model: data?.model || modelName,
+        usage: {
+            prompt_tokens: data?.usage?.input_tokens || 0,
+            completion_tokens: data?.usage?.output_tokens || 0,
+            total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0)
+        }
+    };
+}
+
 /**
  * 调用 AI Chat 接口
  * @param {Object} options - 调用选项
@@ -83,7 +203,7 @@ function createClient(apiKey, baseUrl, model) {
 async function callAI(options) {
     const {
         messages,
-        model = process.env.DEFAULT_MODEL || 'DeepSeek-V3-671B',
+        model = process.env.DEFAULT_MODEL || DEFAULT_MODEL_ALIAS,
         temperature = 0.3,
         max_tokens = 8000,
         stream = false,
@@ -93,8 +213,13 @@ async function callAI(options) {
     } = options;
 
     const modelName = MODEL_MAP[model] || model;
-    const client = createClient(apiKey, baseUrl, modelName);
     const isStreamOnly = STREAM_ONLY_MODELS.has(modelName);
+
+    if (isKrillModel(modelName)) {
+        return callKrillAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey });
+    }
+
+    const client = createClient(apiKey, baseUrl, modelName);
 
     if (stream && res) {
         // 流式调用（直接输出给客户端）
@@ -167,7 +292,7 @@ async function callAI(options) {
             stream: false
         });
 
-        // 验证API响应格式（心流平台可能返回200但body是错误信息）
+        // 验证API响应格式（部分兼容平台可能返回200但body是错误信息）
         if (completion && completion.status && completion.msg && !completion.choices) {
             throw new Error(`API错误 [${completion.status}]: ${completion.msg}（模型: ${modelName}）`);
         }
@@ -241,5 +366,8 @@ module.exports = {
     createClient,
     callAI,
     callAIWithRetry,
-    MODEL_MAP
+    MODEL_MAP,
+    KRILL_MODEL_NAME,
+    KRILL_BASE_URL,
+    DEFAULT_MODEL_ALIAS
 };

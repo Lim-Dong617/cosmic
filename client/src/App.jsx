@@ -324,9 +324,10 @@ function App({ user, token, onLogout }) {
     // 模型选择
     const [selectedModel, setSelectedModel] = useState(() => {
         if (typeof window !== 'undefined') {
-            return window.localStorage.getItem('selectedModel') || 'deepseek-v3';
+            const savedModel = window.localStorage.getItem('selectedModel');
+            return savedModel === 'deepseek-v3' ? 'deepseek-v4-flash-free' : (savedModel || 'deepseek-v4-flash-free');
         }
-        return 'deepseek-v3';
+        return 'deepseek-v4-flash-free';
     });
 
     // 目标功能过程数量
@@ -418,7 +419,13 @@ function App({ user, token, onLogout }) {
         setSelectedModel(model);
         try {
             await axios.post('/api/switch-model', { model });
-            const labels = { 'deepseek-v3': 'DeepSeek-V3', 'deepseek-r1': 'DeepSeek-R1 深度思考', 'qwen3-coder': 'Qwen3-Coder', 'gpt-5.1-codex-mini': '优先使用 V3' };
+            const labels = {
+                'deepseek-v4-flash-free': 'DeepSeek V4 Flash (free)',
+                'deepseek-v3': 'DeepSeek V4 Flash (free)',
+                'deepseek-r1': 'DeepSeek-R1 深度思考',
+                'qwen3-coder': 'Qwen3-Coder',
+                'gpt-5.1-codex-mini': '优先使用 V3'
+            };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
             showToast('切换模型失败');
@@ -444,12 +451,16 @@ function App({ user, token, onLogout }) {
                 provider: 'baishan'
             };
         }
-        const modelMap = { 'deepseek-v3': 'deepseek-v3', 'deepseek-r1': 'deepseek-r1' };
+        const modelMap = {
+            'deepseek-v4-flash-free': 'deepseek-v4-flash-free',
+            'deepseek-v3': 'deepseek-v4-flash-free',
+            'deepseek-r1': 'deepseek-r1'
+        };
         return {
             apiKey: null,
-            baseUrl: 'https://apis.iflow.cn/v1',
-            model: modelMap[selectedModel] || 'deepseek-v3',
-            provider: 'iflow'
+            baseUrl: null,
+            model: modelMap[selectedModel] || 'deepseek-v4-flash-free',
+            provider: selectedModel === 'deepseek-r1' ? 'iflow' : 'openrouter'
         };
     };
 
@@ -2778,13 +2789,13 @@ function App({ user, token, onLogout }) {
                         <div className="section-label">AI 模型</div>
                         <div className="model-selector">
                             <button
-                                className={`model-option ${selectedModel === 'deepseek-v3' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('deepseek-v3')}
+                                className={`model-option ${selectedModel === 'deepseek-v4-flash-free' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('deepseek-v4-flash-free')}
                             >
                                 <span className="model-option-dot" />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V3</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>671B · 通用推理</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek V4 Flash</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>OpenRouter · free</div>
                                 </div>
                             </button>
                             <button
@@ -2988,7 +2999,7 @@ function App({ user, token, onLogout }) {
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon blue"><Brain size={18} /></div>
                                             <h3>AI 深度拆分</h3>
-                                            <p>DeepSeek-V3 / Qwen3 双模型，精准ERWX拆分</p>
+                                            <p>DeepSeek V4 Flash / Qwen3 双模型，精准ERWX拆分</p>
                                         </div>
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon cyan"><BarChart3 size={18} /></div>

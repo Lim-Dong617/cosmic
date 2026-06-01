@@ -18,11 +18,13 @@ services:
         fromDatabase:
           name: cosmic-db
           property: connectionString
-      - key: IFLOW_API_KEY
+      - key: OPENROUTER_API_KEY
         sync: false
-      - key: IFLOW_BASE_URL
-        value: https://apis.iflow.cn/v1
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENROUTER_MODEL
+        value: deepseek-v4-flash:free
       - key: DEFAULT_MODEL
-        value: DeepSeek-V3-671B
+        value: deepseek-v4-flash-free
       - key: JWT_SECRET
         generateValue: true

@@ -13,7 +13,7 @@ const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 require('dotenv').config(); // also try CWD
 
-const { callAI, callAIWithRetry, MODEL_MAP } = require('./ai-client');
+const { callAI, callAIWithRetry, MODEL_MAP, DEFAULT_MODEL_ALIAS, KRILL_MODEL_NAME } = require('./ai-client');
 const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT, COSMIC_MODULE_RECOGNITION_PROMPT, COSMIC_QUANTITY_PRIORITY_PROMPT } = require('./prompts');
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
 const { authRouter } = require('./auth');
@@ -91,7 +91,8 @@ const handleMulterError = (err, req, res, next) => {
 };
 
 // 当前选择的模型
-let currentModel = process.env.DEFAULT_MODEL || 'DeepSeek-V3-671B';
+const configuredDefaultModel = process.env.DEFAULT_MODEL || DEFAULT_MODEL_ALIAS;
+let currentModel = MODEL_MAP[configuredDefaultModel] || configuredDefaultModel;
 
 // ═══════════════════════ 工具函数 ═══════════════════════
 
@@ -910,9 +911,11 @@ function buildFunctionListText(functions) {
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
-        hasApiKey: !!process.env.IFLOW_API_KEY,
+        hasApiKey: !!(process.env.KRILL_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
         currentModel: currentModel,
-        availableModels: Object.values(MODEL_MAP)
+        model: currentModel,
+        platform: currentModel === KRILL_MODEL_NAME ? 'Krill' : 'OpenAI-compatible',
+        availableModels: Array.from(new Set(Object.values(MODEL_MAP)))
     });
 });
 
@@ -4019,8 +4022,8 @@ if (process.env.NODE_ENV === 'production') {
 ╠══════════════════════════════════════════════════════════╣
 ║  🌐 服务地址: http://localhost:${PORT}                    ║
 ║  🤖 当前模型: ${currentModel.padEnd(40)}║
-║  📡 API平台: 心流开放平台 (iflow.cn)                    ║
-║  🔑 API密钥: ${process.env.IFLOW_API_KEY ? '已配置 ✅' : '未配置 ❌'}                               ║
+║  📡 API平台: Krill (api-slb.krill-ai.com)              ║
+║  🔑 API密钥: ${(process.env.KRILL_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) ? '已配置 ✅' : '未配置 ❌'}                               ║
 ║  🐘 数据库:  PostgreSQL (Render)                        ║
 ╚══════════════════════════════════════════════════════════╝
       `);

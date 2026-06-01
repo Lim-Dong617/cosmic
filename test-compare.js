@@ -1,5 +1,5 @@
 /**
- * 并发对比测试：心流平台 DeepSeek-V3 vs 火山引擎 DeepSeek-V3.2
+ * 并发对比测试：OpenRouter DeepSeek V4 Flash (free) vs 火山引擎 DeepSeek-V3.2
  * 用同一段文档 + 同一个 COSMIC 提示词，同时调用两个平台，对比结果
  */
 
@@ -10,10 +10,10 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 // ═══════════ 配置 ═══════════
 
 const IFLOW_CONFIG = {
-    name: '心流平台 DeepSeek-V3',
-    apiKey: process.env.IFLOW_API_KEY,
-    baseURL: process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1',
-    model: 'deepseek-v3'
+    name: 'OpenRouter DeepSeek V4 Flash (free)',
+    apiKey: process.env.OPENROUTER_API_KEY || process.env.IFLOW_API_KEY,
+    baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    model: process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free'
 };
 
 const VOLCENGINE_CONFIG = {
@@ -151,7 +151,7 @@ function extractFunctionNames(content) {
 
 async function main() {
     console.log('═══════════════════════════════════════════════════════');
-    console.log('  COSMIC 拆分 - 心流 vs 火山引擎 并发对比测试');
+    console.log('  COSMIC 拆分 - OpenRouter vs 火山引擎 并发对比测试');
     console.log('═══════════════════════════════════════════════════════');
     console.log();
     console.log(`📄 测试文档长度: ${TEST_DOCUMENT.length} 字符`);
@@ -160,7 +160,7 @@ async function main() {
 
     // 检查 API Key
     if (!IFLOW_CONFIG.apiKey) {
-        console.error('❌ 缺少 IFLOW_API_KEY');
+        console.error('❌ 缺少 OPENROUTER_API_KEY');
         return;
     }
     if (!VOLCENGINE_CONFIG.apiKey) {
@@ -194,7 +194,7 @@ async function main() {
 
     if (iflowResult.success && volcResult.success) {
         const speedDiff = ((iflowResult.elapsedMs - volcResult.elapsedMs) / 1000).toFixed(1);
-        const faster = iflowResult.elapsedMs < volcResult.elapsedMs ? '心流' : '火山';
+        const faster = iflowResult.elapsedMs < volcResult.elapsedMs ? 'OpenRouter' : '火山';
 
         table.push(
             ['功能过程数', String(iflowResult.funcCount), String(volcResult.funcCount)],
@@ -223,7 +223,7 @@ async function main() {
 
         console.log();
         console.log('──────────────────────────────────────────────────────');
-        console.log('  📋 心流平台提取的功能过程:');
+        console.log('  📋 OpenRouter 提取的功能过程:');
         iflowFuncs.forEach((f, i) => console.log(`     ${i + 1}. ${f}`));
 
         console.log();
@@ -242,7 +242,7 @@ async function main() {
             console.log('──────────────────────────────────────────────────────');
             console.log('  🔍 差异分析（仅一方提取到的功能）:');
             if (onlyIflow.length > 0) {
-                console.log(`     仅心流有 (${onlyIflow.length}个):`);
+                console.log(`     仅 OpenRouter 有 (${onlyIflow.length}个):`);
                 onlyIflow.forEach(f => console.log(`       + ${f}`));
             }
             if (onlyVolc.length > 0) {
@@ -254,7 +254,7 @@ async function main() {
         for (const row of table) {
             console.log(`  ${row[0].padEnd(18)} │ ${row[1].padEnd(25)} │ ${row[2]}`);
         }
-        if (!iflowResult.success) console.log(`\n  ❌ 心流错误: ${iflowResult.error}`);
+        if (!iflowResult.success) console.log(`\n  ❌ OpenRouter错误: ${iflowResult.error}`);
         if (!volcResult.success) console.log(`\n  ❌ 火山错误: ${volcResult.error}`);
     }
 

@@ -34,6 +34,21 @@ const CATEGORY_LABELS = {
     EQ: '外部查询',
 };
 
+const MAX_UPLOAD_MB = 300;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
+const initialAnalysisProgress = {
+    visible: false,
+    status: 'idle',
+    title: '',
+    phase: '',
+    percent: 0,
+    current: 0,
+    total: 0,
+    detail: '',
+    stats: ''
+};
+
 function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }) {
     // ═══════════ 状态管理 ═══════════
     const [messages, setMessages] = useState([]);
@@ -64,6 +79,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
     // 章节模式
     const [chapters, setChapters] = useState([]);
     const [showChapterView, setShowChapterView] = useState(false);
+    const [analysisProgress, setAnalysisProgress] = useState(initialAnalysisProgress);
 
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -79,6 +95,55 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
         if (externalShowToast) { externalShowToast(message); return; }
         setToastMessage(message);
         setTimeout(() => setToastMessage(''), 2500);
+    };
+
+    const updateAnalysisProgress = useCallback((patch) => {
+        setAnalysisProgress(prev => ({
+            ...prev,
+            visible: true,
+            status: patch.status || prev.status || 'running',
+            ...patch
+        }));
+    }, []);
+
+    const resetAnalysisProgress = useCallback(() => {
+        setAnalysisProgress(initialAnalysisProgress);
+    }, []);
+
+    const AnalysisProgressPanel = () => {
+        if (!analysisProgress.visible) return null;
+        const percent = Math.max(0, Math.min(100, Math.round(analysisProgress.percent || 0)));
+        const isDone = analysisProgress.status === 'done';
+        const isWaiting = analysisProgress.status === 'waiting';
+        const statusText = isDone ? 'Done' : isWaiting ? 'Waiting' : 'Running';
+
+        return (
+            <div className={`analysis-progress-panel ${isDone ? 'done' : isWaiting ? 'waiting' : ''}`}>
+                <div className="analysis-progress-head">
+                    <div className="analysis-progress-title">
+                        {isDone ? <CheckCircle size={16} /> : isWaiting ? <AlertCircle size={16} /> : <Loader2 size={16} className="spinner" />}
+                        <span>{analysisProgress.title || 'Analysis progress'}</span>
+                        <em>{statusText}</em>
+                    </div>
+                    <strong>{percent}%</strong>
+                </div>
+                <div className="analysis-progress-bar">
+                    <span style={{ width: `${percent}%` }} />
+                </div>
+                <div className="analysis-progress-meta">
+                    <div>
+                        <b>{analysisProgress.phase || 'Preparing'}</b>
+                        <p>{analysisProgress.detail || 'Preparing analysis task...'}</p>
+                    </div>
+                    {(analysisProgress.total > 0 || analysisProgress.stats) && (
+                        <div className="analysis-progress-count">
+                            {analysisProgress.total > 0 && <span>{analysisProgress.current}/{analysisProgress.total}</span>}
+                            {analysisProgress.stats && <small>{analysisProgress.stats}</small>}
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
     };
 
     // ═══════════ 文件处理 ═══════════
@@ -107,6 +172,10 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
             setErrorMessage(`不支持的文件格式: ${ext}，请上传 .docx, .txt 或 .md 文件`);
             return;
         }
+        if (file.size > MAX_UPLOAD_BYTES) {
+            setErrorMessage(`文件大小超过限制（最大${MAX_UPLOAD_MB}MB）`);
+            return;
+        }
 
         const formData = new FormData();
         formData.append('file', file);
@@ -116,6 +185,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
             setUploadProgress(0);
             const res = await axios.post('/api/parse-word', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
+                timeout: 300000,
                 onUploadProgress: (e) => setUploadProgress(Math.round((e.loaded * 100) / e.total))
             });
 
@@ -145,6 +215,15 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
         setIsLoading(true);
         setIsWaitingForAnalysis(false);
         setCurrentStep(1);
+        updateAnalysisProgress({
+            title: 'NESMA analysis',
+            phase: 'Module recognition',
+            percent: 10,
+            current: 1,
+            total: 4,
+            detail: 'Analyzing level 1/2/3 module structure...',
+            stats: `${documentContent.length.toLocaleString()} chars`
+        });
         setMessages([{ role: 'system', content: '🔬 **NESMA三级模块识别中...**\n正在分析文档的一级/二级/三级模块层级结构...' }]);
 
         let recognizedModules = null;
@@ -158,6 +237,14 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
             if (modRes.data.success && modRes.data.moduleData?.modules?.length > 0) {
                 recognizedModules = modRes.data.moduleData;
                 setModuleStructure(recognizedModules);
+                updateAnalysisProgress({
+                    phase: 'Module recognition complete',
+                    percent: 28,
+                    current: 1,
+                    total: 4,
+                    detail: `Found ${recognizedModules.modules.length} modules. Preparing chapter detection.`,
+                    stats: `${recognizedModules.modules.length} modules`
+                });
 
                 // ── 如果是数量优先模式，自动生成数量规划 ──
                 let generatedPlan = null;
@@ -215,10 +302,26 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
         }]);
 
         try {
+        updateAnalysisProgress({
+            phase: 'Chapter detection',
+            percent: 36,
+            current: 2,
+            total: 4,
+            detail: 'Splitting document into chapters.'
+        });
             const res = await axios.post('/api/split-chapters', { documentContent });
             if (res.data.success) {
                 const chapterList = res.data.chapters;
                 setChapters(chapterList);
+                updateAnalysisProgress({
+                    status: 'waiting',
+                    phase: 'Waiting for chapter confirmation',
+                    percent: 45,
+                    current: 2,
+                    total: 4,
+                    detail: `Found ${chapterList.length} chapters. Confirm the selection to start NESMA extraction.`,
+                    stats: `selected ${chapterList.filter(ch => ch.selected).length}/${chapterList.length}`
+                });
 
                 const chapterSummary = chapterList.map((ch, i) =>
                     `${ch.selected ? '☑' : '☐'} **${i + 1}.** ${ch.title} (${ch.charCount}字)`
@@ -262,6 +365,16 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
         setIsLoading(true);
         setCurrentStep(2);
         setNesmaTableData([]);
+        updateAnalysisProgress({
+            status: 'running',
+            title: 'NESMA extraction',
+            phase: 'Function point extraction',
+            percent: 50,
+            current: 0,
+            total: selectedChapters.length,
+            detail: 'Extracting function points from selected chapters.',
+            stats: '0 function points'
+        });
 
         let allTableData = [];
         let round = 1;
@@ -271,6 +384,14 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
             for (let i = 0; i < selectedChapters.length; i++) {
                 if (signal.aborted) return;
                 const chapter = selectedChapters[i];
+                updateAnalysisProgress({
+                    phase: 'Function point extraction',
+                    percent: 50 + Math.round((i / Math.max(selectedChapters.length, 1)) * 45),
+                    current: i + 1,
+                    total: selectedChapters.length,
+                    detail: `Analyzing chapter: ${chapter.title}`,
+                    stats: `${allTableData.length} function points`
+                });
 
                 setMessages(prev => {
                     const filtered = prev.filter(m => !m.content.startsWith('🔍'));
@@ -299,6 +420,14 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                     const newData = res.data.tableData.filter(r => !existingNames.has(r.funcName?.toLowerCase().trim()));
                     allTableData = [...allTableData, ...newData];
                     setNesmaTableData(allTableData);
+                    updateAnalysisProgress({
+                        phase: 'Function point extraction',
+                        percent: 50 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 45),
+                        current: i + 1,
+                        total: selectedChapters.length,
+                        detail: `Finished chapter: ${chapter.title}`,
+                        stats: `${allTableData.length} function points`
+                    });
                 }
 
                 // 章节间等待
@@ -311,10 +440,18 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                     } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
                 }
             }
-
             setCurrentStep(3);
+            updateAnalysisProgress({
+                status: 'done',
+                phase: 'Completed',
+                percent: 100,
+                current: selectedChapters.length,
+                total: selectedChapters.length,
+                detail: 'NESMA function point extraction completed.',
+                stats: `${allTableData.length} function points`
+            });
 
-            // 统计汇总
+            // ?? 统计汇总
             const catCounts = {};
             let totalFP = 0;
             allTableData.forEach(r => {
@@ -773,6 +910,7 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
                     ) : (
                         /* Messages */
                         <>
+                            <AnalysisProgressPanel />
                             {messages.map((msg, idx) => (
                                 <div key={idx} className={`message ${msg.role}`}>
                                     <div className="message-avatar">
