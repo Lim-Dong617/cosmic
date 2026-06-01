@@ -420,8 +420,8 @@ function App({ user, token, onLogout }) {
         try {
             await axios.post('/api/switch-model', { model });
             const labels = {
-                'deepseek-v4-flash-free': 'DeepSeek V4 Flash (free)',
-                'deepseek-v3': 'DeepSeek V4 Flash (free)',
+                'deepseek-v4-flash-free': 'DeepSeek V4 Flash (SenseNova)',
+                'deepseek-v3': 'DeepSeek V4 Flash (SenseNova)',
                 'deepseek-r1': 'DeepSeek-R1 深度思考',
                 'qwen3-coder': 'Qwen3-Coder',
                 'gpt-5.1-codex-mini': '优先使用 V3'
@@ -460,7 +460,7 @@ function App({ user, token, onLogout }) {
             apiKey: null,
             baseUrl: null,
             model: modelMap[selectedModel] || 'deepseek-v4-flash-free',
-            provider: selectedModel === 'deepseek-r1' ? 'iflow' : 'openrouter'
+            provider: selectedModel === 'deepseek-r1' ? 'iflow' : 'sensenova'
         };
     };
 
@@ -2795,7 +2795,7 @@ function App({ user, token, onLogout }) {
                                 <span className="model-option-dot" />
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek V4 Flash</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>OpenRouter · free</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>SenseNova</div>
                                 </div>
                             </button>
                             <button

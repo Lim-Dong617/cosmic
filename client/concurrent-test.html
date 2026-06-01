@@ -596,7 +596,7 @@
         <button class="btn btn-danger" id="stopBtn" onclick="stopAll()" style="display:none">⏹ 停止</button>
         <select id="modelSelect"
             style="padding:8px 12px;border-radius:8px;background:#1a1f3a;color:#a5b4fc;border:1px solid rgba(99,102,241,.25);font-size:13px;">
-            <option value="deepseek-v4-flash-free">DeepSeek V4 Flash (free)</option>
+            <option value="deepseek-v4-flash-free">DeepSeek V4 Flash (SenseNova)</option>
             <option value="qwen3-coder-plus">Qwen3-Coder-Plus</option>
         </select>
         <label style="font-size:12px;color:#64748b;display:flex;align-items:center;gap:6px;">
@@ -745,7 +745,7 @@
         async function runOneChannel(ch, signal) {
             const target = parseInt(document.getElementById('targetCount').value) || 30;
             const model = document.getElementById('modelSelect').value;
-            const userConfig = { model, baseUrl: null, provider: model === 'deepseek-r1' ? 'iflow' : 'openrouter' };
+            const userConfig = { model, baseUrl: null, provider: model === 'deepseek-r1' ? 'iflow' : 'sensenova' };
             let allTableData = []; let round = 1; const maxRounds = 10; const startTime = Date.now();
 
             setStatus(ch, 'running', '分析中...');

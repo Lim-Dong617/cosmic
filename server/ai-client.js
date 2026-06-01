@@ -4,6 +4,8 @@
 
 const OpenAI = require('openai');
 
+const SENSENOVA_MODEL_NAME = process.env.SENSENOVA_MODEL || 'deepseek-v4-flash';
+const SENSENOVA_BASE_URL = process.env.SENSENOVA_BASE_URL || 'https://token.sensenova.cn/v1';
 const KRILL_MODEL_NAME = process.env.KRILL_MODEL || process.env.ANTHROPIC_MODEL || 'deepseek-v4-flash:free';
 const KRILL_BASE_URL = process.env.KRILL_BASE_URL || process.env.ANTHROPIC_BASE_URL || 'https://api-slb.krill-ai.com/coding';
 const DEFAULT_MODEL_ALIAS = 'deepseek-v4-flash-free';
@@ -13,19 +15,19 @@ const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-2-251
 
 // 模型映射表
 const MODEL_MAP = {
-    'deepseek-v4-flash-free': KRILL_MODEL_NAME,
-    'deepseek-v4-flash': KRILL_MODEL_NAME,
-    'deepseek-v4-flash:free': KRILL_MODEL_NAME,
-    'deepseek/deepseek-v4-flash:free': KRILL_MODEL_NAME,
-    'deepseek-v3': KRILL_MODEL_NAME,               // 兼容旧入口：改走 Krill V4 Flash
-    'deepseek-v3.2': KRILL_MODEL_NAME,             // 兼容旧入口：改走 Krill V4 Flash
+    'deepseek-v4-flash-free': SENSENOVA_MODEL_NAME,
+    'deepseek-v4-flash': SENSENOVA_MODEL_NAME,
+    'deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
+    'deepseek/deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
+    'deepseek-v3': SENSENOVA_MODEL_NAME,               // 兼容旧入口：改走 SenseNova V4 Flash
+    'deepseek-v3.2': SENSENOVA_MODEL_NAME,             // 兼容旧入口：改走 SenseNova V4 Flash
     'deepseek-r1': 'deepseek-r1',              // 深度思考模式
     'deepseek-reasoner': 'deepseek-r1',         // 别名
     'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
     'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
     'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek-V3
     // 兼容旧版大写名称
-    'DeepSeek-V3-671B': KRILL_MODEL_NAME,     // 兼容旧名称：改走 Krill V4 Flash
+    'DeepSeek-V3-671B': SENSENOVA_MODEL_NAME,     // 兼容旧名称：改走 SenseNova V4 Flash
     'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'
 };
 
@@ -37,6 +39,9 @@ const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
 
 // 火山引擎平台模型列表
 const VOLCENGINE_MODELS = new Set([VOLCENGINE_MODEL_NAME]);
+
+// SenseNova平台模型列表（OpenAI兼容）
+const SENSENOVA_MODELS = new Set([SENSENOVA_MODEL_NAME]);
 
 // Krill平台模型列表（Anthropic/Claude Code 兼容）
 const KRILL_MODELS = new Set([KRILL_MODEL_NAME]);
@@ -52,9 +57,12 @@ function createClient(apiKey, baseUrl, model) {
     const isGptModel = model && GPT_MODELS.has(model);
     const isBaishanModel = model && BAISHAN_MODELS.has(model);
     const isVolcengineModel = model && VOLCENGINE_MODELS.has(model);
+    const isSensenovaModel = model && SENSENOVA_MODELS.has(model);
     let key, url;
     if (apiKey) {
         key = apiKey;
+    } else if (isSensenovaModel) {
+        key = process.env.SENSENOVA_API_KEY;
     } else if (isVolcengineModel) {
         key = process.env.VOLCENGINE_API_KEY;
     } else if (isGptModel) {
@@ -66,6 +74,8 @@ function createClient(apiKey, baseUrl, model) {
     }
     if (baseUrl) {
         url = baseUrl;
+    } else if (isSensenovaModel) {
+        url = SENSENOVA_BASE_URL;
     } else if (isVolcengineModel) {
         url = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
     } else if (isGptModel) {
@@ -367,6 +377,8 @@ module.exports = {
     callAI,
     callAIWithRetry,
     MODEL_MAP,
+    SENSENOVA_MODEL_NAME,
+    SENSENOVA_BASE_URL,
     KRILL_MODEL_NAME,
     KRILL_BASE_URL,
     DEFAULT_MODEL_ALIAS

@@ -10,10 +10,10 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 // ═══════════ 配置 ═══════════
 
 const IFLOW_CONFIG = {
-    name: 'OpenRouter DeepSeek V4 Flash (free)',
-    apiKey: process.env.OPENROUTER_API_KEY || process.env.IFLOW_API_KEY,
-    baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    model: process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free'
+    name: 'SenseNova DeepSeek V4 Flash',
+    apiKey: process.env.SENSENOVA_API_KEY || process.env.OPENROUTER_API_KEY || process.env.IFLOW_API_KEY,
+    baseURL: process.env.SENSENOVA_BASE_URL || 'https://token.sensenova.cn/v1',
+    model: process.env.SENSENOVA_MODEL || 'deepseek-v4-flash'
 };
 
 const VOLCENGINE_CONFIG = {

@@ -18,12 +18,12 @@ services:
         fromDatabase:
           name: cosmic-db
           property: connectionString
-      - key: OPENROUTER_API_KEY
+      - key: SENSENOVA_API_KEY
         sync: false
-      - key: OPENROUTER_BASE_URL
-        value: https://openrouter.ai/api/v1
-      - key: OPENROUTER_MODEL
-        value: deepseek-v4-flash:free
+      - key: SENSENOVA_BASE_URL
+        value: https://token.sensenova.cn/v1
+      - key: SENSENOVA_MODEL
+        value: deepseek-v4-flash
       - key: DEFAULT_MODEL
         value: deepseek-v4-flash-free
       - key: JWT_SECRET

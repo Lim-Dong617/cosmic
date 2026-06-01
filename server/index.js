@@ -13,7 +13,7 @@ const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 require('dotenv').config(); // also try CWD
 
-const { callAI, callAIWithRetry, MODEL_MAP, DEFAULT_MODEL_ALIAS, KRILL_MODEL_NAME } = require('./ai-client');
+const { callAI, callAIWithRetry, MODEL_MAP, DEFAULT_MODEL_ALIAS, SENSENOVA_MODEL_NAME } = require('./ai-client');
 const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT, COSMIC_MODULE_RECOGNITION_PROMPT, COSMIC_QUANTITY_PRIORITY_PROMPT } = require('./prompts');
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
 const { authRouter } = require('./auth');
@@ -911,10 +911,10 @@ function buildFunctionListText(functions) {
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
-        hasApiKey: !!(process.env.KRILL_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
+        hasApiKey: !!process.env.SENSENOVA_API_KEY,
         currentModel: currentModel,
         model: currentModel,
-        platform: currentModel === KRILL_MODEL_NAME ? 'Krill' : 'OpenAI-compatible',
+        platform: currentModel === SENSENOVA_MODEL_NAME ? 'SenseNova' : 'OpenAI-compatible',
         availableModels: Array.from(new Set(Object.values(MODEL_MAP)))
     });
 });
@@ -4022,8 +4022,8 @@ if (process.env.NODE_ENV === 'production') {
 ╠══════════════════════════════════════════════════════════╣
 ║  🌐 服务地址: http://localhost:${PORT}                    ║
 ║  🤖 当前模型: ${currentModel.padEnd(40)}║
-║  📡 API平台: Krill (api-slb.krill-ai.com)              ║
-║  🔑 API密钥: ${(process.env.KRILL_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) ? '已配置 ✅' : '未配置 ❌'}                               ║
+║  📡 API平台: SenseNova (api.sensenova.cn)              ║
+║  🔑 API密钥: ${process.env.SENSENOVA_API_KEY ? '已配置 ✅' : '未配置 ❌'}                               ║
 ║  🐘 数据库:  PostgreSQL (Render)                        ║
 ╚══════════════════════════════════════════════════════════╝
       `);
