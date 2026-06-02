@@ -14,7 +14,18 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 require('dotenv').config(); // also try CWD
 
 const { callAI, callAIWithRetry, MODEL_MAP, DEFAULT_MODEL_ALIAS, SENSENOVA_MODEL_NAME } = require('./ai-client');
-const { FUNCTION_EXTRACTION_PROMPT, COSMIC_SPLIT_PROMPT, DOCUMENT_UNDERSTANDING_PROMPT, COVERAGE_VERIFICATION_PROMPT, SUPPLEMENTARY_EXTRACTION_PROMPT, COSMIC_MODULE_RECOGNITION_PROMPT, COSMIC_QUANTITY_PRIORITY_PROMPT } = require('./prompts');
+const {
+    FUNCTION_EXTRACTION_PROMPT,
+    COSMIC_SPLIT_PROMPT,
+    DOCUMENT_UNDERSTANDING_PROMPT,
+    COVERAGE_VERIFICATION_PROMPT,
+    SUPPLEMENTARY_EXTRACTION_PROMPT,
+    COSMIC_MODULE_RECOGNITION_PROMPT,
+    COSMIC_QUANTITY_PRIORITY_PROMPT,
+    SENSENOVA_V4_FUNCTION_EXTRACTION_PROMPT,
+    SENSENOVA_V4_QUANTITY_PRIORITY_PROMPT,
+    SENSENOVA_V4_COSMIC_SPLIT_PROMPT
+} = require('./prompts');
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
 const { authRouter } = require('./auth');
 const { initDatabase } = require('./database');
@@ -104,6 +115,65 @@ function getModelName(userConfig) {
         return MODEL_MAP[userConfig.model] || userConfig.model;
     }
     return currentModel;
+}
+
+const SENSENOVA_V4_MODEL_ALIASES = new Set([
+    'deepseek-v4-flash-free',
+    'deepseek-v4-flash',
+    'deepseek-v4-flash:free',
+    'deepseek/deepseek-v4-flash:free'
+]);
+
+function isSenseNovaV4Model(modelName, requestedModel = null) {
+    if (requestedModel) {
+        return SENSENOVA_V4_MODEL_ALIASES.has(requestedModel);
+    }
+    return modelName === SENSENOVA_MODEL_NAME || modelName === 'deepseek-v4-flash';
+}
+
+function getFunctionExtractionPrompt(modelName, extractionMode, requestedModel = null) {
+    if (isSenseNovaV4Model(modelName, requestedModel)) {
+        return extractionMode === 'quantity'
+            ? SENSENOVA_V4_QUANTITY_PRIORITY_PROMPT
+            : SENSENOVA_V4_FUNCTION_EXTRACTION_PROMPT;
+    }
+    return extractionMode === 'quantity'
+        ? COSMIC_QUANTITY_PRIORITY_PROMPT
+        : FUNCTION_EXTRACTION_PROMPT;
+}
+
+function getCosmicSplitPrompt(modelName, requestedModel = null) {
+    return isSenseNovaV4Model(modelName, requestedModel)
+        ? SENSENOVA_V4_COSMIC_SPLIT_PROMPT
+        : COSMIC_SPLIT_PROMPT;
+}
+
+function dedupeFunctionsByName(functions = []) {
+    const seen = new Set();
+    const deduped = [];
+    for (const func of functions) {
+        const key = normalizeProcessName(func.functionName || '');
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(func);
+    }
+    return deduped;
+}
+
+function uniquifyFunctionNames(functions = []) {
+    const counts = new Map();
+    return functions.map(func => {
+        const name = (func.functionName || '').trim();
+        const key = normalizeProcessName(name);
+        if (!key) return func;
+        const next = (counts.get(key) || 0) + 1;
+        counts.set(key, next);
+        if (next === 1) return func;
+        return {
+            ...func,
+            functionName: `${name}（${next}）`
+        };
+    });
 }
 
 /**
@@ -284,6 +354,39 @@ function alignProcessNames(tableData, referenceNames) {
     return tableData;
 }
 
+function alignProcessNamesByOrder(tableData, referenceNames) {
+    if (!referenceNames || referenceNames.length === 0) return tableData;
+
+    // V4 安全检查：统计实际E行数量
+    const eRows = tableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess);
+
+    // 如果E行数量与参考名数量不匹配（AI跳过了某些功能过程），
+    // 回退到模糊匹配，避免顺序错位导致名称全部对齐错误
+    if (eRows.length !== referenceNames.length) {
+        console.warn(`⚠️ V4顺序对齐: E行数(${eRows.length}) ≠ 参考名数(${referenceNames.length})，回退模糊匹配`);
+        return alignProcessNames(tableData, referenceNames);
+    }
+
+    let refIndex = 0;
+    let alignCount = 0;
+    for (const row of tableData) {
+        if (row.dataMovementType !== 'E' || !row.functionalProcess) continue;
+        if (refIndex >= referenceNames.length) break;
+        const refName = referenceNames[refIndex++];
+        if (row.functionalProcess !== refName) {
+            console.log(`  🔗 V4顺序对齐: "${row.functionalProcess}" → "${refName}"`);
+            row.functionalProcess = refName;
+            alignCount++;
+        }
+    }
+
+    if (alignCount > 0) {
+        console.log(`🔗 V4顺序名称对齐: 共修正 ${alignCount} 个功能过程名称`);
+    }
+
+    return tableData;
+}
+
 /**
  * 解析Markdown表格
  * @param {string} markdown - AI输出的Markdown内容
@@ -295,7 +398,7 @@ function alignProcessNames(tableData, referenceNames) {
  * @param {string[]|null} referenceNames - 阶段1确认的标准功能过程名列表（用于名称对齐）
  * @param {{ level1?: string, level2?: string, level3?: string }|null} headingContext - 当前章节的层级上下文
  */
-function parseMarkdownTable(markdown, referenceNames = null, headingContext = null, functionLevelMap = null) {
+function parseMarkdownTable(markdown, referenceNames = null, headingContext = null, functionLevelMap = null, alignMode = 'fuzzy') {
     if (!markdown) return [];
 
     const tableData = [];
@@ -451,7 +554,11 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
 
     // 名称对齐：将AI输出的功能过程名映射回阶段1的标准名
     if (referenceNames && referenceNames.length > 0) {
-        alignProcessNames(tableData, referenceNames);
+        if (alignMode === 'sequential') {
+            alignProcessNamesByOrder(tableData, referenceNames);
+        } else {
+            alignProcessNames(tableData, referenceNames);
+        }
     }
 
     // V3.2 修复：检测并修复"孤立的 R/W/X 行组"（前面没有 E 行的情况）
@@ -1239,12 +1346,10 @@ app.post('/api/extract-functions', async (req, res) => {
         const modeLabel = extractionMode === 'quantity' ? '数量优先' : '精准';
         console.log(`📋 开始提取功能过程列表${chapterName ? '（' + chapterName + '）' : ''}（${modeLabel}模式）...`);
         const modelName = getModelName(userConfig);
+        const requestedModel = userConfig?.model || null;
 
-        // 根据extractionMode选择系统prompt
-        let activePrompt = FUNCTION_EXTRACTION_PROMPT;
-        if (extractionMode === 'quantity') {
-            activePrompt = COSMIC_QUANTITY_PRIORITY_PROMPT;
-        }
+        const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
+        const activePrompt = getFunctionExtractionPrompt(modelName, extractionMode, requestedModel);
 
         // 构建理解上下文（如果有文档理解结果）
         let understandingHint = '';
@@ -1375,6 +1480,9 @@ app.post('/api/extract-functions', async (req, res) => {
         if (extractionMode === 'quantity' && targetCount > 0) {
             userPrompt += `\n\n**再次确认：本章节只输出约 ${targetCount} 个功能过程。目标少则筛选精简，目标多则合理扩展。**`;
         }
+        if (isV4Flash) {
+            userPrompt += `\n\n【V4 Flash 专用校准】\n- 你必须优先避免重复和过细拆分。\n- 同一业务对象的配置、新增、修改、删除、查看列表，如果业务目的相同，应合并为一个维护/配置/查询功能过程。\n- 不要为了接近数量目标而重复输出近似功能过程；功能过程名称必须唯一。\n- 如果无法在不重复的前提下达到目标数量，允许低于目标。`;
+        }
 
         const completion = await callAIWithRetry({
             messages: [
@@ -1392,6 +1500,14 @@ app.post('/api/extract-functions', async (req, res) => {
         }
         let reply = completion.choices[0].message.content;
         let functions = extractFunctionsFromText(reply);
+        if (isV4Flash) {
+            const before = functions.length;
+            functions = uniquifyFunctionNames(functions);
+            if (functions.some((func, idx) => func.functionName !== extractFunctionsFromText(reply)[idx]?.functionName)) {
+                console.log(`🏷️ V4功能过程重名保留: ${before} 个候选，已为重名项追加序号`);
+                reply = buildFunctionListText(functions);
+            }
+        }
         if (extractionMode === 'quantity' && targetCount > 0) {
             const maxAllowed = Math.max(1, Math.ceil(targetCount * 1.05));
             if (functions.length > maxAllowed) {
@@ -1426,6 +1542,9 @@ app.post('/api/cosmic-split', async (req, res) => {
 
         console.log(`🔄 开始COSMIC拆分 (批次 ${batchIndex + 1}/${totalBatches})...`);
         const modelName = getModelName(userConfig);
+        const requestedModel = userConfig?.model || null;
+        const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
+        const activeSplitPrompt = getCosmicSplitPrompt(modelName, requestedModel);
 
         // 构建已完成的提示
         let userPrompt = '';
@@ -1457,7 +1576,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 
         const completion = await callAIWithRetry({
             messages: [
-                { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                { role: 'system', content: activeSplitPrompt },
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
@@ -1478,7 +1597,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
             try {
                 const continueCompletion = await callAIWithRetry({
                     messages: [
-                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'system', content: activeSplitPrompt },
                         { role: 'user', content: userPrompt },
                         { role: 'assistant', content: reply },
                         { role: 'user', content: '你的输出被截断了，请从上次中断的位置继续输出剩余的Markdown表格行。不要重复已输出的内容，直接续写表格。' }
@@ -1500,7 +1619,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
         const refFunctions = extractFunctionsFromText(functionList);
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
-        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
+        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, isV4Flash ? 'sequential' : 'fuzzy');
 
         // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
         const incompleteFuncs = [];
@@ -1610,6 +1729,68 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
             }
         }
 
+        // ═══ V4 专用：检测被AI跳过（未输出）的功能过程，自动补拆 ═══
+        if (isV4Flash && refNames.length > 0) {
+            const parsedProcessNamesNorm = new Set(
+                tableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
+                    .map(r => normalizeProcessName(r.functionalProcess))
+            );
+            const skippedProcesses = refNames.filter(name =>
+                !parsedProcessNamesNorm.has(normalizeProcessName(name))
+            );
+
+            if (skippedProcesses.length > 0) {
+                console.warn(`⚠️ V4检测: AI跳过了 ${skippedProcesses.length} 个功能过程，自动补拆: ${skippedProcesses.join('、')}`);
+
+                for (const funcName of skippedProcesses) {
+                    try {
+                        const v4RepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。\n\n要求：\n- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)\n- 只输出JSON数组，不要任何其他文字\n\n输出格式示例：\n[\n  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},\n  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},\n  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},\n  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}\n]\n\n现在请输出"${funcName}"的COSMIC拆分JSON：`;
+
+                        const v4Repair = await callAIWithRetry({
+                            messages: [{ role: 'user', content: v4RepairPrompt }],
+                            model: modelName,
+                            temperature: 0.3,
+                            max_tokens: 2000
+                        });
+
+                        if (v4Repair?.choices?.[0]?.message?.content) {
+                            const jsonMatch = v4Repair.choices[0].message.content.match(/\[[\s\S]*\]/);
+                            if (jsonMatch) {
+                                const parsed = JSON.parse(jsonMatch[0]);
+                                if (Array.isArray(parsed) && parsed.length >= 4 &&
+                                    parsed.some(r => r.dmt === 'E') && parsed.some(r => r.dmt === 'R') &&
+                                    parsed.some(r => r.dmt === 'W') && parsed.some(r => r.dmt === 'X')) {
+
+                                    const refFunc = refFunctions.find(f => normalizeProcessName(f.functionName) === normalizeProcessName(funcName));
+                                    const funcLevels = functionLevelMap?.[funcName] || {};
+
+                                    const repairData = parsed.map(item => ({
+                                        functionalUser: refFunc?.functionalUser || '',
+                                        triggerEvent: refFunc?.triggerEvent || '',
+                                        functionalProcess: item.dmt === 'E' ? funcName : '',
+                                        subProcessDesc: item.subProcess || '',
+                                        dataMovementType: item.dmt,
+                                        dataGroup: item.dataGroup || '待补充',
+                                        dataAttributes: item.dataAttributes || '待补充',
+                                        level1: funcLevels.level1 || headingContext?.level1 || '',
+                                        level2: funcLevels.level2 || headingContext?.level2 || '',
+                                        level3: funcLevels.level3 || headingContext?.level3 || ''
+                                    }));
+
+                                    tableData = [...tableData, ...repairData];
+                                    console.log(`  ✅ V4补拆跳过的 "${funcName}" 成功 (${repairData.length}行)`);
+                                } else {
+                                    console.warn(`  ⚠️ V4补拆 "${funcName}" JSON结构不完整`);
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.warn(`  ⚠️ V4补拆 "${funcName}" 失败: ${err.message}`);
+                    }
+                }
+            }
+        }
+
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
             success: true,
@@ -1647,6 +1828,9 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
 
         console.log(`🔄 COSMIC分段拆分 (批次 ${batchIndex + 1}/${totalBatches}): ${batchFunctions.length} 个功能过程...`);
         const modelName = getModelName(userConfig);
+        const requestedModel = userConfig?.model || null;
+        const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
+        const activeSplitPrompt = getCosmicSplitPrompt(modelName, requestedModel);
 
         // 将本批次功能过程组成文本
         const batchFunctionText = batchFunctions.join('\n\n');
@@ -1693,7 +1877,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
         const completion = await callAIWithRetry({
             messages: [
-                { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                { role: 'system', content: activeSplitPrompt },
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
@@ -1714,7 +1898,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             try {
                 const continueCompletion = await callAIWithRetry({
                     messages: [
-                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'system', content: activeSplitPrompt },
                         { role: 'user', content: userPrompt },
                         { role: 'assistant', content: reply },
                         { role: 'user', content: '你的输出被截断了，请从上次中断的位置继续输出剩余的Markdown表格行。不要重复已输出的内容，直接续写表格。' }
@@ -1738,7 +1922,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             return match ? match[1].trim() : null;
         }).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
-        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap);
+        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, isV4Flash ? 'sequential' : 'fuzzy');
 
         // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
         const incompleteFuncs = [];
@@ -1851,6 +2035,82 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                     }
                 } catch (singleErr) {
                     console.warn(`  ⚠️ "${funcName}" 补拆失败: ${singleErr.message}`);
+                }
+            }
+        }
+
+        // ═══ V4 专用：检测被AI跳过（未输出）的功能过程，自动补拆 ═══
+        if (isV4Flash && refNames.length > 0) {
+            const parsedProcessNamesNorm = new Set(
+                tableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
+                    .map(r => normalizeProcessName(r.functionalProcess))
+            );
+            const skippedProcesses = refNames.filter(name =>
+                !parsedProcessNamesNorm.has(normalizeProcessName(name))
+            );
+
+            if (skippedProcesses.length > 0) {
+                console.warn(`⚠️ V4检测 (批次${batchIndex + 1}): AI跳过了 ${skippedProcesses.length} 个功能过程，自动补拆: ${skippedProcesses.join('、')}`);
+
+                // 从batchFunctions文本中解析每个功能过程的触发事件和功能用户
+                const batchFuncInfoMap = {};
+                for (const text of batchFunctions) {
+                    const nameMatch = text.match(/##\s*功能过程[：:]\s*(.+)/);
+                    const triggerMatch = text.match(/##\s*触发事件[：:]\s*(.+)/);
+                    const userMatch = text.match(/##\s*功能用户[：:]\s*(.+)/);
+                    if (nameMatch) {
+                        batchFuncInfoMap[nameMatch[1].trim()] = {
+                            triggerEvent: triggerMatch ? triggerMatch[1].trim() : '',
+                            functionalUser: userMatch ? userMatch[1].trim() : ''
+                        };
+                    }
+                }
+
+                for (const funcName of skippedProcesses) {
+                    try {
+                        const v4RepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。\n\n要求：\n- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)\n- 只输出JSON数组，不要任何其他文字\n\n输出格式示例：\n[\n  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},\n  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},\n  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},\n  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}\n]\n\n现在请输出"${funcName}"的COSMIC拆分JSON：`;
+
+                        const v4Repair = await callAIWithRetry({
+                            messages: [{ role: 'user', content: v4RepairPrompt }],
+                            model: modelName,
+                            temperature: 0.3,
+                            max_tokens: 2000
+                        });
+
+                        if (v4Repair?.choices?.[0]?.message?.content) {
+                            const jsonMatch = v4Repair.choices[0].message.content.match(/\[[\s\S]*\]/);
+                            if (jsonMatch) {
+                                const parsed = JSON.parse(jsonMatch[0]);
+                                if (Array.isArray(parsed) && parsed.length >= 4 &&
+                                    parsed.some(r => r.dmt === 'E') && parsed.some(r => r.dmt === 'R') &&
+                                    parsed.some(r => r.dmt === 'W') && parsed.some(r => r.dmt === 'X')) {
+
+                                    const funcInfo = batchFuncInfoMap[funcName] || {};
+                                    const funcLevels = functionLevelMap?.[funcName] || {};
+
+                                    const repairData = parsed.map(item => ({
+                                        functionalUser: funcInfo.functionalUser || '',
+                                        triggerEvent: funcInfo.triggerEvent || '',
+                                        functionalProcess: item.dmt === 'E' ? funcName : '',
+                                        subProcessDesc: item.subProcess || '',
+                                        dataMovementType: item.dmt,
+                                        dataGroup: item.dataGroup || '待补充',
+                                        dataAttributes: item.dataAttributes || '待补充',
+                                        level1: funcLevels.level1 || headingContext?.level1 || '',
+                                        level2: funcLevels.level2 || headingContext?.level2 || '',
+                                        level3: funcLevels.level3 || headingContext?.level3 || ''
+                                    }));
+
+                                    tableData = [...tableData, ...repairData];
+                                    console.log(`  ✅ V4补拆跳过的 "${funcName}" 成功 (${repairData.length}行)`);
+                                } else {
+                                    console.warn(`  ⚠️ V4补拆 "${funcName}" JSON结构不完整`);
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.warn(`  ⚠️ V4补拆 "${funcName}" 失败: ${err.message}`);
+                    }
                 }
             }
         }
@@ -1997,10 +2257,11 @@ ${targetRequirement}
         }
 
         console.log(`📊 第 ${round} 轮分析，已完成 ${completedFunctions.length} 个功能过程...`);
+        const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null);
 
         const completion = await callAIWithRetry({
             messages: [
-                { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                { role: 'system', content: activeSplitPrompt },
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
@@ -2020,7 +2281,7 @@ ${targetRequirement}
             try {
                 const continueCompletion = await callAIWithRetry({
                     messages: [
-                        { role: 'system', content: COSMIC_SPLIT_PROMPT },
+                        { role: 'system', content: activeSplitPrompt },
                         { role: 'user', content: userPrompt },
                         { role: 'assistant', content: reply },
                         { role: 'user', content: '你的输出被截断了，请从上次中断的位置继续输出剩余的Markdown表格行。不要重复已输出的内容，直接续写表格。' }
@@ -2283,6 +2544,7 @@ app.post('/api/chat/stream', async (req, res) => {
     try {
         const { messages, documentContent, userGuidelines = '', userConfig = null, tableData = [], functionListText = '' } = req.body;
         const modelName = getModelName(userConfig);
+        const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null);
 
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
@@ -2290,7 +2552,7 @@ app.post('/api/chat/stream', async (req, res) => {
         res.setHeader('X-Accel-Buffering', 'no');
 
         const chatMessages = [
-            { role: 'system', content: COSMIC_SPLIT_PROMPT + `\n\n你现在处于对话模式。用户会对当前的COSMIC拆分结果提出整改意见和修改要求。请认真分析用户的反馈，基于当前拆分结果进行针对性的修改和优化。\n如果用户要求修改某些功能过程的拆分，请输出修改后的完整Markdown表格（只包含被修改的功能过程即可）。\n如果用户的问题不涉及具体修改，请给出专业的分析和建议。` }
+            { role: 'system', content: activeSplitPrompt + `\n\n你现在处于对话模式。用户会对当前的COSMIC拆分结果提出整改意见和修改要求。请认真分析用户的反馈，基于当前拆分结果进行针对性的修改和优化。\n如果用户要求修改某些功能过程的拆分，请输出修改后的完整Markdown表格（只包含被修改的功能过程即可）。\n如果用户的问题不涉及具体修改，请给出专业的分析和建议。` }
         ];
 
         // 构建当前分析上下文

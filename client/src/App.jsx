@@ -535,6 +535,29 @@ function App({ user, token, onLogout }) {
         return targets;
     }, []);
 
+    const buildQuantityPlanFromModules = useCallback((modules, total) => {
+        if (!Array.isArray(modules) || modules.length === 0) return [];
+        const targets = allocateQuantityTargets(modules, total);
+        return modules.map((m, index) => ({
+            level1: m.level1,
+            level2: m.level2,
+            level3: m.level3,
+            businessObjects: m.businessObjects || [],
+            triggerTypes: m.triggerTypes || [],
+            estimated: m.estimatedFunctions || m.estimated || 8,
+            target: targets[index] || 0
+        }));
+    }, [allocateQuantityTargets]);
+
+    const getModuleEstimateTotal = useCallback(() => {
+        if (!moduleStructure?.modules?.length) return 0;
+        const declaredTotal = Number(moduleStructure.totalEstimated) || 0;
+        const summedTotal = moduleStructure.modules.reduce((sum, m) => (
+            sum + (Number(m.estimatedFunctions || m.estimated) || 0)
+        ), 0);
+        return declaredTotal || summedTotal;
+    }, [moduleStructure]);
+
     const updateQuantityTotalTarget = useCallback((nextTotal) => {
         const safeTotal = Math.max(0, parseInt(nextTotal, 10) || 0);
         setTotalTargetCount(safeTotal);
@@ -544,6 +567,31 @@ function App({ user, token, onLogout }) {
             return prev.map((item, index) => ({ ...item, target: targets[index] || 0 }));
         });
     }, [allocateQuantityTargets]);
+
+    const switchToQuantityMode = useCallback((targetTotal = null, openPlan = false) => {
+        const estimateTotal = getModuleEstimateTotal();
+        const nextTotal = Math.max(0, parseInt(targetTotal ?? estimateTotal ?? totalTargetCount, 10) || 0);
+        setExtractionMode('quantity');
+        setTotalTargetCount(nextTotal);
+        if (moduleStructure?.modules?.length) {
+            setQuantityPlan(buildQuantityPlanFromModules(moduleStructure.modules, nextTotal));
+        }
+        if (openPlan) setShowQuantityPlan(true);
+        if (nextTotal > 0) showToast(`已切到数量优先，目标总数 ${nextTotal} 个`);
+    }, [buildQuantityPlanFromModules, getModuleEstimateTotal, moduleStructure, totalTargetCount]);
+
+    const prepareQuantityReExtraction = useCallback((targetTotal = null) => {
+        switchToQuantityMode(targetTotal, true);
+        setCurrentStep(2);
+    }, [switchToQuantityMode]);
+
+    const handleExtractionModeChange = useCallback((mode) => {
+        if (mode === 'quantity') {
+            switchToQuantityMode(null, false);
+        } else {
+            setExtractionMode('precise');
+        }
+    }, [switchToQuantityMode]);
 
     // ═══════════ 文件处理 ═══════════
     const handleDragEnter = useCallback((e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); }, []);
@@ -665,14 +713,19 @@ function App({ user, token, onLogout }) {
             : null;
 
         // 1. 按功能过程去重（跳过已存在的整个功能过程，但白名单内的不跳过）
+        const existingProcessRows = existing.filter(r => r.dataMovementType === 'E' && r.functionalProcess);
         const existingProcesses = new Set(
-            existing.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
-                .map(r => r.functionalProcess.toLowerCase().trim())
+            existingProcessRows.map(r => r.functionalProcess.toLowerCase().trim())
         );
         // 同时保留 normalize 版本，用于模糊比对
         const existingProcessesNorm = new Set(
-            existing.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
-                .map(r => normalizeProcName(r.functionalProcess))
+            existingProcessRows.map(r => normalizeProcName(r.functionalProcess))
+        );
+        const existingProcessNameByKey = new Map(
+            existingProcessRows.map(r => [r.functionalProcess.toLowerCase().trim(), r.functionalProcess])
+        );
+        const existingProcessNameByNorm = new Map(
+            existingProcessRows.map(r => [normalizeProcName(r.functionalProcess), r.functionalProcess])
         );
 
         const result = [];
@@ -690,13 +743,23 @@ function App({ user, token, onLogout }) {
                     skipCurrent = false;
                     existingProcesses.add(nameKey);
                     existingProcessesNorm.add(nameNorm);
+                    existingProcessNameByKey.set(nameKey, row.functionalProcess);
+                    existingProcessNameByNorm.set(nameNorm, row.functionalProcess);
                 } else if (existingProcesses.has(nameKey) || existingProcessesNorm.has(nameNorm)) {
                     // 精确重复 或 normalize 后重复，才跳过（防止 V3.2 微调名称被误跳）
+                    const matchedName = existingProcessNameByKey.get(nameKey) || existingProcessNameByNorm.get(nameNorm) || '';
+                    console.warn('[COSMIC dedup] skip duplicated functional process', {
+                        skipped: row.functionalProcess,
+                        matched: matchedName,
+                        normalized: nameNorm
+                    });
                     skipCurrent = true; continue;
                 } else {
                     skipCurrent = false;
                     existingProcesses.add(nameKey);
                     existingProcessesNorm.add(nameNorm);
+                    existingProcessNameByKey.set(nameKey, row.functionalProcess);
+                    existingProcessNameByNorm.set(nameNorm, row.functionalProcess);
                 }
             }
             if (!skipCurrent) result.push(row);
@@ -857,6 +920,18 @@ function App({ user, token, onLogout }) {
         }
 
         return result;
+    };
+
+    const findMissingSplitFunctions = (functions, rows) => {
+        const splitNames = new Set(
+            rows
+                .filter(r => r.dataMovementType === 'E' && r.functionalProcess)
+                .map(r => normalizeProcName(r.functionalProcess))
+        );
+
+        return functions
+            .filter(f => f?.selected !== false && f?.functionName)
+            .filter(f => !splitNames.has(normalizeProcName(f.functionName)));
     };
 
 
@@ -1186,13 +1261,23 @@ function App({ user, token, onLogout }) {
             const triggerSummary = Object.entries(triggerStats)
                 .map(([k, v]) => `${k}: ${v}个`)
                 .join(' | ');
+            const moduleEstimateTotal = getModuleEstimateTotal();
+            const hasLargeEstimateGap = extractionMode === 'precise'
+                && moduleEstimateTotal > 0
+                && leveledParsed.length > 0
+                && leveledParsed.length < Math.ceil(moduleEstimateTotal * 0.6);
+            const estimateGapNote = hasLargeEstimateGap
+                ? `\n\n### 数量差异说明\n\n模块脚手架粗估约 **${moduleEstimateTotal}** 个功能过程，这是按三级模块、业务对象和触发类型推算的可展开空间；当前精准模式实际提取 **${leveledParsed.length}** 个，是按 COSMIC 业务目的合并后的结果。若要按粗估规模展开，请使用下方 **按粗估数重提**。`
+                : '';
 
             setMessages(prev => {
                 const filtered = prev.filter(m => !m.content.startsWith('🔍'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `## 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${leveledParsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
-                    showFunctionListActions: true
+                    content: `## 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${leveledParsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}${estimateGapNote}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
+                    showFunctionListActions: true,
+                    showQuantityEstimateActions: hasLargeEstimateGap,
+                    estimateTarget: moduleEstimateTotal
                 }];
             });
         } catch (error) {
@@ -1590,6 +1675,7 @@ function App({ user, token, onLogout }) {
             }
 
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+            const missingSplitFunctions = findMissingSplitFunctions(activeFunctions, allTableData);
             let summaryContent = `**COSMIC分段拆分完成**\n\n`;
             summaryContent += `共 **${totalBatches}** 个批次，成功 **${completedBatches}** 个`;
             if (failedBatches.length > 0) {
@@ -1597,6 +1683,11 @@ function App({ user, token, onLogout }) {
             }
             summaryContent += `\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
             summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
+            if (missingSplitFunctions.length > 0) {
+                const missingList = missingSplitFunctions.map(f => `- ${f.functionName}`).join('\n');
+                summaryContent += `\n\n⚠️ **检测到 ${missingSplitFunctions.length} 个功能过程未完成COSMIC拆分**\n${missingList}\n\n建议点击**「重试失败批次」**或重新拆分缺失功能过程。`;
+                console.warn('[COSMIC coverage] missing functional processes after split', missingSplitFunctions.map(f => f.functionName));
+            }
             if (batchTimings.length > 0) {
                 const avgSeconds = batchTimings.reduce((sum, item) => sum + item.durationMs, 0) / batchTimings.length / 1000;
                 const slowest = batchTimings.reduce((max, item) => item.durationMs > max.durationMs ? item : max, batchTimings[0]);
@@ -1620,12 +1711,16 @@ function App({ user, token, onLogout }) {
             });
             setCurrentStep(0);
             updateAnalysisProgress({
-                status: failedBatches.length > 0 ? 'waiting' : 'done',
-                phase: failedBatches.length > 0 ? 'Partial completion' : 'Completed',
+                status: failedBatches.length > 0 || missingSplitFunctions.length > 0 ? 'waiting' : 'done',
+                phase: failedBatches.length > 0 || missingSplitFunctions.length > 0 ? 'Partial completion' : 'Completed',
                 percent: 100,
                 current: completedBatches,
                 total: totalBatches,
-                detail: failedBatches.length > 0 ? 'Some batches failed. You can retry failed batches.' : 'COSMIC split completed.',
+                detail: failedBatches.length > 0
+                    ? 'Some batches failed. You can retry failed batches.'
+                    : missingSplitFunctions.length > 0
+                        ? 'Some functions were not split. Check the missing list.'
+                        : 'COSMIC split completed.',
                 stats: `${uniqueFunctions.length} functions, ${allTableData.length} CFP`
             });
         } catch (error) {
@@ -1789,11 +1884,17 @@ function App({ user, token, onLogout }) {
 
             // 汇总
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
+            const missingSplitFunctions = findMissingSplitFunctions(extractedFunctions, allTableData);
             let summaryContent = completedRetry === totalRetry
                 ? `**失败批次全部重试成功**\n\n`
                 : `**失败批次重试完成**（${completedRetry}/${totalRetry} 成功）\n\n`;
             summaryContent += `当前合计：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
             summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
+            if (missingSplitFunctions.length > 0) {
+                const missingList = missingSplitFunctions.map(f => `- ${f.functionName}`).join('\n');
+                summaryContent += `\n\n⚠️ **仍有 ${missingSplitFunctions.length} 个功能过程未完成COSMIC拆分**\n${missingList}`;
+                console.warn('[COSMIC coverage] missing functional processes after retry', missingSplitFunctions.map(f => f.functionName));
+            }
 
             if (stillFailed.length > 0) {
                 summaryContent += `\n\n仍有 ${stillFailed.length} 个批次失败，可再次点击**「重试失败批次」**：\n`;
@@ -2842,8 +2943,17 @@ function App({ user, token, onLogout }) {
                                     <Layers size={13} /> 已识别模块脚手架
                                 </div>
                                 <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                                    {moduleStructure.modules.length} 个三级模块 · 预估 ~{moduleStructure.totalEstimated || '?'} 个功能过程
+                                    {moduleStructure.modules.length} 个三级模块 · 粗估参考 ~{getModuleEstimateTotal() || '?'} 个功能过程
                                 </div>
+                                {extractionMode === 'precise' && getModuleEstimateTotal() > 0 && (
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => switchToQuantityMode(getModuleEstimateTotal(), true)}
+                                        style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}
+                                    >
+                                        <BarChart3 size={13} /> 按粗估数转数量优先
+                                    </button>
+                                )}
                             </div>
                         )}
                         {extractionMode === 'quantity' && (
@@ -3089,6 +3199,11 @@ function App({ user, token, onLogout }) {
                                                         <button className="btn btn-primary btn-sm" onClick={openFunctionEditor}>
                                                             <Edit3 size={14} /> 查看/编辑功能列表
                                                         </button>
+                                                        {msg.showQuantityEstimateActions && (
+                                                            <button className="btn btn-secondary btn-sm" onClick={() => prepareQuantityReExtraction(msg.estimateTarget)} disabled={isLoading}>
+                                                                <BarChart3 size={14} /> 按粗估数重提
+                                                            </button>
+                                                        )}
                                                         <button className="btn btn-success btn-sm" onClick={startCosmicSplit} disabled={isLoading}>
                                                             <Sparkles size={14} /> 确认·开始COSMIC拆分
                                                         </button>
@@ -3127,8 +3242,8 @@ function App({ user, token, onLogout }) {
                                     {/* ── 提取模式切换行（借鉴NESMA） ── */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
                                         <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>提取模式：</span>
-                                        <button onClick={() => setExtractionMode('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--accent-violet)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Target size={12} /> 精准模式</button>
-                                        <button onClick={() => setExtractionMode('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><BarChart3 size={12} /> 数量优先</button>
+                                        <button onClick={() => handleExtractionModeChange('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--accent-violet)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Target size={12} /> 精准模式</button>
+                                        <button onClick={() => handleExtractionModeChange('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><BarChart3 size={12} /> 数量优先</button>
                                         {extractionMode === 'quantity' && (
                                             <>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>
@@ -3153,7 +3268,7 @@ function App({ user, token, onLogout }) {
                                             </>
                                         )}
                                         {extractionMode === 'precise' && (
-                                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>严格按文档内容提取，分类精准</span>
+                                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>按业务目的合并提取；模块预估仅作粗估参考</span>
                                         )}
                                     </div>
 
