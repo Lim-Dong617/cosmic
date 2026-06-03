@@ -1024,12 +1024,12 @@ function App({ user, token, onLogout }) {
 
         try {
             updateAnalysisProgress({
-            phase: 'Chapter detection',
-            percent: 32,
-            current: 2,
-            total: 5,
-            detail: 'Splitting the document into chapters and selecting likely functional sections.'
-        });
+                phase: 'Chapter detection',
+                percent: 32,
+                current: 2,
+                total: 5,
+                detail: 'Splitting the document into chapters and selecting likely functional sections.'
+            });
             const res = await axios.post('/api/split-chapters', { documentContent });
             if (res.data.success) {
                 const chapterList = res.data.chapters;
@@ -1446,136 +1446,136 @@ function App({ user, token, onLogout }) {
 
         try {
             if (COSMIC_BATCH_CONCURRENCY <= 1) {
-            for (let bi = 0; bi < totalBatches; bi++) {
-                if (signal.aborted) return;
+                for (let bi = 0; bi < totalBatches; bi++) {
+                    if (signal.aborted) return;
 
-                const batch = batches[bi];
-                const batchFuncNames = batch.functions.map(f => f.functionName).join('、');
-                updateAnalysisProgress({
-                    phase: 'Batch splitting',
-                    percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
-                    current: bi + 1,
-                    total: totalBatches,
-                    detail: `Processing batch ${bi + 1}: ${batch.functions.map(f => f.functionName).join(', ')}`,
-                    stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
-                });
-
-                // 更新进度
-                setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('**批次'));
-                    return [...filtered, {
-                        role: 'system',
-                        content: `**批次 ${bi + 1}/${totalBatches}** | 正在拆分：${batchFuncNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
-                    }];
-                });
-
-                try {
-                    // 构建每个功能过程的独立层级映射（修复：不再只取第一个功能的层级）
-                    const batchFunctionLevelMap = {};
-                    let batchHeadingCtx = null;
-                    batch.functions.forEach(f => {
-                        if (f.functionName) {
-                            const levels = getModuleLevels(f);
-                            if (levels.level1 || levels.level2 || levels.level3) {
-                                batchFunctionLevelMap[f.functionName] = levels;
-                                if (!batchHeadingCtx) {
-                                    batchHeadingCtx = { level1: levels.level1, level2: levels.level2, level3: levels.level3 };
-                                }
-                            }
-                        }
-                    });
-                    const res = await axios.post('/api/cosmic-split-batch', {
-                        batchFunctions: batch.texts,
-                        batchIndex: bi,
-                        totalBatches,
-                        documentContent: documentContent.substring(0, 6000),
-                        userGuidelines,
-                        previousResults: allTableData,
-                        userConfig: getUserConfig(),
-                        headingContext: batchHeadingCtx,
-                        functionLevelMap: Object.keys(batchFunctionLevelMap).length > 0 ? batchFunctionLevelMap : null
-                    }, { signal });
-
-                    if (res.data.success) {
-                        const newData = res.data.tableData || [];
-                        if (newData.length > 0) {
-                            // 白名单同时收录原始小写名 + normalize 名，与 deduplicateData 内的双重检测对齐
-                            const expectedNames = new Set([
-                                ...batch.functions.map(f => f.functionName.toLowerCase().trim()),
-                                ...batch.functions.map(f => normalizeProcName(f.functionName))
-                            ]);
-                            const deduped = deduplicateData(allTableData, newData, expectedNames);
-                            if (deduped.length > 0) {
-                                allTableData = orderCosmicTableData([...allTableData, ...deduped], activeFunctions, moduleStructure);
-                                setTableData(allTableData);
-                            }
-                        }
-                        completedBatches++;
-                        updateAnalysisProgress({
-                            phase: 'Batch splitting',
-                            percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
-                            current: completedBatches,
-                            total: totalBatches,
-                            detail: `Finished batch ${bi + 1}.`,
-                            stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
-                        });
-                    }
-                } catch (batchError) {
-                    if (batchError.name === 'AbortError' || batchError.name === 'CanceledError' || signal.aborted) return;
-
-                    const batchErrMsg = batchError.response?.data?.error || batchError.message;
-                    console.error(`批次 ${bi + 1} 失败:`, batchErrMsg);
-                    failedBatches.push({
-                        index: bi,
-                        names: batchFuncNames,
-                        error: batchErrMsg,
-                        functions: batch.functions,  // 保存完整的功能过程数据
-                        texts: batch.texts            // 保存拆分用文本
-                    });
+                    const batch = batches[bi];
+                    const batchFuncNames = batch.functions.map(f => f.functionName).join('、');
                     updateAnalysisProgress({
-                        phase: 'Batch skipped',
+                        phase: 'Batch splitting',
                         percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
                         current: bi + 1,
                         total: totalBatches,
-                        detail: `Batch ${bi + 1} failed and was skipped. Continuing remaining batches.`,
-                        stats: `${failedBatches.length} failed, ${allTableData.length} CFP`
+                        detail: `Processing batch ${bi + 1}: ${batch.functions.map(f => f.functionName).join(', ')}`,
+                        stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
                     });
 
-                    // 如果已有部分数据，继续下一批（容错）
-                    if (allTableData.length > 0) {
-                        setMessages(prev => {
-                            const filtered = prev.filter(m => !m.content.startsWith('**批次'));
-                            return [...filtered, {
-                                role: 'system',
-                                content: `**批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已跳过该批次，继续处理剩余批次...`
-                            }];
+                    // 更新进度
+                    setMessages(prev => {
+                        const filtered = prev.filter(m => !m.content.startsWith('**批次'));
+                        return [...filtered, {
+                            role: 'system',
+                            content: `**批次 ${bi + 1}/${totalBatches}** | 正在拆分：${batchFuncNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
+                        }];
+                    });
+
+                    try {
+                        // 构建每个功能过程的独立层级映射（修复：不再只取第一个功能的层级）
+                        const batchFunctionLevelMap = {};
+                        let batchHeadingCtx = null;
+                        batch.functions.forEach(f => {
+                            if (f.functionName) {
+                                const levels = getModuleLevels(f);
+                                if (levels.level1 || levels.level2 || levels.level3) {
+                                    batchFunctionLevelMap[f.functionName] = levels;
+                                    if (!batchHeadingCtx) {
+                                        batchHeadingCtx = { level1: levels.level1, level2: levels.level2, level3: levels.level3 };
+                                    }
+                                }
+                            }
                         });
-                        // 失败后等更久再尝试下一批
+                        const res = await axios.post('/api/cosmic-split-batch', {
+                            batchFunctions: batch.texts,
+                            batchIndex: bi,
+                            totalBatches,
+                            documentContent: documentContent.substring(0, 6000),
+                            userGuidelines,
+                            previousResults: allTableData,
+                            userConfig: getUserConfig(),
+                            headingContext: batchHeadingCtx,
+                            functionLevelMap: Object.keys(batchFunctionLevelMap).length > 0 ? batchFunctionLevelMap : null
+                        }, { signal });
+
+                        if (res.data.success) {
+                            const newData = res.data.tableData || [];
+                            if (newData.length > 0) {
+                                // 白名单同时收录原始小写名 + normalize 名，与 deduplicateData 内的双重检测对齐
+                                const expectedNames = new Set([
+                                    ...batch.functions.map(f => f.functionName.toLowerCase().trim()),
+                                    ...batch.functions.map(f => normalizeProcName(f.functionName))
+                                ]);
+                                const deduped = deduplicateData(allTableData, newData, expectedNames);
+                                if (deduped.length > 0) {
+                                    allTableData = orderCosmicTableData([...allTableData, ...deduped], activeFunctions, moduleStructure);
+                                    setTableData(allTableData);
+                                }
+                            }
+                            completedBatches++;
+                            updateAnalysisProgress({
+                                phase: 'Batch splitting',
+                                percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                                current: completedBatches,
+                                total: totalBatches,
+                                detail: `Finished batch ${bi + 1}.`,
+                                stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
+                            });
+                        }
+                    } catch (batchError) {
+                        if (batchError.name === 'AbortError' || batchError.name === 'CanceledError' || signal.aborted) return;
+
+                        const batchErrMsg = batchError.response?.data?.error || batchError.message;
+                        console.error(`批次 ${bi + 1} 失败:`, batchErrMsg);
+                        failedBatches.push({
+                            index: bi,
+                            names: batchFuncNames,
+                            error: batchErrMsg,
+                            functions: batch.functions,  // 保存完整的功能过程数据
+                            texts: batch.texts            // 保存拆分用文本
+                        });
+                        updateAnalysisProgress({
+                            phase: 'Batch skipped',
+                            percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
+                            current: bi + 1,
+                            total: totalBatches,
+                            detail: `Batch ${bi + 1} failed and was skipped. Continuing remaining batches.`,
+                            stats: `${failedBatches.length} failed, ${allTableData.length} CFP`
+                        });
+
+                        // 如果已有部分数据，继续下一批（容错）
+                        if (allTableData.length > 0) {
+                            setMessages(prev => {
+                                const filtered = prev.filter(m => !m.content.startsWith('**批次'));
+                                return [...filtered, {
+                                    role: 'system',
+                                    content: `**批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已跳过该批次，继续处理剩余批次...`
+                                }];
+                            });
+                            // 失败后等更久再尝试下一批
+                            try {
+                                await new Promise((resolve, reject) => {
+                                    const t = setTimeout(resolve, 8000);
+                                    signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                                });
+                            } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                            continue;
+                        } else {
+                            // 第一批就失败，抛出
+                            throw batchError;
+                        }
+                    }
+
+                    // 批次间等待，避免限流（DeepSeek平台限流严格，需要较长间隔）
+                    if (bi < totalBatches - 1) {
                         try {
                             await new Promise((resolve, reject) => {
-                                const t = setTimeout(resolve, 8000);
+                                const t = setTimeout(resolve, 5000);
                                 signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                             });
                         } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
-                        continue;
-                    } else {
-                        // 第一批就失败，抛出
-                        throw batchError;
                     }
                 }
 
-                // 批次间等待，避免限流（DeepSeek平台限流严格，需要较长间隔）
-                if (bi < totalBatches - 1) {
-                    try {
-                        await new Promise((resolve, reject) => {
-                            const t = setTimeout(resolve, 5000);
-                            signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
-                        });
-                    } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
-                }
-            }
-
-            // 最终汇总
+                // 最终汇总
             } else {
                 for (let windowStart = 0; windowStart < totalBatches; windowStart += COSMIC_BATCH_CONCURRENCY) {
                     if (signal.aborted) return;
@@ -2692,7 +2692,7 @@ function App({ user, token, onLogout }) {
                     } else {
                         setMessages(prev => [...prev, {
                             role: 'assistant',
-                        content: '补充的功能过程与已有数据重复，未产生新数据。'
+                            content: '补充的功能过程与已有数据重复，未产生新数据。'
                         }]);
                     }
                 } else {
@@ -2896,7 +2896,7 @@ function App({ user, token, onLogout }) {
                                 <span className="model-option-dot" />
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek V4 Flash</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>SenseNova</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}></div>
                                 </div>
                             </button>
                             <button
