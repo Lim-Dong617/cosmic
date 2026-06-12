@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { User, Lock, Eye, EyeOff, Sparkles, ArrowRight, UserPlus, LogIn } from 'lucide-react';
+import { User, Lock, Eye, EyeOff, ArrowRight, UserPlus, LogIn } from 'lucide-react';
 
 export default function LoginPage({ onLoginSuccess }) {
     const [isRegister, setIsRegister] = useState(false);
@@ -75,11 +75,7 @@ export default function LoginPage({ onLoginSuccess }) {
             <div className="login-container">
                 {/* 品牌区域 */}
                 <div className="login-brand">
-                    <div className="login-logo">
-                        <Sparkles size={32} />
-                    </div>
-                    <h1 className="login-title">COSMIC 智能分析系统</h1>
-                    <p className="login-subtitle">功能规模度量 · AI驱动 · 专业精准</p>
+                    <img className="login-logo" src="/cosmic-logo.png" alt="COSMIC 拆分系统" />
                 </div>
 
                 {/* 登录卡片 */}

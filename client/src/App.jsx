@@ -2827,9 +2827,9 @@ function App({ user, token, onLogout }) {
             <div className="sidebar">
                 <div className="sidebar-header">
                     <div className="sidebar-logo">
-                        <div className={`sidebar-logo-icon ${analysisMode === 'cosmic' ? 'cosmic-motion-logo-shell' : 'nesma-logo-icon'}`}>
+                        <div className={`sidebar-logo-icon ${analysisMode === 'cosmic' ? 'cosmic-brand-logo-shell' : 'nesma-logo-icon'}`}>
                             {analysisMode === 'cosmic' ? (
-                                <img className="cosmic-motion-logo cosmic-motion-logo-sidebar" src="/cosmic-logo-mark-motion.svg" alt="COSMIC" />
+                                <img className="cosmic-brand-logo cosmic-brand-logo-sidebar" src="/cosmic-logo-mark.png" alt="COSMIC" />
                             ) : (
                                 <BarChart3 size={22} />
                             )}
@@ -3094,7 +3094,7 @@ function App({ user, token, onLogout }) {
                                 /* Welcome Screen */
                                 <div className="welcome-screen">
                                     <div className="welcome-icon cosmic-welcome-logo">
-                                        <img className="cosmic-motion-logo cosmic-motion-logo-welcome" src="/cosmic-logo-mark-motion.svg" alt="COSMIC 智能拆分系统" />
+                                        <img className="cosmic-brand-logo cosmic-brand-logo-welcome" src="/cosmic-logo-mark.png" alt="COSMIC 智能拆分系统" />
                                     </div>
                                     <h1 className="welcome-title">COSMIC 智能拆分系统</h1>
                                     <p className="welcome-subtitle">

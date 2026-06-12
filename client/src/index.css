@@ -139,16 +139,16 @@ body {
     box-shadow: var(--shadow-glow);
 }
 
-.cosmic-motion-logo-shell {
+.cosmic-brand-logo-shell {
     width: 44px;
     height: 44px;
     padding: 0;
     overflow: hidden;
-    background: transparent;
+    background: #fff;
     box-shadow: 0 8px 20px rgba(13, 70, 97, 0.16);
 }
 
-.cosmic-motion-logo {
+.cosmic-brand-logo {
     display: block;
     width: 100%;
     height: 100%;
@@ -156,8 +156,8 @@ body {
     border-radius: inherit;
 }
 
-.cosmic-motion-logo-sidebar {
-    border-radius: 13px;
+.cosmic-brand-logo-sidebar {
+    border-radius: 10px;
 }
 
 .sidebar-logo h1 {
@@ -537,8 +537,8 @@ textarea.setting-input {
     box-shadow: 0 18px 44px rgba(13, 70, 97, 0.16);
 }
 
-.cosmic-motion-logo-welcome {
-    border-radius: 28px;
+.cosmic-brand-logo-welcome {
+    border-radius: 24px;
 }
 
 @keyframes float {
@@ -1901,15 +1901,12 @@ textarea.setting-input {
 }
 
 .login-logo {
-    width: 64px;
-    height: 64px;
-    border-radius: 20px;
-    background: linear-gradient(135deg, #6c5ce7, #3b82f6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    box-shadow: 0 8px 32px rgba(108, 92, 231, 0.35);
+    display: block;
+    width: 180px;
+    height: auto;
+    border-radius: 12px;
+    object-fit: contain;
+    box-shadow: 0 12px 36px rgba(10, 78, 119, 0.3);
     animation: float 3s ease-in-out infinite;
 }
 
