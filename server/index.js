@@ -2435,18 +2435,22 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
             previousResults = [],      // 之前批次已完成的结果（用于避免重复）
             userConfig = null,
             headingContext = null,     // 当前章节的层级上下文 {level1, level2, level3}（兼容旧版）
-            functionLevelMap = null    // 每个功能过程独立的层级映射 {funcName: {level1, level2, level3}}
+            functionLevelMap = null,   // 每个功能过程独立的层级映射 {funcName: {level1, level2, level3}}
+            generateDescription = true // 是否生成功能描述
         } = req.body;
 
         if (!batchFunctions || batchFunctions.length === 0) {
             return res.status(400).json({ error: '缺少本批次的功能过程列表' });
         }
 
-        console.log(`🔄 COSMIC分段拆分 (批次 ${batchIndex + 1}/${totalBatches}): ${batchFunctions.length} 个功能过程...`);
+        console.log(`🔄 COSMIC分段拆分 (批次 ${batchIndex + 1}/${totalBatches}): ${batchFunctions.length} 个功能过程...${generateDescription ? ' [含功能描述]' : ' [不含功能描述]'}`);
         const modelName = getModelName(userConfig);
         const requestedModel = userConfig?.model || null;
         const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
-        const activeSplitPrompt = getCosmicSplitPrompt(modelName, requestedModel);
+        const { buildCosmicSplitPrompt, buildSensenovaV4CosmicSplitPrompt } = require('./prompts');
+        const activeSplitPrompt = isV4Flash
+            ? buildSensenovaV4CosmicSplitPrompt(generateDescription)
+            : buildCosmicSplitPrompt(generateDescription);
 
         // 将本批次功能过程组成文本
         const batchFunctionText = batchFunctions.join('\n\n');
@@ -2488,9 +2492,13 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 - 功能过程名称与"背景参考"中的名称相似也必须单独拆分，不能以"已完成"为由跳过
 - **【最重要】每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程，绝对禁止只输出E行就跳到下一个功能过程！**
 - **输出顺序：必须逐个功能过程完整输出（先输出功能A的E→R→W→X全部行，再输出功能B的E→R→W→X全部行），禁止先列出所有E行再补R/W/X！**
-- 输出表格中的"功能过程"列名称必须与上方列表**完全一致**，不得修改
-- 输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述，不能简单堆叠字段
-- 只输出Markdown表格，不要其他说明`;
+- 输出表格中的"功能过程"列名称必须与上方列表**完全一致**，不得修改`;
+
+        if (generateDescription) {
+            userPrompt += `\n- 输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述，不能简单堆叠字段`;
+        }
+
+        userPrompt += `\n- 只输出Markdown表格，不要其他说明`;
 
         const completion = await callAIWithRetry({
             messages: [
@@ -3255,13 +3263,15 @@ app.post('/api/chat/stream', async (req, res) => {
 
 app.post('/api/export-excel', async (req, res) => {
     try {
-        const { tableData, filename = 'COSMIC拆分结果', sequenceDiagrams, includeDescription = true } = req.body;
+        const { tableData, filename = 'COSMIC拆分结果', sequenceDiagrams } = req.body;
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
         }
 
-        const exportTableData = includeDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
+        // 检查是否有功能描述数据
+        const hasDescription = tableData.some(r => r.functionDescription);
+        const exportTableData = hasDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
         const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
 
         const workbook = new ExcelJS.Workbook();
@@ -3272,7 +3282,7 @@ app.post('/api/export-excel', async (req, res) => {
 
         // 设置表头
         let headers;
-        if (includeDescription) {
+        if (hasDescription) {
             headers = hasLevels
                 ? ['一级标题', '二级标题', '三级标题', '功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性', '功能描述']
                 : ['功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性', '功能描述'];
@@ -3303,7 +3313,7 @@ app.post('/api/export-excel', async (req, res) => {
         });
 
         // 设置列宽
-        if (includeDescription) {
+        if (hasDescription) {
             if (hasLevels) {
                 worksheet.columns = [
                     { width: 22 }, // 一级标题
@@ -3391,7 +3401,7 @@ app.post('/api/export-excel', async (req, res) => {
         let prevL1 = '';
         let prevL2 = '';
         let prevL3 = '';
-        const descriptionColIndex = includeDescription ? (hasLevels ? 11 : 8) : -1;
+        const descriptionColIndex = hasDescription ? (hasLevels ? 11 : 8) : -1;
         const descriptionMergeRanges = [];
         let currentDescriptionMerge = null;
 
@@ -3419,7 +3429,7 @@ app.post('/api/export-excel', async (req, res) => {
                 if (isE && l2) prevL2 = l2;
                 if (isE && l3) prevL3 = l3;
 
-                if (includeDescription) {
+                if (hasDescription) {
                     dataRow = worksheet.addRow([
                         showL1,
                         showL2,
@@ -3448,7 +3458,7 @@ app.post('/api/export-excel', async (req, res) => {
                     ]);
                 }
             } else {
-                if (includeDescription) {
+                if (hasDescription) {
                     dataRow = worksheet.addRow([
                         row.dataMovementType === 'E' ? funcUser : '',
                         row.dataMovementType === 'E' ? trigger : '',
@@ -3473,9 +3483,9 @@ app.post('/api/export-excel', async (req, res) => {
             }
 
             if (row.dataMovementType === 'E' && row.functionalProcess) {
-                if (currentDescriptionMerge && includeDescription) descriptionMergeRanges.push(currentDescriptionMerge);
-                currentDescriptionMerge = includeDescription ? { start: dataRow.number, end: dataRow.number } : null;
-            } else if (currentDescriptionMerge && includeDescription) {
+                if (currentDescriptionMerge && hasDescription) descriptionMergeRanges.push(currentDescriptionMerge);
+                currentDescriptionMerge = hasDescription ? { start: dataRow.number, end: dataRow.number } : null;
+            } else if (currentDescriptionMerge && hasDescription) {
                 currentDescriptionMerge.end = dataRow.number;
             }
 
@@ -3508,15 +3518,15 @@ app.post('/api/export-excel', async (req, res) => {
                     cell.alignment = { horizontal: 'center', vertical: 'middle' };
                 }
 
-                if (includeDescription && colNumber === descriptionColIndex) {
+                if (hasDescription && colNumber === descriptionColIndex) {
                     cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
                     cell.font = { size: 10, color: { argb: 'FF334155' } };
                 }
             });
         });
-        if (currentDescriptionMerge && includeDescription) descriptionMergeRanges.push(currentDescriptionMerge);
+        if (currentDescriptionMerge && hasDescription) descriptionMergeRanges.push(currentDescriptionMerge);
 
-        if (includeDescription) {
+        if (hasDescription) {
             for (const range of descriptionMergeRanges) {
                 if (range.end > range.start) {
                     worksheet.mergeCells(range.start, descriptionColIndex, range.end, descriptionColIndex);
@@ -3669,13 +3679,15 @@ app.post('/api/export-excel', async (req, res) => {
 
 app.post('/api/export-word', async (req, res) => {
     try {
-        const { tableData, filename = 'COSMIC功能规格说明书', sequenceDiagrams, documentName, includeDescription = true } = req.body;
+        const { tableData, filename = 'COSMIC功能规格说明书', sequenceDiagrams, documentName } = req.body;
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
         }
 
-        const exportTableData = includeDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
+        // 检查是否有功能描述数据
+        const hasDescription = tableData.some(r => r.functionDescription);
+        const exportTableData = hasDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
         const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
 
         console.log(`📝 开始生成Word文档，共 ${exportTableData.length} 行数据...`);
@@ -3909,7 +3921,7 @@ app.post('/api/export-word', async (req, res) => {
                 }
 
                 // ── Heading 3: 功能描述 (对应 Java 的 addFuncDetial("功能描述")) ──
-                if (includeDescription) {
+                if (hasDescription) {
                     docChildren.push(
                         new Paragraph({
                             children: [new TextRun({
@@ -4974,6 +4986,79 @@ if (process.env.NODE_ENV === 'production') {
     } catch (err) {
         console.error('⚠️ 数据库初始化失败，登录/历史功能将不可用:', err.message);
     }
+
+    // ═══════════ 补充功能描述 ═══════════
+    app.post('/api/supplement-description', async (req, res) => {
+        try {
+            const { tableData, userConfig = null } = req.body;
+
+            if (!tableData || tableData.length === 0) {
+                return res.status(400).json({ error: '没有可补充的数据' });
+            }
+
+            console.log('🔄 补充功能描述中...');
+
+            // 按功能过程分组
+            const functionGroups = [];
+            let currentGroup = null;
+
+            for (const row of tableData) {
+                if (row.dataMovementType === 'E' && row.functionalProcess) {
+                    if (currentGroup) functionGroups.push(currentGroup);
+                    currentGroup = {
+                        functionalProcess: row.functionalProcess,
+                        functionalUser: row.functionalUser || '',
+                        triggerEvent: row.triggerEvent || '',
+                        rows: [row]
+                    };
+                } else if (currentGroup) {
+                    currentGroup.rows.push(row);
+                }
+            }
+            if (currentGroup) functionGroups.push(currentGroup);
+
+            console.log(`📊 共 ${functionGroups.length} 个功能过程需要补充功能描述`);
+
+            // 使用 buildFunctionDescription 为每个功能过程生成描述
+            let supplementedCount = 0;
+            const updatedTableData = [];
+
+            for (const group of functionGroups) {
+                const description = buildFunctionDescription(
+                    group.functionalProcess,
+                    group.rows,
+                    '',
+                    group.functionalUser,
+                    group.triggerEvent
+                );
+
+                for (const row of group.rows) {
+                    if (row.dataMovementType === 'E') {
+                        updatedTableData.push({
+                            ...row,
+                            functionDescription: description
+                        });
+                        supplementedCount++;
+                    } else {
+                        updatedTableData.push(row);
+                    }
+                }
+            }
+
+            console.log(`✅ 功能描述补充完成，共补充 ${supplementedCount} 个`);
+
+            res.json({
+                success: true,
+                tableData: updatedTableData,
+                supplementedCount
+            });
+        } catch (error) {
+            console.error('❌ 补充功能描述失败:', error);
+            res.status(500).json({
+                error: error.message || '补充功能描述失败'
+            });
+        }
+    });
 
     app.listen(PORT, () => {
         console.log(`

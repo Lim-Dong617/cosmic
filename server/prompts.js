@@ -797,8 +797,34 @@ const SENSENOVA_V4_COSMIC_SPLIT_PROMPT = `${COSMIC_SPLIT_PROMPT}
 3. 不要把字段、查询条件、文件路径、命名规则、采集频率、状态码等拆成独立数据移动，它们应作为数据属性。
 4. 对“维护/配置xxx任务”类功能，只在**当前功能过程内部**保持最小合理ERWX；不能因此跳过输入列表中的其他维护/配置功能过程。
 5. 对“查看列表/详情/日志”类功能，如果只是读取并呈现，一般使用 E + R + X；只有系统明确写入查询日志时才增加W；不能因此跳过输入列表中的其他查看类功能过程。
-6. 数据组可以复用真实业务表名，不要为了“全表唯一”人为制造大量近义数据组；同一功能过程内保证清晰即可。
+6. 数据组可以复用真实业务表名，不要为了”全表唯一”人为制造大量近义数据组；同一功能过程内保证清晰即可。
 7. 如果输入功能过程本身已经过细或相似，仍必须按输入名称逐个输出完整ERWX，不能跳过或合并任何一个。`;
+
+
+/**
+ * 动态生成 COSMIC 拆分 prompt
+ * @param {boolean} includeDescription - 是否生成功能描述
+ */
+function buildCosmicSplitPrompt(includeDescription = true) {
+    const basePrompt = COSMIC_SPLIT_PROMPT;
+
+    if (!includeDescription) {
+        // 移除功能描述相关的要求
+        return basePrompt
+            .replace(/### 功能描述要求[\s\S]*?(?=###|##|$)/g, '')
+            .replace(/、功能描述/g, '')
+            .replace(/和功能描述/g, '')
+            .replace(/输出表格必须包含”功能描述”列，且只在每个功能过程的E行填写一段流程型描述。[\s\S]*?(?=\n\n)/g, '')
+            .replace(/\|功能用户\|触发事件\|功能过程\|子过程描述\|数据移动类型\|数据组\|数据属性\|功能描述\|/g, '|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|')
+            .replace(/功能描述只在E行填写[^。]*。/g, '');
+    }
+
+    return basePrompt;
+}
+
+function buildSensenovaV4CosmicSplitPrompt(includeDescription = true) {
+    return buildCosmicSplitPrompt(includeDescription);
+}
 
 
 module.exports = {
@@ -811,5 +837,7 @@ module.exports = {
   COSMIC_QUANTITY_PRIORITY_PROMPT,
   SENSENOVA_V4_FUNCTION_EXTRACTION_PROMPT,
   SENSENOVA_V4_QUANTITY_PRIORITY_PROMPT,
-  SENSENOVA_V4_COSMIC_SPLIT_PROMPT
+  SENSENOVA_V4_COSMIC_SPLIT_PROMPT,
+  buildCosmicSplitPrompt,
+  buildSensenovaV4CosmicSplitPrompt
 };

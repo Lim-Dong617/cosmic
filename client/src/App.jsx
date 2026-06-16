@@ -438,9 +438,10 @@ function App({ user, token, onLogout }) {
     const [isVerifying, setIsVerifying] = useState(false);
     const [showSequenceDiagram, setShowSequenceDiagram] = useState(false);
     const [exportWithDiagrams, setExportWithDiagrams] = useState(false);
-    const [exportWithDescription, setExportWithDescription] = useState(true); // 新增：是否导出功能描述列
+    const [generateDescription, setGenerateDescription] = useState(true); // 是否在拆分时生成功能描述
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
+    const [isSupplementingDescription, setIsSupplementingDescription] = useState(false); // 是否正在补充功能描述
 
     // 用户会话管理
     const [currentConversationId, setCurrentConversationId] = useState(null);
@@ -1602,7 +1603,8 @@ function App({ user, token, onLogout }) {
                     previousResults: previousResultsSnapshot,
                     userConfig: getUserConfig(),
                     headingContext,
-                    functionLevelMap
+                    functionLevelMap,
+                    generateDescription
                 }, { signal });
 
                 return {
@@ -2330,8 +2332,7 @@ function App({ user, token, onLogout }) {
                 {
                     tableData: exportTableData,
                     filename: `COSMIC拆分_${documentName || '结果'}`,
-                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined,
-                    includeDescription: exportWithDescription
+                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
                 },
                 { responseType: 'blob', timeout: 120000 }
             );
@@ -2382,8 +2383,7 @@ function App({ user, token, onLogout }) {
                     tableData: exportTableData,
                     filename: `COSMIC功能规格说明书_${documentName || '结果'}`,
                     documentName: documentName || '',
-                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined,
-                    includeDescription: exportWithDescription
+                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
                 },
                 { responseType: 'blob', timeout: 120000 }
             );
@@ -2407,6 +2407,42 @@ function App({ user, token, onLogout }) {
         setCopied(true);
         showToast('已复制到剪贴板');
         setTimeout(() => setCopied(false), 2000);
+    };
+
+    // ═══════════ 补充功能描述 ═══════════
+    const supplementDescription = async () => {
+        if (tableData.length === 0) {
+            showToast('没有可补充的数据');
+            return;
+        }
+
+        // 检查是否已有功能描述
+        const hasDescription = tableData.some(row => row.functionDescription);
+        if (hasDescription) {
+            const confirm = window.confirm('检测到已有功能描述，是否覆盖重新生成？');
+            if (!confirm) return;
+        }
+
+        setIsSupplementingDescription(true);
+        try {
+            const response = await axios.post('/api/supplement-description', {
+                tableData,
+                userConfig: getUserConfig()
+            });
+
+            if (response.data.success) {
+                setTableData(response.data.tableData);
+                showToast('功能描述补充完成');
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: `✅ **功能描述已补充**\n\n已为 ${response.data.supplementedCount} 个功能过程生成功能描述。`
+                }]);
+            }
+        } catch (error) {
+            showToast('补充功能描述失败: ' + (error.response?.data?.error || error.message));
+        } finally {
+            setIsSupplementingDescription(false);
+        }
     };
 
     const clearChat = () => {
@@ -3352,10 +3388,9 @@ function App({ user, token, onLogout }) {
                                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                                             <GitBranch size={12} /> 附带时序图
                                                         </label>
-                                                        <label className="seq-export-toggle" title="导出Excel时包含功能描述列">
-                                                            <input type="checkbox" checked={exportWithDescription} onChange={e => setExportWithDescription(e.target.checked)} />
-                                                            <FileText size={12} /> 功能描述
-                                                        </label>
+                                                        <button className="btn btn-secondary btn-sm" onClick={supplementDescription} disabled={isSupplementingDescription || isLoading} title="为功能过程补充功能描述">
+                                                            {isSupplementingDescription ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isSupplementingDescription ? '补充中...' : '补充功能描述'}
+                                                        </button>
                                                         <button className="btn btn-secondary btn-sm" onClick={() => setShowSequenceDiagram(true)} style={{ background: 'linear-gradient(135deg, rgba(108,92,231,0.12), rgba(59,130,246,0.12))', border: '1px solid rgba(108,92,231,0.2)', color: '#6c5ce7' }}>
                                                             <GitBranch size={14} /> 查看时序图
                                                         </button>
@@ -3394,6 +3429,10 @@ function App({ user, token, onLogout }) {
                                                                 <BarChart3 size={14} /> 按粗估数重提
                                                             </button>
                                                         )}
+                                                        <label className="seq-export-toggle" title="拆分时生成功能描述（会增加AI处理时间和成本）">
+                                                            <input type="checkbox" checked={generateDescription} onChange={e => setGenerateDescription(e.target.checked)} />
+                                                            <FileText size={12} /> 生成功能描述
+                                                        </label>
                                                         <button className="btn btn-success btn-sm" onClick={startCosmicSplit} disabled={isLoading}>
                                                             <Sparkles size={14} /> 确认·开始COSMIC拆分
                                                         </button>
@@ -3694,10 +3733,9 @@ function App({ user, token, onLogout }) {
                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                             <GitBranch size={12} /> 附带时序图
                                         </label>
-                                        <label className="seq-export-toggle" title="导出时包含功能描述列">
-                                            <input type="checkbox" checked={exportWithDescription} onChange={e => setExportWithDescription(e.target.checked)} />
-                                            <FileText size={12} /> 功能描述
-                                        </label>
+                                        <button className="btn btn-secondary btn-sm" onClick={supplementDescription} disabled={isSupplementingDescription || isLoading} title="为功能过程补充功能描述">
+                                            {isSupplementingDescription ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isSupplementingDescription ? '补充中...' : '补充功能描述'}
+                                        </button>
                                         <button className="btn btn-secondary btn-sm" onClick={() => { setShowTableView(false); setShowSequenceDiagram(true); }} style={{ background: 'linear-gradient(135deg, rgba(108,92,231,0.12), rgba(59,130,246,0.12))', border: '1px solid rgba(108,92,231,0.2)', color: '#6c5ce7' }}>
                                             <GitBranch size={14} /> 查看时序图
                                         </button>
