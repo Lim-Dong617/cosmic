@@ -222,6 +222,111 @@ const getGroupLevels = (rows) => {
     return levels;
 };
 
+const cleanProcessDisplayName = (name) => String(name || '')
+    .replace(/\[.*?\]\s*/g, '')
+    .replace(/^[\d]+[.、\s]+/, '')
+    .trim();
+
+const compactUniqueItems = (items = [], maxItems = 3) => {
+    const seen = new Set();
+    const result = [];
+    for (const item of items) {
+        const text = String(item || '').replace(/[。；;，,、]+$/g, '').trim();
+        if (!text || text === '待补充') continue;
+        const key = text.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(text);
+        if (result.length >= maxItems) break;
+    }
+    return result;
+};
+
+const isUsefulFunctionDescription = (text) => {
+    const desc = String(text || '').trim();
+    if (desc.length < 35) return false;
+    if (/^(待补充|无|暂无|N\/A)$/i.test(desc)) return false;
+    const hasProcessWords = /(该功能|用户|系统|定时|接口|触发|读取|保存|返回|展示|生成|查询|配置|支持|允许)/.test(desc);
+    const looksLikeOnlyList = desc.split(/[、,，]/).length >= 6 && !/[。；;]/.test(desc);
+    return hasProcessWords && !looksLikeOnlyList;
+};
+
+const buildFallbackFunctionDescription = (processName, rows = [], seedDescription = '', functionalUser = '', triggerEvent = '') => {
+    const cleanProcess = cleanProcessDisplayName(processName) || '该功能过程';
+    const seed = String(seedDescription || '').trim().replace(/[。；;]+$/g, '');
+    if (isUsefulFunctionDescription(seed)) {
+        return seed.startsWith(`${cleanProcess} -`) ? `${seed}。` : `${cleanProcess} - ${seed}。`;
+    }
+
+    const eItems = compactUniqueItems(rows.filter(r => r.dataMovementType === 'E').map(r => r.dataGroup || r.subProcessDesc), 2);
+    const rItems = compactUniqueItems(rows.filter(r => r.dataMovementType === 'R').map(r => r.dataGroup || r.subProcessDesc), 3);
+    const wItems = compactUniqueItems(rows.filter(r => r.dataMovementType === 'W').map(r => r.dataGroup || r.subProcessDesc), 2);
+    const xItems = compactUniqueItems(rows.filter(r => r.dataMovementType === 'X').map(r => r.dataGroup || r.subProcessDesc), 2);
+
+    const eText = eItems.length ? eItems.join('、') : `${cleanProcess}请求`;
+    const rText = rItems.length ? rItems.join('、') : '相关业务数据';
+    const wText = wItems.length ? wItems.join('、') : '处理记录或操作日志';
+    const xText = xItems.length ? xItems.join('、') : `${cleanProcess}结果`;
+
+    let actorText = '用户';
+    let startText = `该功能允许用户完成${cleanProcess}操作`;
+    if ((triggerEvent || '').includes('时钟')) {
+        actorText = '定时任务';
+        startText = `该功能由定时任务触发，用于按预设规则执行${cleanProcess}流程`;
+    } else if ((triggerEvent || '').includes('接口')) {
+        actorText = '外部系统';
+        startText = `该功能支持外部系统通过接口触发${cleanProcess}流程`;
+    } else if ((functionalUser || '').includes('定时触发器')) {
+        actorText = '定时触发器';
+        startText = `该功能由定时触发器发起，用于自动执行${cleanProcess}流程`;
+    }
+
+    const writeClause = wItems.length ? `在处理过程中保存${wText}` : '完成处理过程中的状态整理';
+    const resultClause = (triggerEvent || '').includes('时钟')
+        ? `并输出${xText}，便于系统持续跟踪处理状态和后续结果`
+        : `最终向${actorText === '外部系统' ? '调用方系统' : '用户'}返回${xText}，帮助完成业务查看、判断或后续处理`;
+
+    return `${cleanProcess} - ${startText}。${actorText}发起后，系统会接收${eText}，结合${rText}进行业务处理，${writeClause}，${resultClause}。`;
+};
+
+const buildFunctionDescriptionMap = (rows = [], functions = []) => {
+    const refMap = new Map();
+    functions.forEach(func => {
+        const key = normalizeProcessOrderKey(func.functionName || func.functionalProcess || '');
+        if (key) refMap.set(key, func);
+    });
+
+    const map = new Map();
+    let currentGroup = null;
+    const groups = [];
+    rows.forEach(row => {
+        if (row.dataMovementType === 'E' && row.functionalProcess) {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = { processName: row.functionalProcess, eRow: row, rows: [row] };
+        } else if (currentGroup) {
+            currentGroup.rows.push(row);
+        }
+    });
+    if (currentGroup) groups.push(currentGroup);
+
+    groups.forEach(group => {
+        const key = normalizeProcessOrderKey(group.processName);
+        const ref = refMap.get(key) || {};
+        const existing = group.eRow.functionDescription || '';
+        const description = isUsefulFunctionDescription(existing)
+            ? existing
+            : buildFallbackFunctionDescription(
+                group.processName,
+                group.rows,
+                ref.description || '',
+                group.eRow.functionalUser || ref.functionalUser || '',
+                group.eRow.triggerEvent || ref.triggerEvent || ''
+            );
+        map.set(group.processName, description);
+    });
+    return map;
+};
+
 const inheritMissingFunctionLevels = (functions = []) => {
     let lastLevels = { level1: '', level2: '', level3: '', sourceChapter: '' };
     return functions.map(func => {
@@ -333,6 +438,7 @@ function App({ user, token, onLogout }) {
     const [isVerifying, setIsVerifying] = useState(false);
     const [showSequenceDiagram, setShowSequenceDiagram] = useState(false);
     const [exportWithDiagrams, setExportWithDiagrams] = useState(false);
+    const [exportWithDescription, setExportWithDescription] = useState(true); // 新增：是否导出功能描述列
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
 
@@ -2224,7 +2330,8 @@ function App({ user, token, onLogout }) {
                 {
                     tableData: exportTableData,
                     filename: `COSMIC拆分_${documentName || '结果'}`,
-                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
+                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined,
+                    includeDescription: exportWithDescription
                 },
                 { responseType: 'blob', timeout: 120000 }
             );
@@ -2275,7 +2382,8 @@ function App({ user, token, onLogout }) {
                     tableData: exportTableData,
                     filename: `COSMIC功能规格说明书_${documentName || '结果'}`,
                     documentName: documentName || '',
-                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
+                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined,
+                    includeDescription: exportWithDescription
                 },
                 { responseType: 'blob', timeout: 120000 }
             );
@@ -3244,6 +3352,10 @@ function App({ user, token, onLogout }) {
                                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                                             <GitBranch size={12} /> 附带时序图
                                                         </label>
+                                                        <label className="seq-export-toggle" title="导出Excel时包含功能描述列">
+                                                            <input type="checkbox" checked={exportWithDescription} onChange={e => setExportWithDescription(e.target.checked)} />
+                                                            <FileText size={12} /> 功能描述
+                                                        </label>
                                                         <button className="btn btn-secondary btn-sm" onClick={() => setShowSequenceDiagram(true)} style={{ background: 'linear-gradient(135deg, rgba(108,92,231,0.12), rgba(59,130,246,0.12))', border: '1px solid rgba(108,92,231,0.2)', color: '#6c5ce7' }}>
                                                             <GitBranch size={14} /> 查看时序图
                                                         </button>
@@ -3582,6 +3694,10 @@ function App({ user, token, onLogout }) {
                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                             <GitBranch size={12} /> 附带时序图
                                         </label>
+                                        <label className="seq-export-toggle" title="导出时包含功能描述列">
+                                            <input type="checkbox" checked={exportWithDescription} onChange={e => setExportWithDescription(e.target.checked)} />
+                                            <FileText size={12} /> 功能描述
+                                        </label>
                                         <button className="btn btn-secondary btn-sm" onClick={() => { setShowTableView(false); setShowSequenceDiagram(true); }} style={{ background: 'linear-gradient(135deg, rgba(108,92,231,0.12), rgba(59,130,246,0.12))', border: '1px solid rgba(108,92,231,0.2)', color: '#6c5ce7' }}>
                                             <GitBranch size={14} /> 查看时序图
                                         </button>
@@ -3595,16 +3711,17 @@ function App({ user, token, onLogout }) {
                                         <thead>
                                             <tr>
                                                 <th style={{ width: '3%' }}>#</th>
-                                                <th style={{ width: '7%' }}>一级模块</th>
-                                                <th style={{ width: '7%' }}>二级模块</th>
-                                                <th style={{ width: '8%' }}>三级模块</th>
-                                                <th style={{ width: '11%' }}>功能用户</th>
-                                                <th style={{ width: '6%' }}>触发事件</th>
-                                                <th style={{ width: '11%' }}>功能过程</th>
-                                                <th style={{ width: '13%' }}>子过程描述</th>
-                                                <th style={{ width: '5%' }}>类型</th>
-                                                <th style={{ width: '10%' }}>数据组</th>
-                                                <th style={{ width: '19%' }}>数据属性</th>
+                                                <th style={{ width: '6%' }}>一级模块</th>
+                                                <th style={{ width: '6%' }}>二级模块</th>
+                                                <th style={{ width: '7%' }}>三级模块</th>
+                                                <th style={{ width: '9%' }}>功能用户</th>
+                                                <th style={{ width: '5%' }}>触发事件</th>
+                                                <th style={{ width: '9%' }}>功能过程</th>
+                                                <th style={{ width: '11%' }}>子过程描述</th>
+                                                <th style={{ width: '4%' }}>类型</th>
+                                                <th style={{ width: '8%' }}>数据组</th>
+                                                <th style={{ width: '14%' }}>数据属性</th>
+                                                <th style={{ width: '18%' }}>功能描述</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -3615,12 +3732,16 @@ function App({ user, token, onLogout }) {
                                                     const lv = getModuleLevels(f);
                                                     procLevelMap[f.functionName] = lv;
                                                 });
+                                                const functionDescriptionMap = buildFunctionDescriptionMap(tableData, parsedFunctions);
                                                 let lastLevels = { level1: '', level2: '', level3: '' };
                                                 return tableData.map((row, idx) => {
                                                     if (row.dataMovementType === 'E' && row.functionalProcess) {
                                                         lastLevels = procLevelMap[row.functionalProcess] || { level1: '', level2: '', level3: '' };
                                                     }
                                                     const lv = lastLevels;
+                                                    const functionDescription = row.dataMovementType === 'E'
+                                                        ? (functionDescriptionMap.get(row.functionalProcess) || row.functionDescription || '')
+                                                        : '';
                                                     return (
                                                         <tr key={idx} className={row.dataMovementType === 'E' ? 'row-e' : ''}>
                                                             <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{idx + 1}</td>
@@ -3650,6 +3771,9 @@ function App({ user, token, onLogout }) {
                                                             </td>
                                                             <td>{row.dataGroup}</td>
                                                             <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.dataAttributes}</td>
+                                                            <td className="function-description-cell" title={functionDescription}>
+                                                                {functionDescription}
+                                                            </td>
                                                         </tr>
                                                     );
                                                 });

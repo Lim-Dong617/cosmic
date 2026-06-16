@@ -1131,6 +1131,15 @@ textarea.setting-input {
     font-weight: 500;
 }
 
+.data-table td.function-description-cell {
+    min-width: 260px;
+    max-width: 420px;
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    vertical-align: middle;
+}
+
 /* Data movement type badges */
 .dmt-badge {
     display: inline-flex;

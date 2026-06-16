@@ -200,6 +200,139 @@ function normalizeProcessName(name) {
         .trim();
 }
 
+function cleanProcessDisplayName(name) {
+    return sanitizeText(name)
+        .replace(/\[.*?\]\s*/g, '')
+        .replace(/^[\d]+[.、\s]+/, '')
+        .trim();
+}
+
+function compactUniqueItems(items, maxItems = 3) {
+    const seen = new Set();
+    const result = [];
+    for (const item of items || []) {
+        const text = sanitizeText(item)
+            .replace(/[。；;，,、]+$/g, '')
+            .trim();
+        if (!text || text === '待补充') continue;
+        const key = text.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(text);
+        if (result.length >= maxItems) break;
+    }
+    return result;
+}
+
+function normalizeFunctionDescription(text, processName = '') {
+    const cleanProcess = cleanProcessDisplayName(processName);
+    let desc = sanitizeText(text)
+        .replace(/^\|+|\|+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!desc) return '';
+    desc = desc.replace(/[。；;]+$/g, '');
+    const hasProcessPrefix = cleanProcess && desc.startsWith(`${cleanProcess} -`);
+    return `${hasProcessPrefix || !cleanProcess ? '' : `${cleanProcess} - `}${desc}。`;
+}
+
+function isUsefulFunctionDescription(text) {
+    const desc = sanitizeText(text);
+    if (desc.length < 35) return false;
+    if (/^(待补充|无|暂无|N\/A)$/i.test(desc)) return false;
+    const hasProcessWords = /(该功能|用户|系统|定时|接口|触发|读取|保存|返回|展示|生成|查询|配置|支持|允许)/.test(desc);
+    const looksLikeOnlyList = desc.split(/[、,，]/).length >= 6 && !/[。；;]/.test(desc);
+    return hasProcessWords && !looksLikeOnlyList;
+}
+
+function buildFunctionDescription(processName, rows = [], seedDescription = '', functionalUser = '', triggerEvent = '') {
+    const cleanProcess = cleanProcessDisplayName(processName) || '该功能过程';
+    const seed = normalizeFunctionDescription(seedDescription, cleanProcess);
+    if (isUsefulFunctionDescription(seed)) return seed;
+
+    const eRows = rows.filter(r => r.dataMovementType === 'E');
+    const rRows = rows.filter(r => r.dataMovementType === 'R');
+    const wRows = rows.filter(r => r.dataMovementType === 'W');
+    const xRows = rows.filter(r => r.dataMovementType === 'X');
+
+    const eItems = compactUniqueItems(eRows.map(r => r.dataGroup || r.subProcessDesc), 2);
+    const rItems = compactUniqueItems(rRows.map(r => r.dataGroup || r.subProcessDesc), 3);
+    const wItems = compactUniqueItems(wRows.map(r => r.dataGroup || r.subProcessDesc), 2);
+    const xItems = compactUniqueItems(xRows.map(r => r.dataGroup || r.subProcessDesc), 2);
+
+    const eText = eItems.length ? eItems.join('、') : `${cleanProcess}请求`;
+    const rText = rItems.length ? rItems.join('、') : '相关业务数据';
+    const wText = wItems.length ? wItems.join('、') : '处理记录或操作日志';
+    const xText = xItems.length ? xItems.join('、') : `${cleanProcess}结果`;
+
+    let actorText = '用户';
+    let startText = `该功能允许用户完成${cleanProcess}操作`;
+    if ((triggerEvent || '').includes('时钟')) {
+        actorText = '定时任务';
+        startText = `该功能由定时任务触发，用于按预设规则执行${cleanProcess}流程`;
+    } else if ((triggerEvent || '').includes('接口')) {
+        actorText = '外部系统';
+        startText = `该功能支持外部系统通过接口触发${cleanProcess}流程`;
+    } else if ((functionalUser || '').includes('定时触发器')) {
+        actorText = '定时触发器';
+        startText = `该功能由定时触发器发起，用于自动执行${cleanProcess}流程`;
+    }
+
+    const writeClause = wRows.length > 0
+        ? `在处理过程中保存${wText}`
+        : `完成处理过程中的状态整理`;
+    const resultClause = (triggerEvent || '').includes('时钟')
+        ? `并输出${xText}，便于系统持续跟踪处理状态和后续结果`
+        : `最终向${actorText === '外部系统' ? '调用方系统' : '用户'}返回${xText}，帮助完成业务查看、判断或后续处理`;
+
+    return `${cleanProcess} - ${startText}。${actorText}发起后，系统会接收${eText}，结合${rText}进行业务处理，${writeClause}，${resultClause}。`;
+}
+
+function ensureFunctionDescriptions(tableData, refFunctions = []) {
+    if (!Array.isArray(tableData) || tableData.length === 0) return tableData || [];
+
+    const refMap = new Map();
+    for (const func of refFunctions || []) {
+        const key = normalizeProcessName(func.functionName || func.functionalProcess || '');
+        if (key) refMap.set(key, func);
+    }
+
+    const groups = [];
+    let currentGroup = null;
+    for (const row of tableData) {
+        if (row.dataMovementType === 'E' && row.functionalProcess) {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = {
+                processName: row.functionalProcess,
+                rows: [row],
+                eRow: row
+            };
+        } else if (currentGroup) {
+            currentGroup.rows.push(row);
+        }
+    }
+    if (currentGroup) groups.push(currentGroup);
+
+    for (const group of groups) {
+        const key = normalizeProcessName(group.processName);
+        const ref = refMap.get(key) || {};
+        const existing = group.eRow.functionDescription || group.eRow.functionalDescription || '';
+        const seed = isUsefulFunctionDescription(existing) ? existing : (ref.description || '');
+        group.eRow.functionDescription = buildFunctionDescription(
+            group.processName,
+            group.rows,
+            seed,
+            group.eRow.functionalUser || ref.functionalUser || '',
+            group.eRow.triggerEvent || ref.triggerEvent || ''
+        );
+        for (const row of group.rows.slice(1)) {
+            row.functionDescription = '';
+        }
+    }
+
+    return tableData;
+}
+
 function extractHeadingNumberParts(title) {
     const text = String(title || '').trim();
     if (!text) return null;
@@ -405,6 +538,7 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
     const lines = markdown.split('\n');
     let inTable = false;
     let headerFound = false;
+    let headerColumns = [];
     let currentFunctionalUser = '';
     let currentTriggerEvent = '';
     let currentFunctionalProcess = '';
@@ -422,6 +556,10 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
         if (trimmed.includes('功能用户') || trimmed.includes('触发事件') || trimmed.includes('功能过程')) {
             headerFound = true;
             inTable = true;
+            headerColumns = trimmed
+                .split('|')
+                .filter((_, i, arr) => i > 0 && i < arr.length - 1)
+                .map(c => c.trim());
             continue;
         }
 
@@ -456,14 +594,38 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
             return null; // 无法识别
         };
 
-        let funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes;
+        let funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes, functionDescription;
         let dmt = null;
 
-        if (cells.length >= 8) {
-            // V3.2 有时多输出一列序号列在最前面，变成8列：序号|功能用户|触发事件|功能过程|子过程描述|DMT|数据组|数据属性
+        // 优先按表头定位列，兼容新增的“功能描述”列以及模型偶发的列顺序变化
+        if (headerColumns.length > 0) {
+            let normalizedHeaderColumns = headerColumns.map(h => h.replace(/\s+/g, ''));
+            let valueCells = cells;
+            if (valueCells.length === normalizedHeaderColumns.length + 1 && /^\d+$/.test(valueCells[0])) {
+                valueCells = valueCells.slice(1);
+            }
+
+            const getByHeader = (predicate) => {
+                const idx = normalizedHeaderColumns.findIndex(predicate);
+                return idx >= 0 ? valueCells[idx] : '';
+            };
+
+            funcUser = getByHeader(h => h.includes('功能用户'));
+            triggerEvt = getByHeader(h => h.includes('触发事件'));
+            funcProcess = getByHeader(h => h.includes('功能过程') && !h.includes('描述'));
+            subProcessDesc = getByHeader(h => h.includes('子过程描述'));
+            dataMovementType = getByHeader(h => h.includes('数据移动类型') || h === '类型');
+            dataGroup = getByHeader(h => h.includes('数据组'));
+            dataAttributes = getByHeader(h => h.includes('数据属性'));
+            functionDescription = getByHeader(h => h.includes('功能描述') && !h.includes('子过程'));
+            dmt = normalizeDmt(dataMovementType);
+        }
+
+        if (!dmt && cells.length >= 8) {
+            // V3.2 有时多输出一列序号列在最前面，或新版多输出“功能描述”列
             // 检测第一列是否是纯数字序号
             if (/^\d+$/.test(cells[0])) {
-                [, funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes] = cells;
+                [, funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes, functionDescription] = cells;
                 dmt = normalizeDmt(dataMovementType);
                 if (!dmt) {
                     // 序号列 + DMT在最后
@@ -477,8 +639,8 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
                 }
             }
             if (!dmt) {
-                // 不是序号列开头，按标准7列处理（取前7列）
-                [funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes] = cells;
+                // 不是序号列开头，按新版8列或旧版7列处理
+                [funcUser, triggerEvt, funcProcess, subProcessDesc, dataMovementType, dataGroup, dataAttributes, functionDescription] = cells;
                 dmt = normalizeDmt(dataMovementType);
             }
         }
@@ -499,7 +661,9 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
                     dataAttributes = cells[5];
                 }
             }
-        } else if (cells.length >= 4) {
+        }
+
+        if (!dmt && cells.length >= 4) {
             // V3.2 的 R/W/X 行有时省略前面的空列，只保留有效列
             // 尝试扫描每个 cell，找出 DMT 所在位置
             for (let ci = 0; ci < cells.length; ci++) {
@@ -545,6 +709,7 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
             dataMovementType: dmt,
             dataGroup: sanitizeText(dataGroup) || '待补充',
             dataAttributes: sanitizeText(dataAttributes) || '待补充',
+            functionDescription: dmt === 'E' ? sanitizeText(functionDescription) : '',
             // 章节层级（来自 headingContext）
             level1: hLevel1,
             level2: hLevel2,
@@ -2008,9 +2173,10 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 **【重要】请严格按照上方功能过程列表的顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节顺序。**
 **【必须遵守】输出表格中的"功能过程"名称必须与上方列表完全一致，不得自行修改、合并或重命名。**
 每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程。
+输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述。
 只输出Markdown表格，不要其他说明。`;
         } else {
-            userPrompt = `请对以下功能过程进行COSMIC拆分：\n\n${functionList}\n\n**【重要】请严格按照上方功能过程列表的先后顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节/目录顺序，输出结果必须保持一致。**\n**【必须遵守】输出表格中的"功能过程"名称必须与上方列表完全一致，不得自行修改、合并或重命名。**`;
+            userPrompt = `请对以下功能过程进行COSMIC拆分：\n\n${functionList}\n\n**【重要】请严格按照上方功能过程列表的先后顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节/目录顺序，输出结果必须保持一致。**\n**【必须遵守】输出表格中的"功能过程"名称必须与上方列表完全一致，不得自行修改、合并或重命名。**\n输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述。`;
         }
 
         if (documentContent) {
@@ -2141,6 +2307,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
                                             dataMovementType: item.dmt,
                                             dataGroup: item.dataGroup || '待补充',
                                             dataAttributes: item.dataAttributes || '待补充',
+                                            functionDescription: item.functionDescription || '',
                                             level1: origERow?.level1 || headingContext?.level1 || '',
                                             level2: origERow?.level2 || headingContext?.level2 || '',
                                             level3: origERow?.level3 || headingContext?.level3 || ''
@@ -2218,6 +2385,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
                                         dataMovementType: item.dmt,
                                         dataGroup: item.dataGroup || '待补充',
                                         dataAttributes: item.dataAttributes || '待补充',
+                                        functionDescription: item.functionDescription || '',
                                         level1: funcLevels.level1 || headingContext?.level1 || '',
                                         level2: funcLevels.level2 || headingContext?.level2 || '',
                                         level3: funcLevels.level3 || headingContext?.level3 || ''
@@ -2236,6 +2404,8 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
                 }
             }
         }
+
+        tableData = ensureFunctionDescriptions(tableData, refFunctions);
 
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -2319,6 +2489,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 - **【最重要】每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程，绝对禁止只输出E行就跳到下一个功能过程！**
 - **输出顺序：必须逐个功能过程完整输出（先输出功能A的E→R→W→X全部行，再输出功能B的E→R→W→X全部行），禁止先列出所有E行再补R/W/X！**
 - 输出表格中的"功能过程"列名称必须与上方列表**完全一致**，不得修改
+- 输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述，不能简单堆叠字段
 - 只输出Markdown表格，不要其他说明`;
 
         const completion = await callAIWithRetry({
@@ -2363,10 +2534,8 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         }
 
         // 从batchFunctions中提取标准功能过程名作为对齐参考
-        const refNames = batchFunctions.map(text => {
-            const match = text.match(/##\s*功能过程[：:]\s*(.+)/);
-            return match ? match[1].trim() : null;
-        }).filter(Boolean);
+        const refFunctions = extractFunctionsFromText(batchFunctionText);
+        const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
         let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, isV4Flash ? 'sequential' : 'fuzzy');
 
@@ -2450,6 +2619,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                                             dataMovementType: item.dmt,
                                             dataGroup: item.dataGroup || '待补充',
                                             dataAttributes: item.dataAttributes || '待补充',
+                                            functionDescription: item.functionDescription || '',
                                             level1: origERow?.level1 || headingContext?.level1 || '',
                                             level2: origERow?.level2 || headingContext?.level2 || '',
                                             level3: origERow?.level3 || headingContext?.level3 || ''
@@ -2542,6 +2712,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                                         dataMovementType: item.dmt,
                                         dataGroup: item.dataGroup || '待补充',
                                         dataAttributes: item.dataAttributes || '待补充',
+                                        functionDescription: item.functionDescription || '',
                                         level1: funcLevels.level1 || headingContext?.level1 || '',
                                         level2: funcLevels.level2 || headingContext?.level2 || '',
                                         level3: funcLevels.level3 || headingContext?.level3 || ''
@@ -2560,6 +2731,8 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                 }
             }
         }
+
+        tableData = ensureFunctionDescriptions(tableData, refFunctions);
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -2664,10 +2837,10 @@ ${understandingContext}
 
 **输出格式**：只输出Markdown表格，不要额外说明。
 
-|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|
-|:---|:---|:---|:---|:---|:---|:---|
+|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|功能描述|
+|:---|:---|:---|:---|:---|:---|:---|:---|
 
-每个功能过程必须有 E + R(≥1) + W(≥1) + X 四种子过程。`;
+每个功能过程必须有 E + R(≥1) + W(≥1) + X 四种子过程，功能描述只在E行填写。`;
         } else {
             // 关键修复：第2轮及之后也要传递文档内容，否则AI看不到原文
             // 构建遗漏功能提示（如果有覆盖度验证结果）
@@ -2698,6 +2871,7 @@ ${missedHint}
 ${targetRequirement}
 - 请仔细逐段阅读文档，找出上面"已完成"列表中未覆盖的功能
 - 每个功能过程必须有 E + R + W + X 四种子过程
+- 输出表格必须包含"功能描述"列，功能描述只在E行填写，内容要描述业务处理过程
 - 只输出Markdown表格，不要其他说明
 - 如果文档中的所有功能确实都已完成，回复"[ALL_DONE]"`;
         }
@@ -2977,7 +3151,7 @@ ${missedListText}${vagueHint}
 app.post('/api/parse-table', (req, res) => {
     try {
         const { markdown } = req.body;
-        const tableData = parseMarkdownTable(markdown);
+        const tableData = ensureFunctionDescriptions(parseMarkdownTable(markdown));
         res.json({ success: true, tableData, count: tableData.length });
     } catch (error) {
         res.status(500).json({ error: '表格解析失败: ' + error.message });
@@ -3028,12 +3202,12 @@ app.post('/api/chat/stream', async (req, res) => {
             }).join('\n');
 
             contextContent += `## 当前COSMIC拆分结果（共${uniqueFuncs.length}个功能过程，${tableData.length}个子过程/CFP）\n${funcSummary}\n\n`;
-            contextContent += `### 拆分结果明细表\n|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|\n|:---|:---|:---|:---|:---|:---|:---|\n`;
+            contextContent += `### 拆分结果明细表\n|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|功能描述|\n|:---|:---|:---|:---|:---|:---|:---|:---|\n`;
             // 限制表格行数避免超长
             const maxRows = Math.min(tableData.length, 100);
             for (let i = 0; i < maxRows; i++) {
                 const r = tableData[i];
-                contextContent += `|${r.functionalUser || ''}|${r.triggerEvent || ''}|${r.functionalProcess || ''}|${r.subProcessDesc || ''}|${r.dataMovementType || ''}|${r.dataGroup || ''}|${r.dataAttributes || ''}|\n`;
+                contextContent += `|${r.functionalUser || ''}|${r.triggerEvent || ''}|${r.functionalProcess || ''}|${r.subProcessDesc || ''}|${r.dataMovementType || ''}|${r.dataGroup || ''}|${r.dataAttributes || ''}|${r.functionDescription || ''}|\n`;
             }
             if (tableData.length > maxRows) {
                 contextContent += `\n...（共${tableData.length}行，此处仅展示前${maxRows}行）\n`;
@@ -3081,13 +3255,13 @@ app.post('/api/chat/stream', async (req, res) => {
 
 app.post('/api/export-excel', async (req, res) => {
     try {
-        const { tableData, filename = 'COSMIC拆分结果', sequenceDiagrams } = req.body;
+        const { tableData, filename = 'COSMIC拆分结果', sequenceDiagrams, includeDescription = true } = req.body;
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
         }
 
-        const exportTableData = orderCosmicTableData(tableData);
+        const exportTableData = includeDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
         const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
 
         const workbook = new ExcelJS.Workbook();
@@ -3097,9 +3271,16 @@ app.post('/api/export-excel', async (req, res) => {
         const hasLevels = exportTableData.some(r => r.level1 || r.level2 || r.level3);
 
         // 设置表头
-        const headers = hasLevels
-            ? ['一级标题', '二级标题', '三级标题', '功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性']
-            : ['功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性'];
+        let headers;
+        if (includeDescription) {
+            headers = hasLevels
+                ? ['一级标题', '二级标题', '三级标题', '功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性', '功能描述']
+                : ['功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性', '功能描述'];
+        } else {
+            headers = hasLevels
+                ? ['一级标题', '二级标题', '三级标题', '功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性']
+                : ['功能用户', '触发事件', '功能过程', '子过程描述', '数据移动类型', '数据组', '数据属性'];
+        }
         const headerRow = worksheet.addRow(headers);
 
         // 表头样式
@@ -3122,29 +3303,58 @@ app.post('/api/export-excel', async (req, res) => {
         });
 
         // 设置列宽
-        if (hasLevels) {
-            worksheet.columns = [
-                { width: 22 }, // 一级标题
-                { width: 22 }, // 二级标题
-                { width: 22 }, // 三级标题
-                { width: 28 }, // 功能用户
-                { width: 14 }, // 触发事件
-                { width: 24 }, // 功能过程
-                { width: 28 }, // 子过程描述
-                { width: 14 }, // 数据移动类型
-                { width: 24 }, // 数据组
-                { width: 40 }, // 数据属性
-            ];
+        if (includeDescription) {
+            if (hasLevels) {
+                worksheet.columns = [
+                    { width: 22 }, // 一级标题
+                    { width: 22 }, // 二级标题
+                    { width: 22 }, // 三级标题
+                    { width: 28 }, // 功能用户
+                    { width: 14 }, // 触发事件
+                    { width: 24 }, // 功能过程
+                    { width: 28 }, // 子过程描述
+                    { width: 14 }, // 数据移动类型
+                    { width: 24 }, // 数据组
+                    { width: 40 }, // 数据属性
+                    { width: 54 }, // 功能描述
+                ];
+            } else {
+                worksheet.columns = [
+                    { width: 28 }, // 功能用户
+                    { width: 14 }, // 触发事件
+                    { width: 24 }, // 功能过程
+                    { width: 28 }, // 子过程描述
+                    { width: 14 }, // 数据移动类型
+                    { width: 24 }, // 数据组
+                    { width: 40 }, // 数据属性
+                    { width: 54 }, // 功能描述
+                ];
+            }
         } else {
-            worksheet.columns = [
-                { width: 28 }, // 功能用户
-                { width: 14 }, // 触发事件
-                { width: 24 }, // 功能过程
-                { width: 28 }, // 子过程描述
-                { width: 14 }, // 数据移动类型
-                { width: 24 }, // 数据组
-                { width: 40 }, // 数据属性
-            ];
+            if (hasLevels) {
+                worksheet.columns = [
+                    { width: 22 }, // 一级标题
+                    { width: 22 }, // 二级标题
+                    { width: 22 }, // 三级标题
+                    { width: 28 }, // 功能用户
+                    { width: 14 }, // 触发事件
+                    { width: 24 }, // 功能过程
+                    { width: 28 }, // 子过程描述
+                    { width: 14 }, // 数据移动类型
+                    { width: 24 }, // 数据组
+                    { width: 40 }, // 数据属性
+                ];
+            } else {
+                worksheet.columns = [
+                    { width: 28 }, // 功能用户
+                    { width: 14 }, // 触发事件
+                    { width: 24 }, // 功能过程
+                    { width: 28 }, // 子过程描述
+                    { width: 14 }, // 数据移动类型
+                    { width: 24 }, // 数据组
+                    { width: 40 }, // 数据属性
+                ];
+            }
         }
 
         // 预处理：让没有层级的行继承所属功能过程的层级
@@ -3181,6 +3391,9 @@ app.post('/api/export-excel', async (req, res) => {
         let prevL1 = '';
         let prevL2 = '';
         let prevL3 = '';
+        const descriptionColIndex = includeDescription ? (hasLevels ? 11 : 8) : -1;
+        const descriptionMergeRanges = [];
+        let currentDescriptionMerge = null;
 
         exportTableData.forEach((row) => {
             const funcUser = row.functionalUser || currentFuncUser;
@@ -3206,28 +3419,64 @@ app.post('/api/export-excel', async (req, res) => {
                 if (isE && l2) prevL2 = l2;
                 if (isE && l3) prevL3 = l3;
 
-                dataRow = worksheet.addRow([
-                    showL1,
-                    showL2,
-                    showL3,
-                    isE ? funcUser : '',
-                    isE ? trigger : '',
-                    process,
-                    row.subProcessDesc || '',
-                    row.dataMovementType || '',
-                    row.dataGroup || '',
-                    row.dataAttributes || ''
-                ]);
+                if (includeDescription) {
+                    dataRow = worksheet.addRow([
+                        showL1,
+                        showL2,
+                        showL3,
+                        isE ? funcUser : '',
+                        isE ? trigger : '',
+                        process,
+                        row.subProcessDesc || '',
+                        row.dataMovementType || '',
+                        row.dataGroup || '',
+                        row.dataAttributes || '',
+                        isE ? row.functionDescription || '' : ''
+                    ]);
+                } else {
+                    dataRow = worksheet.addRow([
+                        showL1,
+                        showL2,
+                        showL3,
+                        isE ? funcUser : '',
+                        isE ? trigger : '',
+                        process,
+                        row.subProcessDesc || '',
+                        row.dataMovementType || '',
+                        row.dataGroup || '',
+                        row.dataAttributes || ''
+                    ]);
+                }
             } else {
-                dataRow = worksheet.addRow([
-                    row.dataMovementType === 'E' ? funcUser : '',
-                    row.dataMovementType === 'E' ? trigger : '',
-                    process,
-                    row.subProcessDesc || '',
-                    row.dataMovementType || '',
-                    row.dataGroup || '',
-                    row.dataAttributes || ''
-                ]);
+                if (includeDescription) {
+                    dataRow = worksheet.addRow([
+                        row.dataMovementType === 'E' ? funcUser : '',
+                        row.dataMovementType === 'E' ? trigger : '',
+                        process,
+                        row.subProcessDesc || '',
+                        row.dataMovementType || '',
+                        row.dataGroup || '',
+                        row.dataAttributes || '',
+                        row.dataMovementType === 'E' ? row.functionDescription || '' : ''
+                    ]);
+                } else {
+                    dataRow = worksheet.addRow([
+                        row.dataMovementType === 'E' ? funcUser : '',
+                        row.dataMovementType === 'E' ? trigger : '',
+                        process,
+                        row.subProcessDesc || '',
+                        row.dataMovementType || '',
+                        row.dataGroup || '',
+                        row.dataAttributes || ''
+                    ]);
+                }
+            }
+
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                if (currentDescriptionMerge && includeDescription) descriptionMergeRanges.push(currentDescriptionMerge);
+                currentDescriptionMerge = includeDescription ? { start: dataRow.number, end: dataRow.number } : null;
+            } else if (currentDescriptionMerge && includeDescription) {
+                currentDescriptionMerge.end = dataRow.number;
             }
 
             // 数据行样式
@@ -3258,8 +3507,25 @@ app.post('/api/export-excel', async (req, res) => {
                     cell.font = { bold: true, color: { argb: colors[row.dataMovementType] || 'FF000000' } };
                     cell.alignment = { horizontal: 'center', vertical: 'middle' };
                 }
+
+                if (includeDescription && colNumber === descriptionColIndex) {
+                    cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+                    cell.font = { size: 10, color: { argb: 'FF334155' } };
+                }
             });
         });
+        if (currentDescriptionMerge && includeDescription) descriptionMergeRanges.push(currentDescriptionMerge);
+
+        if (includeDescription) {
+            for (const range of descriptionMergeRanges) {
+                if (range.end > range.start) {
+                    worksheet.mergeCells(range.start, descriptionColIndex, range.end, descriptionColIndex);
+                }
+                const cell = worksheet.getCell(range.start, descriptionColIndex);
+                cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+                cell.font = { size: 10, color: { argb: 'FF334155' } };
+            }
+        }
 
         // 冻结表头
         worksheet.views = [{ state: 'frozen', ySplit: 1 }];
@@ -3403,13 +3669,13 @@ app.post('/api/export-excel', async (req, res) => {
 
 app.post('/api/export-word', async (req, res) => {
     try {
-        const { tableData, filename = 'COSMIC功能规格说明书', sequenceDiagrams, documentName } = req.body;
+        const { tableData, filename = 'COSMIC功能规格说明书', sequenceDiagrams, documentName, includeDescription = true } = req.body;
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
         }
 
-        const exportTableData = orderCosmicTableData(tableData);
+        const exportTableData = includeDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
         const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
 
         console.log(`📝 开始生成Word文档，共 ${exportTableData.length} 行数据...`);
@@ -3428,6 +3694,7 @@ app.post('/api/export-word', async (req, res) => {
                     functionalProcess: row.functionalProcess,
                     functionalUser: currentFuncUser,
                     triggerEvent: currentTrigger,
+                    functionDescription: row.functionDescription || '',
                     // 从功能过程名称提取章节标记 [xxx]
                     chapter: (row.functionalProcess.match(/\[(.+?)\]/) || [])[1] || '',
                     cleanName: row.functionalProcess.replace(/\[.*?\]\s*/, '').trim(),
@@ -3642,58 +3909,32 @@ app.post('/api/export-word', async (req, res) => {
                 }
 
                 // ── Heading 3: 功能描述 (对应 Java 的 addFuncDetial("功能描述")) ──
-                docChildren.push(
-                    new Paragraph({
-                        children: [new TextRun({
-                            text: `${funcNumber}.2  功能描述`,
-                            bold: true, size: 24, font: '微软雅黑', color: '6C5CE7'
-                        })],
-                        heading: HeadingLevel.HEADING_3,
-                        spacing: { before: 300, after: 200 }
-                    })
-                );
+                if (includeDescription) {
+                    docChildren.push(
+                        new Paragraph({
+                            children: [new TextRun({
+                                text: `${funcNumber}.2  功能描述`,
+                                bold: true, size: 24, font: '微软雅黑', color: '6C5CE7'
+                            })],
+                            heading: HeadingLevel.HEADING_3,
+                            spacing: { before: 300, after: 200 }
+                        })
+                    );
 
-                // 功能描述内容 (对应 Java 的 addContent(functionDesc))
-                // 从数据行中构建描述
-                const descParts = [];
-                descParts.push(`${group.cleanName}由${group.functionalUser || '用户'}通过${group.triggerEvent || '用户触发'}触发，`);
-                descParts.push(`共包含 ${group.rows.length} 个数据移动子过程。`);
+                    const functionDescription = group.functionDescription || buildFunctionDescription(
+                        group.functionalProcess,
+                        group.rows,
+                        '',
+                        group.functionalUser,
+                        group.triggerEvent
+                    );
 
-                // 按ERWX分类描述
-                const eRows = group.rows.filter(r => r.dataMovementType === 'E');
-                const rRows = group.rows.filter(r => r.dataMovementType === 'R');
-                const wRows = group.rows.filter(r => r.dataMovementType === 'W');
-                const xRows = group.rows.filter(r => r.dataMovementType === 'X');
-
-                if (eRows.length > 0) descParts.push(`进入数据：${eRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
-                if (rRows.length > 0) descParts.push(`读取数据：${rRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
-                if (wRows.length > 0) descParts.push(`写入数据：${wRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
-                if (xRows.length > 0) descParts.push(`退出数据：${xRows.map(r => r.dataGroup || r.subProcessDesc).filter(Boolean).join('、')}。`);
-
-                // 详细数据属性
-                const dataAttrs = group.rows.filter(r => r.dataAttributes).map(r => `${r.dataGroup || '数据组'}：${r.dataAttributes}`);
-                if (dataAttrs.length > 0) {
-                    descParts.push(`\n涉及的数据属性：`);
-                }
-
-                docChildren.push(
-                    new Paragraph({
-                        children: [new TextRun({ text: descParts.join(''), size: 21, font: '微软雅黑' })],
-                        spacing: { after: 100 }
-                    })
-                );
-
-                // 数据属性明细
-                if (dataAttrs.length > 0) {
-                    for (const attr of dataAttrs) {
-                        docChildren.push(
-                            new Paragraph({
-                                children: [new TextRun({ text: `• ${attr}`, size: 20, font: '微软雅黑', color: '555555' })],
-                                spacing: { after: 60 },
-                                indent: { left: 480 }
-                            })
-                        );
-                    }
+                    docChildren.push(
+                        new Paragraph({
+                            children: [new TextRun({ text: functionDescription, size: 21, font: '微软雅黑' })],
+                            spacing: { after: 100 }
+                        })
+                    );
                 }
 
                 // 功能过程间间距
