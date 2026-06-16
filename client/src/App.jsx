@@ -178,6 +178,39 @@ const buildModuleOrderMap = (moduleStructure) => {
     return map;
 };
 
+const getQuantityTargetForChapter = (chapter, quantityPlan, fallbackIndex = -1) => {
+    if (!chapter || !Array.isArray(quantityPlan) || quantityPlan.length === 0) return null;
+
+    const targetAt = (index) => {
+        if (index < 0 || index >= quantityPlan.length) return null;
+        return Math.max(0, Number(quantityPlan[index]?.target) || 0);
+    };
+
+    if (Number.isInteger(chapter.moduleIndex)) {
+        const indexedTarget = targetAt(chapter.moduleIndex);
+        if (indexedTarget !== null) return indexedTarget;
+    }
+
+    const chapterKeys = [chapter.level3, chapter.title, chapter.level2]
+        .map(normalizeHeadingMatchText)
+        .filter(Boolean);
+    const matchedIndex = quantityPlan.findIndex(planItem => {
+        const planKeys = [planItem.level3, planItem.level2, planItem.level1]
+            .map(normalizeHeadingMatchText)
+            .filter(Boolean);
+        return chapterKeys.some(chKey => planKeys.some(planKey => (
+            chKey === planKey ||
+            (chKey.length >= 4 && planKey.length >= 4 && (chKey.includes(planKey) || planKey.includes(chKey)))
+        )));
+    });
+    if (matchedIndex >= 0) return targetAt(matchedIndex);
+
+    if (chapter.moduleAligned || chapter.syntheticFromModule) {
+        return targetAt(fallbackIndex);
+    }
+    return null;
+};
+
 const getGroupLevels = (rows) => {
     const levels = { level1: '', level2: '', level3: '' };
     for (const row of rows) {
@@ -1030,7 +1063,10 @@ function App({ user, token, onLogout }) {
                 total: 5,
                 detail: 'Splitting the document into chapters and selecting likely functional sections.'
             });
-            const res = await axios.post('/api/split-chapters', { documentContent });
+            const res = await axios.post('/api/split-chapters', {
+                documentContent,
+                moduleStructure: recognizedModules || null
+            });
             if (res.data.success) {
                 const chapterList = res.data.chapters;
                 setChapters(chapterList);
@@ -1107,21 +1143,52 @@ function App({ user, token, onLogout }) {
             : 0;
         const quantityChapterTargets = [];
         if (extractionMode === 'quantity' && quantityTotalTarget > 0) {
-            const totalChars = selectedChapters.reduce((s, ch) => s + (ch.charCount || ch.content?.length || 1), 0) || selectedChapters.length;
-            let assigned = 0;
-            selectedChapters.forEach((chapter, idx) => {
-                const remainingChapters = selectedChapters.length - idx;
-                const remainingTarget = quantityTotalTarget - assigned;
-                let target;
-                if (idx === selectedChapters.length - 1) {
-                    target = Math.max(1, remainingTarget);
+            const planTargets = selectedChapters.map((chapter, idx) => (
+                getQuantityTargetForChapter(chapter, quantityPlan, idx)
+            ));
+            const matchedTargetTotal = planTargets.reduce((sum, target) => (
+                sum + (Number.isFinite(target) && target !== null ? target : 0)
+            ), 0);
+
+            if (quantityPlan?.length && planTargets.every(target => target !== null)) {
+                planTargets.forEach((target, idx) => {
+                    quantityChapterTargets[idx] = Math.max(0, Number(target) || 0);
+                });
+            } else {
+                const unmatchedIndexes = [];
+                planTargets.forEach((target, idx) => {
+                    if (target === null) unmatchedIndexes.push(idx);
+                    else quantityChapterTargets[idx] = Math.max(0, Number(target) || 0);
+                });
+
+                const remainingTotal = Math.max(0, quantityTotalTarget - matchedTargetTotal);
+                const targetChapters = unmatchedIndexes.length > 0 ? unmatchedIndexes : selectedChapters.map((_, idx) => idx);
+                if (remainingTotal <= 0) {
+                    targetChapters.forEach(idx => {
+                        quantityChapterTargets[idx] = quantityChapterTargets[idx] || 0;
+                    });
                 } else {
-                    const weighted = Math.round(((chapter.charCount || chapter.content?.length || 1) / totalChars) * quantityTotalTarget);
-                    target = Math.max(1, Math.min(weighted, remainingTarget - (remainingChapters - 1)));
+                    const totalChars = targetChapters.reduce((s, idx) => {
+                        const ch = selectedChapters[idx];
+                        return s + (ch.charCount || ch.content?.length || 1);
+                    }, 0) || targetChapters.length;
+                    let assigned = 0;
+                    targetChapters.forEach((idx, orderIdx) => {
+                        const chapter = selectedChapters[idx];
+                        const remainingChapters = targetChapters.length - orderIdx;
+                        const remainingTarget = remainingTotal - assigned;
+                        let target;
+                        if (orderIdx === targetChapters.length - 1) {
+                            target = Math.max(0, remainingTarget);
+                        } else {
+                            const weighted = Math.round(((chapter.charCount || chapter.content?.length || 1) / totalChars) * remainingTotal);
+                            target = Math.max(0, Math.min(weighted, remainingTarget - Math.max(0, remainingChapters - 1)));
+                        }
+                        quantityChapterTargets[idx] = (quantityChapterTargets[idx] || 0) + target;
+                        assigned += target;
+                    });
                 }
-                quantityChapterTargets[idx] = target;
-                assigned += target;
-            });
+            }
         }
         const skippedQuantityModules = extractionMode === 'quantity' && quantityPlan
             ? quantityPlan.filter(p => (p.target || 0) <= 0)
@@ -1138,6 +1205,17 @@ function App({ user, token, onLogout }) {
                 if (signal.aborted) return;
                 const chapter = selectedChapters[i];
                 const chapterTargetCount = quantityChapterTargets[i] || 0;
+                if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
+                    updateAnalysisProgress({
+                        phase: 'Function extraction',
+                        percent: 42 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 22),
+                        current: i + 1,
+                        total: selectedChapters.length,
+                        detail: `Skipped chapter: ${chapter.title} (target 0)`,
+                        stats: `${totalCount} functions found`
+                    });
+                    continue;
+                }
                 updateAnalysisProgress({
                     phase: 'Function extraction',
                     percent: 42 + Math.round((i / Math.max(selectedChapters.length, 1)) * 22),

@@ -309,7 +309,10 @@ function NesmaApp({ selectedModel, getUserConfig, showToast: externalShowToast }
             total: 4,
             detail: 'Splitting document into chapters.'
         });
-            const res = await axios.post('/api/split-chapters', { documentContent });
+            const res = await axios.post('/api/split-chapters', {
+                documentContent,
+                moduleStructure: recognizedModules || null
+            });
             if (res.data.success) {
                 const chapterList = res.data.chapters;
                 setChapters(chapterList);

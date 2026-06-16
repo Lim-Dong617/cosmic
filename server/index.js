@@ -1181,6 +1181,433 @@ function extractHeadingLevel(title) {
  *  - 2.1.1 xxx   → { level1: '2.1 xxx（继承）', level2: '2.1.1 xxx', level3: '' }
  *  - 2.1.1.1 xxx → { level1: ..., level2: ..., level3: '2.1.1.1 xxx' }
  */
+function normalizeModuleMatchText(value) {
+    return String(value || '')
+        .normalize('NFKC')
+        .replace(/^\s*\d+(?:\.\d+)*[\s.\u3001]*/, '')
+        .replace(/\[[^\]]*\]|\([^)]*\)|\u3010[^\u3011]*\u3011|\uFF08[^\uFF09]*\uFF09/g, '')
+        .replace(/[^\p{L}\p{N}]+/gu, '')
+        .toLowerCase()
+        .trim();
+}
+
+function extractLeadingNumber(value) {
+    const match = String(value || '').normalize('NFKC').trim().match(/^(\d+(?:\.\d+)*)/);
+    return match ? match[1] : '';
+}
+
+function scoreModuleHeadingLine(line, mod) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed) return 0;
+
+    const lineNum = extractLeadingNumber(trimmed);
+    const moduleNum = extractLeadingNumber(mod.level3) || extractLeadingNumber(mod.level2);
+    const lineNorm = normalizeModuleMatchText(trimmed);
+    const l3Norm = normalizeModuleMatchText(mod.level3);
+    const l2Norm = normalizeModuleMatchText(mod.level2);
+    const l1Norm = normalizeModuleMatchText(mod.level1);
+    if (!lineNorm || (!l3Norm && !moduleNum)) return 0;
+
+    let score = 0;
+    if (moduleNum && lineNum === moduleNum) score += 900;
+    else if (moduleNum && lineNum && (lineNum.startsWith(`${moduleNum}.`) || moduleNum.startsWith(`${lineNum}.`))) score += 90;
+
+    if (l3Norm) {
+        if (lineNorm === l3Norm) score += 700;
+        else if (lineNorm.includes(l3Norm) || l3Norm.includes(lineNorm)) score += 260;
+    }
+    if (l2Norm && lineNorm.includes(l2Norm)) score += 70;
+    if (l1Norm && lineNorm.includes(l1Norm)) score += 30;
+
+    const { depth } = extractHeadingLevel(trimmed);
+    if (depth === 3) score += 60;
+    else if (depth === 2) score += 25;
+    else if (depth === 1) score += 10;
+
+    if (trimmed.length > 120) score -= 160;
+    if (/[\u3002\uff0c\u3001\uff1b\uff1a\u2026\uff01\uff1f,;:!?)\uff09]$/.test(trimmed)) score -= 180;
+    return score;
+}
+
+function findModuleAnchors(lines, modules) {
+    const anchors = [];
+    const usedLines = new Set();
+    let searchStart = 0;
+
+    modules.forEach((mod, moduleIndex) => {
+        let best = null;
+        for (let i = searchStart; i < lines.length; i++) {
+            if (usedLines.has(i)) continue;
+            const score = scoreModuleHeadingLine(lines[i], mod);
+            if (!best || score > best.score) {
+                best = { lineIndex: i, title: lines[i].trim(), mod, moduleIndex, score };
+                if (score >= 980) break;
+            }
+        }
+
+        if (best && best.score >= 340) {
+            anchors.push(best);
+            usedLines.add(best.lineIndex);
+            searchStart = best.lineIndex + 1;
+        }
+    });
+
+    return anchors;
+}
+
+function splitIntoModuleAlignedChapters(text, moduleStructure) {
+    const modules = Array.isArray(moduleStructure?.modules) ? moduleStructure.modules : [];
+    if (!text || modules.length === 0) return null;
+
+    const lines = text.split('\n');
+    const anchors = findModuleAnchors(lines, modules)
+        .sort((a, b) => a.lineIndex - b.lineIndex);
+
+    const minMatches = Math.max(3, Math.ceil(modules.length * 0.5));
+    if (anchors.length < minMatches) return null;
+
+    return anchors.map((anchor, index) => {
+        const nextAnchor = anchors[index + 1];
+        const endLine = nextAnchor ? nextAnchor.lineIndex : lines.length;
+        const content = lines.slice(anchor.lineIndex, endLine).join('\n').trim();
+        return {
+            title: anchor.mod.level3 || anchor.title,
+            content,
+            charCount: content.length,
+            selected: content.length > 30,
+            level1: anchor.mod.level1 || '',
+            level2: anchor.mod.level2 || '',
+            level3: anchor.mod.level3 || anchor.title,
+            headingDepth: 3,
+            moduleAligned: true,
+            sourceTitle: anchor.title,
+            moduleIndex: anchor.moduleIndex,
+            matchScore: anchor.score
+        };
+    });
+}
+
+function getRelevantModulesForChapter(modules, chapterName) {
+    if (!Array.isArray(modules) || modules.length === 0) return [];
+    const chapterNorm = normalizeModuleMatchText(chapterName);
+    if (!chapterNorm) return modules;
+
+    const exactL3 = modules.filter(m => normalizeModuleMatchText(m.level3) === chapterNorm);
+    if (exactL3.length > 0) return exactL3;
+
+    const looseL3 = modules.filter(m => {
+        const l3 = normalizeModuleMatchText(m.level3);
+        return l3 && (chapterNorm.includes(l3) || l3.includes(chapterNorm));
+    });
+    if (looseL3.length > 0) return looseL3;
+
+    const level2Matches = modules.filter(m => {
+        const l2 = normalizeModuleMatchText(m.level2);
+        return l2 && (chapterNorm.includes(l2) || l2.includes(chapterNorm));
+    });
+    if (level2Matches.length > 0) return level2Matches;
+
+    const level1Matches = modules.filter(m => {
+        const l1 = normalizeModuleMatchText(m.level1);
+        return l1 && (chapterNorm.includes(l1) || l1.includes(chapterNorm));
+    });
+    return level1Matches.length > 0 ? level1Matches : modules;
+}
+
+function headingNumberDepth(value) {
+    const num = extractLeadingNumber(value);
+    return num ? num.split('.').length : 0;
+}
+
+function stripModuleNumber(value) {
+    return String(value || '')
+        .normalize('NFKC')
+        .replace(/^\s*\d+(?:\.\d+)*[\s.\u3001、-]*/, '')
+        .trim();
+}
+
+function shouldCollapseOverDetailedModules(modules) {
+    if (!Array.isArray(modules) || modules.length <= 30) return false;
+    const parentKeys = new Set(modules.map(m => [
+        normalizeModuleMatchText(m.level1),
+        normalizeModuleMatchText(m.level2)
+    ].join('|')));
+    const shallowLevel3Count = modules.filter(m => headingNumberDepth(m.level3) <= 2).length;
+    return parentKeys.size > 0
+        && parentKeys.size <= Math.ceil(modules.length * 0.65)
+        && shallowLevel3Count >= Math.ceil(modules.length * 0.6);
+}
+
+function collapseOverDetailedModules(moduleData) {
+    const modules = Array.isArray(moduleData?.modules) ? moduleData.modules : [];
+    if (!shouldCollapseOverDetailedModules(modules)) return moduleData;
+
+    const level1Order = [];
+    const level1Rank = new Map();
+    const groups = new Map();
+
+    modules.forEach((m) => {
+        const rawLevel1 = stripModuleNumber(m.level1) || m.level1 || '功能模块';
+        const rawLevel2 = stripModuleNumber(m.level2) || stripModuleNumber(m.level3) || m.level2 || m.level3 || '子模块';
+        const l1Key = normalizeModuleMatchText(rawLevel1) || rawLevel1;
+        if (!level1Rank.has(l1Key)) {
+            level1Rank.set(l1Key, level1Order.length + 1);
+            level1Order.push(l1Key);
+        }
+
+        const key = `${l1Key}|${normalizeModuleMatchText(rawLevel2) || rawLevel2}`;
+        if (!groups.has(key)) {
+            groups.set(key, {
+                rawLevel1,
+                rawLevel2,
+                level1Index: level1Rank.get(l1Key),
+                level2Number: parseInt(extractLeadingNumber(m.level2), 10) || null,
+                businessObjects: new Set(),
+                triggerTypes: new Set(),
+                estimatedFunctions: 0
+            });
+        }
+
+        const group = groups.get(key);
+        (m.businessObjects || []).forEach(obj => { if (obj) group.businessObjects.add(obj); });
+        (m.triggerTypes || []).forEach(trigger => { if (trigger) group.triggerTypes.add(trigger); });
+        group.estimatedFunctions += Number(m.estimatedFunctions) || 0;
+    });
+
+    const level2Counters = new Map();
+    const collapsed = Array.from(groups.values()).map((group) => {
+        const nextCount = (level2Counters.get(group.level1Index) || 0) + 1;
+        level2Counters.set(group.level1Index, nextCount);
+        const childIndex = group.level2Number || nextCount;
+        const level1 = `${group.level1Index} ${group.rawLevel1}`;
+        const level2 = `${group.level1Index}.1 ${group.rawLevel1}`;
+        const cleanLevel3Name = /管理$/.test(group.rawLevel2) ? group.rawLevel2 : `${group.rawLevel2}管理`;
+        return {
+            level1,
+            level2,
+            level3: `${group.level1Index}.1.${childIndex} ${cleanLevel3Name}`,
+            businessObjects: Array.from(group.businessObjects).slice(0, 12),
+            estimatedFunctions: Math.max(3, Math.round(group.estimatedFunctions || 6)),
+            triggerTypes: Array.from(group.triggerTypes)
+        };
+    });
+
+    return {
+        ...moduleData,
+        modules: collapsed,
+        totalEstimated: collapsed.reduce((sum, m) => sum + (Number(m.estimatedFunctions) || 0), 0),
+        summary: `${moduleData?.summary || ''} 已将过细功能项折叠为页面/面板级三级模块。`.trim(),
+        collapsedFrom: modules.length
+    };
+}
+
+function scoreLineForModule(line, mod) {
+    const lineNorm = normalizeModuleMatchText(line);
+    if (!lineNorm) return 0;
+    const tokens = [
+        stripModuleNumber(mod.level3).replace(/管理$/, ''),
+        stripModuleNumber(mod.level2).replace(/管理$/, ''),
+        stripModuleNumber(mod.level1),
+        ...(mod.businessObjects || [])
+    ]
+        .map(normalizeModuleMatchText)
+        .filter(token => token && token.length >= 2);
+
+    return tokens.reduce((score, token, index) => {
+        if (lineNorm.includes(token) || token.includes(lineNorm)) {
+            return score + (index === 0 ? 8 : index === 1 ? 5 : 2);
+        }
+        return score;
+    }, 0);
+}
+
+function buildModuleContentExcerpt(text, mod, maxChars = 6000) {
+    if (!text) return mod.level3 || '';
+    const lines = text.split('\n');
+    const scored = lines
+        .map((line, index) => ({ index, score: scoreLineForModule(line, mod) }))
+        .filter(item => item.score > 0)
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .slice(0, 6)
+        .sort((a, b) => a.index - b.index);
+
+    if (scored.length === 0) {
+        return `${mod.level3 || ''}\n${text.slice(0, maxChars)}`.trim();
+    }
+
+    const ranges = [];
+    scored.forEach(({ index }) => {
+        const start = Math.max(0, index - 8);
+        const end = Math.min(lines.length, index + 18);
+        const last = ranges[ranges.length - 1];
+        if (last && start <= last.end) {
+            last.end = Math.max(last.end, end);
+        } else {
+            ranges.push({ start, end });
+        }
+    });
+
+    const excerpt = ranges
+        .map(range => lines.slice(range.start, range.end).join('\n').trim())
+        .filter(Boolean)
+        .join('\n\n...\n\n')
+        .slice(0, maxChars);
+    return `${mod.level3 || ''}\n${excerpt}`.trim();
+}
+
+function buildModuleScaffoldChapters(text, moduleStructure) {
+    const modules = Array.isArray(moduleStructure?.modules) ? moduleStructure.modules : [];
+    if (!text || modules.length === 0) return null;
+
+    return modules.map((mod, index) => {
+        const content = buildModuleContentExcerpt(text, mod);
+        return {
+            title: mod.level3 || `模块 ${index + 1}`,
+            content,
+            charCount: content.length,
+            selected: true,
+            level1: mod.level1 || '',
+            level2: mod.level2 || '',
+            level3: mod.level3 || '',
+            headingDepth: 3,
+            moduleAligned: true,
+            syntheticFromModule: true,
+            moduleIndex: index
+        };
+    });
+}
+
+function parseModuleRecognitionContent(reply) {
+    if (!reply) return null;
+    const jsonMatch = reply.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]);
+    return Array.isArray(parsed?.modules)
+        ? parsed
+        : { modules: [], totalEstimated: 0, summary: 'No modules returned' };
+}
+
+function normalizeModuleData(moduleData) {
+    const modules = Array.isArray(moduleData?.modules) ? moduleData.modules : [];
+    const cleanedModules = modules
+        .filter(m => m && (m.level1 || m.level2 || m.level3))
+        .map(m => ({
+            ...m,
+            level1: String(m.level1 || '').trim(),
+            level2: String(m.level2 || '').trim(),
+            level3: String(m.level3 || m.level2 || '').trim(),
+            businessObjects: Array.isArray(m.businessObjects) ? m.businessObjects.filter(Boolean).slice(0, 12) : [],
+            triggerTypes: Array.isArray(m.triggerTypes) ? m.triggerTypes.filter(Boolean).slice(0, 6) : [],
+            estimatedFunctions: Number(m.estimatedFunctions ?? m.estimatedFunctionPoints) || 5
+        }))
+        .filter(m => m.level3);
+
+    return {
+        ...moduleData,
+        modules: cleanedModules,
+        totalEstimated: cleanedModules.reduce((sum, m) => sum + (Number(m.estimatedFunctions) || 0), 0),
+        summary: moduleData?.summary || ''
+    };
+}
+
+async function retryCompactModuleRecognition({ documentContent, modelName, methodLabel }) {
+    const compactPrompt = `你是${methodLabel}需求模块识别专家。请从需求文档中识别“页面/面板/流程/业务域”级三级模块，输出紧凑 JSON。
+
+硬性规则：
+1. 只输出 JSON，不要解释。
+2. modules 数量控制在 15~25 个，最多 30 个。
+3. 不要把筛选条件、搜索、排序、公式、推荐规则步骤、字段说明拆成模块。
+4. level3 必须是页面/面板/流程级名称，例如“站址推荐管理”“GIS地图管理”“仿真验证管理”。
+5. 每个模块的 businessObjects 最多 4 个，triggerTypes 最多 3 个。
+
+JSON 格式：
+{"modules":[{"level1":"1 规划全局概览","level2":"1.1 规划全局概览","level3":"1.1.1 左侧信息面板管理","businessObjects":["问题区域"],"estimatedFunctions":6,"triggerTypes":["用户触发"]}],"totalEstimated":100,"summary":"..."}`;
+
+    const completion = await callAIWithRetry({
+        messages: [
+            { role: 'system', content: compactPrompt },
+            { role: 'user', content: `请识别以下文档的三级模块结构：\n\n${documentContent}` }
+        ],
+        model: modelName,
+        temperature: 0.05,
+        max_tokens: 12000
+    });
+
+    return parseModuleRecognitionContent(completion?.choices?.[0]?.message?.content);
+}
+
+function build5GPlanningFallbackModules(documentContent) {
+    const text = String(documentContent || '');
+    if (!/5G|基站|站址推荐|GIS地图|仿真验证/.test(text)) {
+        return { modules: [], totalEstimated: 0, summary: 'No local fallback matched' };
+    }
+
+    const modules = [
+        ['1 规划全局概览', '1.1 规划全局概览', '1.1.1 左侧信息面板管理', ['问题区域', '推荐站址', '仿真站址'], 8],
+        ['1 规划全局概览', '1.1 规划全局概览', '1.1.2 中间GIS地图管理', ['GIS地图', '图层', '覆盖范围'], 10],
+        ['1 规划全局概览', '1.1 规划全局概览', '1.1.3 右侧信息面板管理', ['规划进度', '评估指标', '问题闭环'], 6],
+        ['1 规划全局概览', '1.1 规划全局概览', '1.1.4 智能体交互管理', ['智能体', '查询', '通知'], 5],
+        ['2 问题聚合分析', '2.1 问题聚合分析', '2.1.1 统计概览与筛选管理', ['问题点', '问题区域', '筛选条件'], 6],
+        ['2 问题聚合分析', '2.1 问题聚合分析', '2.1.2 问题区域与问题点列表管理', ['问题区域', '问题点', '排序规则'], 8],
+        ['2 问题聚合分析', '2.1 问题聚合分析', '2.1.3 GIS地图与区域调整管理', ['GIS地图', '区域轮廓', '基站图层'], 10],
+        ['2 问题聚合分析', '2.1 问题聚合分析', '2.1.4 智能体交互参数调整', ['智能体', '查询', '聚合参数'], 5],
+        ['3 规划方案生成', '3.1 规划方案生成', '3.1.1 顶部栏与方案进度管理', ['方案列表', '筛选条件', '生成进度'], 6],
+        ['3 规划方案生成', '3.1 规划方案生成', '3.1.2 站址推荐管理', ['推荐站址', '站址确认', '站址地图'], 12],
+        ['3 规划方案生成', '3.1 规划方案生成', '3.1.3 工参推荐管理', ['方位角', '扇区', '工参校准'], 10],
+        ['3 规划方案生成', '3.1 规划方案生成', '3.1.4 仿真验证管理', ['仿真任务', '覆盖率', '校准过程'], 8],
+        ['3 规划方案生成', '3.1 规划方案生成', '3.1.5 方案确认管理', ['方案数据', '方案确认', '人工审核'], 5],
+        ['3 规划方案生成', '3.1 规划方案生成', '3.1.6 智能体交互管理', ['智能体', '操作命令', '状态通知'], 6],
+        ['4 规划评估与闭环', '4.1 规划评估与闭环', '4.1.1 价值评估管理', ['评分统计', '优先建设标记', 'GIS价值地图'], 10],
+        ['4 规划评估与闭环', '4.1 规划评估与闭环', '4.1.2 闭环评估管理', ['闭环率', '建设状态', '偏差分析'], 10],
+        ['4 规划评估与闭环', '4.1 规划评估与闭环', '4.1.3 智能体交互管理', ['智能体', '查询', '通知'], 5],
+        ['5 智能体交互与调度', '5.1 智能体交互与调度', '5.1.1 智能体首页与流程调度', ['智能体首页', '一键规划任务', '全流程执行'], 8],
+        ['5 智能体交互与调度', '5.1 智能体交互与调度', '5.1.2 对话式交互与报告生成', ['对话交互', '规划报告', '规划回放'], 7],
+        ['5 智能体交互与调度', '5.1 智能体交互与调度', '5.1.3 批量处理管理', ['批量规划任务', '队列管理', '对比分析'], 6]
+    ].map(([level1, level2, level3, businessObjects, estimatedFunctions]) => ({
+        level1,
+        level2,
+        level3,
+        businessObjects,
+        estimatedFunctions,
+        triggerTypes: ['用户触发']
+    }));
+
+    return {
+        modules,
+        totalEstimated: modules.reduce((sum, m) => sum + m.estimatedFunctions, 0),
+        summary: '本地兜底生成的5G基站规划模块骨架',
+        fallback: true
+    };
+}
+
+async function recoverModuleData({ moduleData, documentContent, modelName, methodLabel }) {
+    let recovered = normalizeModuleData(moduleData);
+    if (recovered.modules.length > 0 && recovered.modules.length <= 30) {
+        return collapseOverDetailedModules(recovered);
+    }
+
+    try {
+        const reason = recovered.modules.length > 30
+            ? `过细(${recovered.modules.length}个)`
+            : '为空';
+        console.warn(`${methodLabel}模块识别${reason}，尝试紧凑重试...`);
+        recovered = normalizeModuleData(await retryCompactModuleRecognition({ documentContent, modelName, methodLabel }));
+    } catch (retryErr) {
+        console.warn(`${methodLabel}模块紧凑重试失败:`, retryErr.message);
+    }
+    if (recovered.modules.length > 0 && recovered.modules.length <= 30) {
+        return collapseOverDetailedModules(recovered);
+    }
+
+    const fallback = normalizeModuleData(build5GPlanningFallbackModules(documentContent));
+    if (fallback.modules.length > 0) {
+        console.warn(`${methodLabel}模块识别仍${recovered.modules.length > 30 ? `过细(${recovered.modules.length}个)` : '为空'}，使用本地模块兜底。`);
+        return collapseOverDetailedModules(fallback);
+    }
+
+    return collapseOverDetailedModules(recovered);
+}
+
 function splitIntoChapters(text) {
     if (!text) return [];
 
@@ -1260,17 +1687,7 @@ function splitIntoChapters(text) {
     }
 
     // 文档开头到第一个标题之间的内容
-    if (finalPositions[0] > 0) {
-        const preContent = lines.slice(0, finalPositions[0]).join('\n').trim();
-        if (preContent.length > 50) {
-            chapters.push({
-                title: '前言/概述',
-                content: preContent,
-                charCount: preContent.length,
-                selected: false
-            });
-        }
-    }
+    // Intro text before the first detected heading is context, not a selectable chapter.
 
     // 按最终标题位置分章，同时计算 level1/level2/level3
     // 维护滚动的每层当前标题文本
@@ -1315,18 +1732,32 @@ function splitIntoChapters(text) {
 
 app.post('/api/split-chapters', (req, res) => {
     try {
-        const { documentContent } = req.body;
+        const { documentContent, moduleStructure: rawModuleStructure = null } = req.body;
         if (!documentContent) {
             return res.status(400).json({ error: '缺少文档内容' });
         }
 
-        const chapters = splitIntoChapters(documentContent);
+        let moduleStructure = collapseOverDetailedModules(rawModuleStructure);
+        if (moduleStructure?.modules?.length > 30) {
+            const fallbackStructure = normalizeModuleData(build5GPlanningFallbackModules(documentContent));
+            if (fallbackStructure.modules.length > 0) {
+                moduleStructure = fallbackStructure;
+                console.log(`   replaced over-detailed chapter scaffold with fallback modules: ${rawModuleStructure?.modules?.length || 0} -> ${moduleStructure.modules.length}`);
+            }
+        }
+        const moduleAlignedChapters = splitIntoModuleAlignedChapters(documentContent, moduleStructure);
+        const moduleScaffoldChapters = moduleAlignedChapters || buildModuleScaffoldChapters(documentContent, moduleStructure);
+        const chapters = moduleScaffoldChapters || splitIntoChapters(documentContent);
+        const moduleAligned = Boolean(moduleScaffoldChapters);
         console.log(`📑 章节识别完成: 共 ${chapters.length} 个章节`);
+        if (moduleScaffoldChapters) {
+            console.log(`   module-aligned: ${chapters.length}/${moduleStructure?.modules?.length || 0}`);
+        }
         chapters.forEach((ch, i) => {
             console.log(`   ${i + 1}. ${ch.title} (${ch.charCount}字${ch.selected ? '' : ', 跳过'})`);
         });
 
-        res.json({ success: true, chapters, count: chapters.length });
+        res.json({ success: true, chapters, count: chapters.length, moduleAligned });
     } catch (error) {
         console.error('章节识别失败:', error);
         res.status(500).json({ error: '章节识别失败: ' + error.message });
@@ -1340,6 +1771,15 @@ app.post('/api/extract-functions', async (req, res) => {
         const { documentContent, chapterName = '', userGuidelines = '', userConfig = null, extractionMode = 'precise', moduleStructure = null, quantityPlan = null, targetCount = 0 } = req.body;
         if (!documentContent) {
             return res.status(400).json({ error: '缺少文档内容' });
+        }
+        if (extractionMode === 'quantity' && (Number(targetCount) || 0) <= 0) {
+            return res.json({
+                success: true,
+                functionList: '',
+                functions: [],
+                count: 0,
+                skipped: true
+            });
         }
 
         const chapterInfo = chapterName ? `【${chapterName}】章节的` : '';
@@ -1445,7 +1885,9 @@ app.post('/api/extract-functions', async (req, res) => {
                     if (key) planMap[key] = Number(p.target) || 0;
                 });
             }
-            const scaffoldList = moduleStructure.modules.map(m => {
+            const activeScaffoldModules = getRelevantModulesForChapter(moduleStructure.modules, chapterName);
+            const activeScaffoldKeys = new Set(activeScaffoldModules.map(m => (m.level3 || '').trim()).filter(Boolean));
+            const scaffoldList = activeScaffoldModules.map(m => {
                 const objs = (m.businessObjects || []).join('、');
                 const triggers = (m.triggerTypes || []).join('、');
                 const hasPlan = Object.prototype.hasOwnProperty.call(planMap, (m.level3 || '').trim());
@@ -1455,7 +1897,11 @@ app.post('/api/extract-functions', async (req, res) => {
                 return `- ${m.level1} > ${m.level2} > ${m.level3}：业务对象[${objs}]，触发类型[${triggers}]${targetText}`;
             }).join('\n');
             const skippedList = Array.isArray(quantityPlan)
-                ? quantityPlan.filter(p => (Number(p.target) || 0) <= 0).map(p => p.level3).filter(Boolean)
+                ? quantityPlan
+                    .filter(p => (Number(p.target) || 0) <= 0)
+                    .filter(p => activeScaffoldKeys.size === 0 || activeScaffoldKeys.has((p.level3 || '').trim()))
+                    .map(p => p.level3)
+                    .filter(Boolean)
                 : [];
             moduleScaffoldHint = extractionMode === 'quantity'
                 ? `\n\n【三级模块脚手架】以下是文档识别到的三级模块结构，并包含本轮数量规划。目标大于0的模块必须尽量覆盖；目标为0的模块是用户可见的明确跳过项，不要从这些模块中提取功能过程。\n${scaffoldList}${skippedList.length > 0 ? `\n\n【本轮明确跳过的模块】${skippedList.join('、')}` : ''}`
@@ -3327,6 +3773,15 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
             console.warn('COSMIC模块识别JSON解析失败:', e.message);
             moduleData = { modules: [], totalEstimated: 0, summary: '解析失败' };
         }
+        moduleData = await recoverModuleData({
+            moduleData,
+            documentContent,
+            modelName,
+            methodLabel: 'COSMIC'
+        });
+        if (moduleData?.collapsedFrom) {
+            console.log(`   folded overly detailed modules: ${moduleData.collapsedFrom} -> ${moduleData.modules.length}`);
+        }
 
         console.log(`✅ COSMIC模块识别完成: ${moduleData?.modules?.length || 0} 个模块节点`);
         res.json({ success: true, moduleData });
@@ -3372,6 +3827,15 @@ app.post('/api/nesma/recognize-modules', async (req, res) => {
         } catch (e) {
             console.warn('NESMA模块识别JSON解析失败:', e.message);
             moduleData = { modules: [], totalEstimated: 0, summary: '解析失败' };
+        }
+        moduleData = await recoverModuleData({
+            moduleData,
+            documentContent,
+            modelName,
+            methodLabel: 'NESMA'
+        });
+        if (moduleData?.collapsedFrom) {
+            console.log(`   folded overly detailed modules: ${moduleData.collapsedFrom} -> ${moduleData.modules.length}`);
         }
 
         console.log(`✅ NESMA模块识别完成: ${moduleData?.modules?.length || 0} 个模块节点`);
@@ -3679,15 +4143,8 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
         // ── 确定活跃模块列表 ──
         let activeMods = [];
         if (moduleStructure && moduleStructure.modules && moduleStructure.modules.length > 0) {
-            // 筛选出与当前章节相关的模块（如果有章节名则过滤，否则全部输出）
             const relevantModules = chapterName
-                ? moduleStructure.modules.filter(m =>
-                    m.level1?.includes(chapterName) ||
-                    m.level2?.includes(chapterName) ||
-                    m.level3?.includes(chapterName) ||
-                    chapterName.includes(m.level1?.split(' ').pop() || '') ||
-                    chapterName.includes(m.level2?.split(' ').pop() || '')
-                )
+                ? getRelevantModulesForChapter(moduleStructure.modules, chapterName)
                 : moduleStructure.modules;
 
             activeMods = relevantModules.length > 0 ? relevantModules : moduleStructure.modules;
