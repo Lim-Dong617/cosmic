@@ -29,6 +29,7 @@ const {
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
 const { authRouter } = require('./auth');
 const { initDatabase } = require('./database');
+const { buildCosmicAssessmentWorkbook } = require('./cosmic-template-export');
 
 
 const app = express();
@@ -3339,7 +3340,7 @@ app.post('/api/chat/stream', async (req, res) => {
 
 app.post('/api/export-excel', async (req, res) => {
     try {
-        const { tableData, filename = 'COSMIC拆分结果', sequenceDiagrams } = req.body;
+        const { tableData, filename = 'COSMIC拆分结果', sequenceDiagrams, exportTemplate = 'standard' } = req.body;
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
@@ -3349,6 +3350,15 @@ app.post('/api/export-excel', async (req, res) => {
         const hasDescription = tableData.some(r => r.functionDescription);
         const exportTableData = hasDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
         const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
+
+        if (exportTemplate === 'assessment') {
+            const workbook = buildCosmicAssessmentWorkbook(ExcelJS, exportTableData, filename);
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}.xlsx`);
+            await workbook.xlsx.write(res);
+            res.end();
+            return;
+        }
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('COSMIC拆分结果');

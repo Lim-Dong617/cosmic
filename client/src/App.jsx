@@ -438,6 +438,7 @@ function App({ user, token, onLogout }) {
     const [isVerifying, setIsVerifying] = useState(false);
     const [showSequenceDiagram, setShowSequenceDiagram] = useState(false);
     const [exportWithDiagrams, setExportWithDiagrams] = useState(false);
+    const [excelExportTemplate, setExcelExportTemplate] = useState('standard');
     const [generateDescription, setGenerateDescription] = useState(true); // 是否在拆分时生成功能描述
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
@@ -2332,6 +2333,7 @@ function App({ user, token, onLogout }) {
                 {
                     tableData: exportTableData,
                     filename: `COSMIC拆分_${documentName || '结果'}`,
+                    exportTemplate: excelExportTemplate,
                     sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
                 },
                 { responseType: 'blob', timeout: 120000 }
@@ -2339,7 +2341,7 @@ function App({ user, token, onLogout }) {
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.download = `COSMIC拆分_${documentName || '结果'}${sequenceDiagrams ? '_含时序图' : ''}.xlsx`;
+            link.download = `COSMIC拆分_${documentName || '结果'}${excelExportTemplate === 'assessment' ? '_评估模板' : ''}${sequenceDiagrams ? '_含时序图' : ''}.xlsx`;
             link.click();
             window.URL.revokeObjectURL(url);
             showToast(sequenceDiagrams ? `Excel导出成功（含 ${sequenceDiagrams.length} 张时序图）` : 'Excel导出成功');
@@ -2408,6 +2410,16 @@ function App({ user, token, onLogout }) {
         showToast('已复制到剪贴板');
         setTimeout(() => setCopied(false), 2000);
     };
+
+    const renderExcelTemplateSelect = () => (
+        <label className="excel-template-select" title="选择Excel导出模板">
+            <span>模板</span>
+            <select value={excelExportTemplate} onChange={e => setExcelExportTemplate(e.target.value)}>
+                <option value="standard">标准结果</option>
+                <option value="assessment">COSMIC评估模板</option>
+            </select>
+        </label>
+    );
 
     // ═══════════ 补充功能描述 ═══════════
     const supplementDescription = async () => {
@@ -3262,6 +3274,7 @@ function App({ user, token, onLogout }) {
                                         <button className="btn btn-success btn-sm" onClick={exportExcel}>
                                             <Download size={14} /> 导出Excel
                                         </button>
+                                        {renderExcelTemplateSelect()}
                                         <button className="btn btn-sm" onClick={exportWord} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为Word功能规格说明书">
                                             <FileText size={14} /> 导出Word
                                         </button>
@@ -3384,6 +3397,7 @@ function App({ user, token, onLogout }) {
                                                         <button className="btn btn-success btn-sm" onClick={exportExcel} disabled={isGeneratingDiagrams}>
                                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <Download size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Excel'}
                                                         </button>
+                                                        {renderExcelTemplateSelect()}
                                                         <label className="seq-export-toggle" title="导出Excel时附带每个功能过程的时序图">
                                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                                             <GitBranch size={12} /> 附带时序图
@@ -3726,6 +3740,7 @@ function App({ user, token, onLogout }) {
                                         <button className="btn btn-success btn-sm" onClick={exportExcel} disabled={isGeneratingDiagrams}>
                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <Download size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Excel'}
                                         </button>
+                                        {renderExcelTemplateSelect()}
                                         <button className="btn btn-sm" onClick={exportWord} disabled={isGeneratingDiagrams} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为Word功能规格说明书">
                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Word'}
                                         </button>

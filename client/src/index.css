@@ -3150,3 +3150,33 @@ textarea.setting-input {
     cursor: pointer;
     margin: 0;
 }
+
+.excel-template-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 16px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.excel-template-select select {
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.excel-template-select:focus-within,
+.excel-template-select:hover {
+    border-color: rgba(16, 185, 129, 0.35);
+    background: rgba(16, 185, 129, 0.07);
+}
