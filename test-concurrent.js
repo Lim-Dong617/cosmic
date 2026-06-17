@@ -4,14 +4,14 @@
  * 测试内容：
  * 1. Render 后端健康检查 + 冷启动唤醒
  * 2. OpenRouter DeepSeek V4 Flash (free) 并发测试（1/2/3/5并发）
- * 3. 火山引擎 DeepSeek-V3 并发测试（1/2/3/5并发）
+ * 3. 火山引擎 DeepSeek V4 Pro 并发测试（1/2/3/5并发）
  * 4. 混合并发：同时调用两个平台
  * 5. Render 后端并发（通过部署的服务调用 AI）
  */
 
-const OpenAI = require('openai');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+const { callAI } = require('./server/ai-client');
 
 // ═══════════ 配置 ═══════════
 
@@ -25,10 +25,10 @@ const IFLOW_CONFIG = {
 };
 
 const VOLCENGINE_CONFIG = {
-    name: '火山引擎 DeepSeek-V3',
+    name: '火山引擎 DeepSeek V4 Pro',
     apiKey: process.env.VOLCENGINE_API_KEY,
-    baseURL: process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3',
-    model: process.env.VOLCENGINE_MODEL || 'deepseek-v3-250324'
+    baseURL: process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding',
+    model: process.env.VOLCENGINE_MODEL || 'deepseek-v4-pro-260425'
 };
 
 // ═══════════ 测试文档（不同长度，模拟真实场景） ═══════════
@@ -81,11 +81,10 @@ const GREEN = '32', RED = '31', YELLOW = '33', CYAN = '36', BOLD = '1', DIM = '2
  * 单次 AI 平台调用
  */
 async function callOnce(config, taskId, doc = DOCS.medium) {
-    const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
     const start = Date.now();
 
     try {
-        const completion = await client.chat.completions.create({
+        const completion = await callAI({
             model: config.model,
             messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
@@ -93,7 +92,9 @@ async function callOnce(config, taskId, doc = DOCS.medium) {
             ],
             temperature: 0.3,
             max_tokens: 4000,
-            stream: false
+            stream: false,
+            apiKey: config.apiKey,
+            baseUrl: config.baseURL
         });
 
         const elapsed = Date.now() - start;
@@ -254,7 +255,7 @@ async function main() {
 
     console.log('  ⏳ 火山引擎 × 1...');
     const volc1 = await concurrencyTest(VOLCENGINE_CONFIG, 1);
-    printConcurrencyResult('火山引擎 DeepSeek-V3', volc1);
+    printConcurrencyResult('火山引擎 DeepSeek V4 Pro', volc1);
     allResults['volc_1'] = volc1;
 
     // ═══════════ 阶段 3：2 并发 ═══════════
@@ -267,7 +268,7 @@ async function main() {
 
     console.log('  ⏳ 火山引擎 × 2...');
     const volc2 = await concurrencyTest(VOLCENGINE_CONFIG, 2);
-    printConcurrencyResult('火山引擎 DeepSeek-V3', volc2);
+    printConcurrencyResult('火山引擎 DeepSeek V4 Pro', volc2);
     allResults['volc_2'] = volc2;
 
     // ═══════════ 阶段 4：3 并发 ═══════════
@@ -280,7 +281,7 @@ async function main() {
 
     console.log('  ⏳ 火山引擎 × 3...');
     const volc3 = await concurrencyTest(VOLCENGINE_CONFIG, 3);
-    printConcurrencyResult('火山引擎 DeepSeek-V3', volc3);
+    printConcurrencyResult('火山引擎 DeepSeek V4 Pro', volc3);
     allResults['volc_3'] = volc3;
 
     // ═══════════ 阶段 5：5 并发 ═══════════
@@ -293,7 +294,7 @@ async function main() {
 
     console.log('  ⏳ 火山引擎 × 5...');
     const volc5 = await concurrencyTest(VOLCENGINE_CONFIG, 5);
-    printConcurrencyResult('火山引擎 DeepSeek-V3', volc5);
+    printConcurrencyResult('火山引擎 DeepSeek V4 Pro', volc5);
     allResults['volc_5'] = volc5;
 
     // ═══════════ 阶段 6：混合并发 ═══════════
@@ -344,7 +345,7 @@ async function main() {
 
     const summary = [
         ['OpenRouter V4 Flash', 'iflow'],
-        ['火山 V3', 'volc']
+        ['火山 V4 Pro', 'volc']
     ];
 
     for (const [name, key] of summary) {

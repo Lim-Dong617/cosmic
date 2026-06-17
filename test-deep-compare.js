@@ -8,10 +8,10 @@
  * 4. 汇总跨文档的差异模式
  */
 
-const OpenAI = require('openai');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+const { callAI } = require('./server/ai-client');
 
 // ═══════════ 平台配置 ═══════════
 
@@ -27,8 +27,8 @@ const PLATFORMS = {
         name: '火山引擎 (volcengine)',
         short: '火山',
         apiKey: process.env.VOLCENGINE_API_KEY,
-        baseURL: process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3',
-        model: process.env.VOLCENGINE_MODEL || 'deepseek-v3-250324'
+        baseURL: process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding',
+        model: process.env.VOLCENGINE_MODEL || 'deepseek-v4-pro-260425'
     }
 };
 
@@ -155,14 +155,10 @@ const PHASE2_SYSTEM = `你是一个顶级Cosmic拆分专家。请对以下功能
 
 async function callPlatform(platformKey, systemPrompt, userMessage, temperature = 0) {
     const config = PLATFORMS[platformKey];
-    const client = new OpenAI({
-        apiKey: config.apiKey,
-        baseURL: config.baseURL
-    });
 
     const startTime = Date.now();
     try {
-        const completion = await client.chat.completions.create({
+        const completion = await callAI({
             model: config.model,
             messages: [
                 { role: 'system', content: systemPrompt },
@@ -170,7 +166,9 @@ async function callPlatform(platformKey, systemPrompt, userMessage, temperature 
             ],
             temperature: temperature,
             max_tokens: 8000,
-            stream: false
+            stream: false,
+            apiKey: config.apiKey,
+            baseUrl: config.baseURL
         });
 
         const elapsed = Date.now() - startTime;

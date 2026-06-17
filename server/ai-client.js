@@ -11,7 +11,8 @@ const KRILL_BASE_URL = process.env.KRILL_BASE_URL || process.env.ANTHROPIC_BASE_
 const DEFAULT_MODEL_ALIAS = 'deepseek-v4-flash-free';
 
 // 火山引擎模型名称
-const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v3-2-251201';
+const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v4-pro-260425';
+const VOLCENGINE_BASE_URL = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding';
 
 // 模型映射表
 const MODEL_MAP = {
@@ -19,13 +20,14 @@ const MODEL_MAP = {
     'deepseek-v4-flash': SENSENOVA_MODEL_NAME,
     'deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
     'deepseek/deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
+    'deepseek-v4-pro': VOLCENGINE_MODEL_NAME,
     'deepseek-v3': SENSENOVA_MODEL_NAME,               // 兼容旧入口：改走 SenseNova V4 Flash
     'deepseek-v3.2': SENSENOVA_MODEL_NAME,             // 兼容旧入口：改走 SenseNova V4 Flash
-    'deepseek-r1': 'deepseek-r1',              // 深度思考模式
-    'deepseek-reasoner': 'deepseek-r1',         // 别名
+    'deepseek-r1': VOLCENGINE_MODEL_NAME,              // 兼容旧入口：改走火山引擎 DeepSeek V4 Pro
+    'deepseek-reasoner': VOLCENGINE_MODEL_NAME,         // 别名
     'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
     'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
-    'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek-V3
+    'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek V4 Pro
     // 兼容旧版大写名称
     'DeepSeek-V3-671B': SENSENOVA_MODEL_NAME,     // 兼容旧名称：改走 SenseNova V4 Flash
     'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'
@@ -77,7 +79,7 @@ function createClient(apiKey, baseUrl, model) {
     } else if (isSensenovaModel) {
         url = SENSENOVA_BASE_URL;
     } else if (isVolcengineModel) {
-        url = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
+        url = VOLCENGINE_BASE_URL;
     } else if (isGptModel) {
         url = process.env.GPT_BASE_URL || 'https://x.ainiaini.xyz/v1';
     } else if (isBaishanModel) {
@@ -124,6 +126,10 @@ function normalizeAnthropicMessages(messages = []) {
 
 function krillUrl(path) {
     return `${KRILL_BASE_URL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+function volcengineUrl(path, baseUrl = VOLCENGINE_BASE_URL) {
+    return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
 }
 
 function extractAnthropicText(data) {
@@ -197,6 +203,66 @@ async function callKrillAI({ messages, modelName, temperature, max_tokens, strea
     };
 }
 
+async function callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl }) {
+    const key = apiKey || process.env.VOLCENGINE_API_KEY;
+    if (!key) {
+        throw new Error('缺少 VOLCENGINE_API_KEY');
+    }
+
+    const normalized = normalizeAnthropicMessages(messages);
+    const body = {
+        model: modelName,
+        messages: normalized.messages,
+        max_tokens,
+        temperature
+    };
+    if (normalized.system) body.system = normalized.system;
+
+    const response = await fetch(volcengineUrl('/v1/messages', baseUrl), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${key}`,
+            'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify(body)
+    });
+
+    const raw = await response.text();
+    let data = null;
+    try {
+        data = raw ? JSON.parse(raw) : null;
+    } catch (error) {
+        throw new Error(`火山引擎 Coding 响应不是JSON: ${raw.slice(0, 300)}`);
+    }
+
+    if (!response.ok) {
+        const message = data?.error?.message || data?.message || data?.msg || raw;
+        const error = new Error(`火山引擎 Coding API错误 [${response.status}]: ${message}`);
+        error.status = response.status;
+        throw error;
+    }
+
+    const content = extractAnthropicText(data);
+    if (stream && res) {
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        return null;
+    }
+
+    return {
+        choices: [{
+            message: { role: 'assistant', content },
+            finish_reason: data?.stop_reason || 'stop'
+        }],
+        model: data?.model || modelName,
+        usage: {
+            prompt_tokens: data?.usage?.input_tokens || 0,
+            completion_tokens: data?.usage?.output_tokens || 0,
+            total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0)
+        }
+    };
+}
+
 /**
  * 调用 AI Chat 接口
  * @param {Object} options - 调用选项
@@ -224,9 +290,15 @@ async function callAI(options) {
 
     const modelName = MODEL_MAP[model] || model;
     const isStreamOnly = STREAM_ONLY_MODELS.has(modelName);
+    const isVolcengineModel = VOLCENGINE_MODELS.has(modelName);
+    const activeBaseUrl = baseUrl || (isVolcengineModel ? VOLCENGINE_BASE_URL : null);
 
     if (isKrillModel(modelName)) {
         return callKrillAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey });
+    }
+
+    if (isVolcengineModel && /\/api\/coding\/?$/i.test(activeBaseUrl || '')) {
+        return callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl });
     }
 
     const client = createClient(apiKey, baseUrl, modelName);

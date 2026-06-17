@@ -562,9 +562,9 @@ function App({ user, token, onLogout }) {
             const labels = {
                 'deepseek-v4-flash-free': 'DeepSeek V4 Flash (SenseNova)',
                 'deepseek-v3': 'DeepSeek V4 Flash (SenseNova)',
-                'deepseek-r1': 'DeepSeek-R1 深度思考',
+                'deepseek-r1': 'DeepSeek V4 Pro',
                 'qwen3-coder': 'Qwen3-Coder',
-                'gpt-5.1-codex-mini': '优先使用 V3'
+                'gpt-5.1-codex-mini': '优先使用 V4 Pro'
             };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
@@ -579,7 +579,7 @@ function App({ user, token, onLogout }) {
             return {
                 apiKey: null,
                 baseUrl: null,  // 由后端 .env 的 VOLCENGINE_BASE_URL 控制
-                model: 'gpt-5.1-codex-mini',  // 后端映射到火山引擎 DeepSeek-V3
+                model: 'gpt-5.1-codex-mini',  // 后端映射到火山引擎 DeepSeek V4 Pro
                 provider: 'volcengine'
             };
         }
@@ -600,7 +600,7 @@ function App({ user, token, onLogout }) {
             apiKey: null,
             baseUrl: null,
             model: modelMap[selectedModel] || 'deepseek-v4-flash-free',
-            provider: selectedModel === 'deepseek-r1' ? 'iflow' : 'sensenova'
+            provider: selectedModel === 'deepseek-r1' ? 'volcengine' : 'sensenova'
         };
     };
 
@@ -3128,8 +3128,8 @@ function App({ user, token, onLogout }) {
                             >
                                 <span className="model-option-dot" style={{ background: '#a855f7' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-R1 🧠</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>深度思考 · 慢而准</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek V4 Pro</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>火山引擎 · 高质量</div>
                                 </div>
                             </button>
                             <button
@@ -3149,7 +3149,7 @@ function App({ user, token, onLogout }) {
                                 <span className="model-option-dot" />
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: 13 }}>优先使用 🌋</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>DeepSeek-V3 · 最最推荐</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>DeepSeek V4 Pro · 最最推荐</div>
                                 </div>
                             </button>
                         </div>

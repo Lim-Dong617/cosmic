@@ -1,11 +1,11 @@
 /**
- * 并发对比测试：OpenRouter DeepSeek V4 Flash (free) vs 火山引擎 DeepSeek-V3.2
+ * 并发对比测试：OpenRouter DeepSeek V4 Flash (free) vs 火山引擎 DeepSeek V4 Pro
  * 用同一段文档 + 同一个 COSMIC 提示词，同时调用两个平台，对比结果
  */
 
-const OpenAI = require('openai');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+const { callAI } = require('./server/ai-client');
 
 // ═══════════ 配置 ═══════════
 
@@ -17,10 +17,10 @@ const IFLOW_CONFIG = {
 };
 
 const VOLCENGINE_CONFIG = {
-    name: '火山引擎 DeepSeek-V3.2',
+    name: '火山引擎 DeepSeek V4 Pro',
     apiKey: process.env.VOLCENGINE_API_KEY,
-    baseURL: process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3',
-    model: process.env.VOLCENGINE_MODEL || 'deepseek-v3-2-251201'
+    baseURL: process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding',
+    model: process.env.VOLCENGINE_MODEL || 'deepseek-v4-pro-260425'
 };
 
 // ═══════════ 测试文档（精简版，覆盖多种功能类型） ═══════════
@@ -77,15 +77,10 @@ const SYSTEM_PROMPT = `你是一个顶级Cosmic拆分专家。请从以下需求
 // ═══════════ 测试函数 ═══════════
 
 async function callPlatform(config) {
-    const client = new OpenAI({
-        apiKey: config.apiKey,
-        baseURL: config.baseURL
-    });
-
     const startTime = Date.now();
 
     try {
-        const completion = await client.chat.completions.create({
+        const completion = await callAI({
             model: config.model,
             messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
@@ -93,7 +88,9 @@ async function callPlatform(config) {
             ],
             temperature: 0.3,
             max_tokens: 4000,
-            stream: false
+            stream: false,
+            apiKey: config.apiKey,
+            baseUrl: config.baseURL
         });
 
         const endTime = Date.now();

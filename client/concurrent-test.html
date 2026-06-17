@@ -745,7 +745,7 @@
         async function runOneChannel(ch, signal) {
             const target = parseInt(document.getElementById('targetCount').value) || 30;
             const model = document.getElementById('modelSelect').value;
-            const userConfig = { model, baseUrl: null, provider: model === 'deepseek-r1' ? 'iflow' : 'sensenova' };
+            const userConfig = { model, baseUrl: null, provider: model === 'deepseek-r1' ? 'volcengine' : 'sensenova' };
             let allTableData = []; let round = 1; const maxRounds = 10; const startTime = Date.now();
 
             setStatus(ch, 'running', '分析中...');
