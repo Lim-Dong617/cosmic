@@ -1642,6 +1642,71 @@ function buildModuleScaffoldChapters(text, moduleStructure) {
     });
 }
 
+function isUsableDocumentChapterSplit(chapters) {
+    if (!Array.isArray(chapters)) return false;
+    const realChapters = chapters.filter(ch => ch && ch.title !== '全文');
+    if (realChapters.length < 2) return false;
+    const selectedCount = realChapters.filter(ch => ch.selected && (ch.charCount || 0) > 50).length;
+    return selectedCount >= Math.min(2, realChapters.length);
+}
+
+function hasRepeatedChapterLeadText(chapters) {
+    if (!Array.isArray(chapters) || chapters.length < 4) return false;
+    const leads = chapters
+        .map(ch => {
+            const body = String(ch?.content || '')
+                .replace(String(ch?.title || ''), '')
+                .slice(0, 260);
+            return normalizeModuleMatchText(body).slice(0, 120);
+        })
+        .filter(lead => lead.length >= 40);
+    if (leads.length < 4) return false;
+    const uniqueCount = new Set(leads).size;
+    return uniqueCount <= Math.ceil(leads.length * 0.45);
+}
+
+function findModuleForChapter(chapter, modules) {
+    const chapterNorm = normalizeModuleMatchText(chapter?.title);
+    if (!chapterNorm || !Array.isArray(modules)) return null;
+    let best = null;
+    let bestScore = 0;
+    modules.forEach((mod, index) => {
+        const fields = [mod.level3, mod.level2, mod.level1].map(normalizeModuleMatchText);
+        let score = 0;
+        fields.forEach((field, fieldIndex) => {
+            if (!field) return;
+            if (chapterNorm === field) score = Math.max(score, fieldIndex === 0 ? 100 : 70);
+            else if (chapterNorm.includes(field) || field.includes(chapterNorm)) {
+                score = Math.max(score, fieldIndex === 0 ? 70 : 40);
+            }
+        });
+        if (score > bestScore) {
+            bestScore = score;
+            best = { mod, index };
+        }
+    });
+    return bestScore >= 40 ? best : null;
+}
+
+function annotateDocumentChaptersWithModules(chapters, moduleStructure) {
+    const modules = Array.isArray(moduleStructure?.modules) ? moduleStructure.modules : [];
+    if (!modules.length || !Array.isArray(chapters)) return chapters;
+
+    return chapters.map(chapter => {
+        const match = findModuleForChapter(chapter, modules);
+        if (!match) return chapter;
+        const { mod, index } = match;
+        return {
+            ...chapter,
+            level1: chapter.level1 || mod.level1 || '',
+            level2: chapter.level2 || mod.level2 || '',
+            level3: chapter.level3 || mod.level3 || chapter.title,
+            moduleIndex: Number.isInteger(chapter.moduleIndex) ? chapter.moduleIndex : index,
+            moduleMatched: true
+        };
+    });
+}
+
 function parseModuleRecognitionContent(reply) {
     if (!reply) return null;
     const jsonMatch = reply.match(/\{[\s\S]*\}/);
@@ -1910,11 +1975,22 @@ app.post('/api/split-chapters', (req, res) => {
                 console.log(`   replaced over-detailed chapter scaffold with fallback modules: ${rawModuleStructure?.modules?.length || 0} -> ${moduleStructure.modules.length}`);
             }
         }
+        const documentChapters = splitIntoChapters(documentContent);
         const moduleAlignedChapters = splitIntoModuleAlignedChapters(documentContent, moduleStructure);
-        const moduleScaffoldChapters = moduleAlignedChapters || buildModuleScaffoldChapters(documentContent, moduleStructure);
-        const chapters = moduleScaffoldChapters || splitIntoChapters(documentContent);
+        const alignedLooksRepeated = hasRepeatedChapterLeadText(moduleAlignedChapters);
+        const useDocumentChapters = isUsableDocumentChapterSplit(documentChapters)
+            && (!moduleAlignedChapters || alignedLooksRepeated);
+        const moduleScaffoldChapters = useDocumentChapters
+            ? null
+            : (moduleAlignedChapters || buildModuleScaffoldChapters(documentContent, moduleStructure));
+        const chapters = useDocumentChapters
+            ? annotateDocumentChaptersWithModules(documentChapters, moduleStructure)
+            : (moduleScaffoldChapters || documentChapters);
         const moduleAligned = Boolean(moduleScaffoldChapters);
         console.log(`📑 章节识别完成: 共 ${chapters.length} 个章节`);
+        if (useDocumentChapters) {
+            console.log(`   document-split: using source chapter boundaries${alignedLooksRepeated ? ' (module-aligned split looked repetitive)' : ''}`);
+        }
         if (moduleScaffoldChapters) {
             console.log(`   module-aligned: ${chapters.length}/${moduleStructure?.modules?.length || 0}`);
         }
