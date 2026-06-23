@@ -1212,6 +1212,67 @@ app.post('/api/config', (req, res) => {
 
 // ═══════════════════════ 文档解析 ═══════════════════════
 
+function restoreWordHeadingNumbers(markdown) {
+    const lines = String(markdown || '').split(/\r?\n/);
+    const headingRows = lines
+        .map((line, index) => {
+            const match = line.trim().match(/^(#{1,6})\s+(.+)$/);
+            return match ? { index, level: match[1].length, title: match[2].trim() } : null;
+        })
+        .filter(Boolean);
+
+    if (headingRows.length === 0) return String(markdown || '').trim();
+
+    // Word cover/document titles are frequently Heading 1 too. When the first
+    // two headings are adjacent peers, keep the first as an unnumbered title.
+    const first = headingRows[0];
+    const second = headingRows[1];
+    const textBetweenFirstTwo = second
+        ? lines.slice(first.index + 1, second.index).join('').trim()
+        : '';
+    const skipFirstAsDocumentTitle = Boolean(
+        second
+        && first.level === second.level
+        && !textBetweenFirstTwo
+        && /需求|说明书|文档|内容|方案|报告|设计|规格|项目/.test(first.title)
+    );
+
+    const structuralRows = skipFirstAsDocumentTitle ? headingRows.slice(1) : headingRows;
+    const baseLevel = Math.min(...structuralRows.map(row => row.level));
+    const counters = Array(6).fill(0);
+    const replacements = new Map();
+
+    headingRows.forEach((row, rowIndex) => {
+        if (skipFirstAsDocumentTitle && rowIndex === 0) {
+            replacements.set(row.index, row.title);
+            return;
+        }
+
+        const counterIndex = row.level - baseLevel;
+        for (let i = 0; i < counterIndex; i++) {
+            if (counters[i] === 0) counters[i] = 1;
+        }
+        counters[counterIndex] += 1;
+        counters.fill(0, counterIndex + 1);
+
+        // Do not duplicate numbers that were typed into the heading itself.
+        if (/^\d+(?:\.\d+)*[.、\s]/.test(row.title)) {
+            replacements.set(row.index, row.title);
+            return;
+        }
+        const number = counters.slice(0, counterIndex + 1).join('.');
+        replacements.set(row.index, `${number}. ${row.title}`);
+    });
+
+    return lines
+        .map((line, index) => replacements.has(index) ? replacements.get(index) : line)
+        .join('\n')
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+        .replace(/\\([.>\-])/g, '$1')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req, res) => {
     const uploadedPath = req.file?.path;
     try {
@@ -1225,8 +1286,14 @@ app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req
         console.log(`📄 解析文件: ${req.file.originalname}, 大小: ${req.file.size} bytes`);
 
         if (ext === '.docx') {
-            const result = await mammoth.extractRawText({ path: uploadedPath });
-            text = result.value;
+            // Raw text drops Word's automatic heading numbers and all heading
+            // styles. Markdown keeps Heading 1/2/3 semantics so we can restore a
+            // stable visible outline before chapter detection.
+            const result = await mammoth.convertToMarkdown(
+                { path: uploadedPath },
+                { convertImage: mammoth.images.imgElement(() => ({ src: '' })) }
+            );
+            text = restoreWordHeadingNumbers(result.value);
         } else if (ext === '.txt' || ext === '.md') {
             text = await fs.promises.readFile(uploadedPath, 'utf-8');
         } else if (ext === '.doc') {
@@ -1643,6 +1710,30 @@ function buildModuleScaffoldChapters(text, moduleStructure) {
     });
 }
 
+function hasExcessiveSyntheticChapterOverlap(chapters, sourceText) {
+    if (!Array.isArray(chapters) || chapters.length < 3 || !sourceText) return false;
+
+    const sourceLength = normalizeModuleMatchText(sourceText).length;
+    if (sourceLength < 80) return false;
+
+    const bodies = chapters.map(chapter => {
+        const contentLines = String(chapter?.content || '').split('\n');
+        if (normalizeModuleMatchText(contentLines[0]) === normalizeModuleMatchText(chapter?.title)) {
+            contentLines.shift();
+        }
+        return normalizeModuleMatchText(contentLines.join('\n'));
+    });
+    const nearFullCount = bodies.filter(body => body.length >= sourceLength * 0.72).length;
+    const leadFingerprints = bodies
+        .filter(body => body.length >= 80)
+        .map(body => body.slice(0, 320));
+    const uniqueLeadCount = new Set(leadFingerprints).size;
+
+    return nearFullCount >= Math.ceil(chapters.length * 0.6)
+        || (leadFingerprints.length >= 3
+            && uniqueLeadCount <= Math.ceil(leadFingerprints.length * 0.4));
+}
+
 function isUsableDocumentChapterSplit(chapters) {
     if (!Array.isArray(chapters)) return false;
     const realChapters = chapters.filter(ch => ch && ch.title !== '全文');
@@ -1973,9 +2064,13 @@ app.post('/api/split-chapters', (req, res) => {
         // paragraph and produce repeated, synthetic "chapters". Only fall back to
         // the scaffold when the source document has no usable heading structure.
         const useDocumentChapters = isUsableDocumentChapterSplit(documentChapters);
-        const moduleScaffoldChapters = useDocumentChapters
+        let moduleScaffoldChapters = useDocumentChapters
             ? null
             : (moduleAlignedChapters || buildModuleScaffoldChapters(documentContent, moduleStructure));
+        if (hasExcessiveSyntheticChapterOverlap(moduleScaffoldChapters, documentContent)) {
+            console.warn('   module scaffold chapters overlap excessively; falling back to a single full-document chapter');
+            moduleScaffoldChapters = null;
+        }
         const chapters = useDocumentChapters
             ? annotateDocumentChaptersWithModules(documentChapters, moduleStructure)
             : (moduleScaffoldChapters || documentChapters);
