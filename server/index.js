@@ -559,6 +559,58 @@ function alignProcessNamesByOrder(tableData, referenceNames) {
     return tableData;
 }
 
+function limitSubprocessesPerFunction(tableData, maxRows = 5) {
+    if (!Array.isArray(tableData) || tableData.length === 0) return tableData || [];
+
+    const groups = [];
+    let currentGroup = null;
+    for (const row of tableData) {
+        if (row.dataMovementType === 'E') {
+            currentGroup = { processName: row.functionalProcess || '', rows: [row] };
+            groups.push(currentGroup);
+        } else if (currentGroup) {
+            currentGroup.rows.push(row);
+        } else {
+            groups.push({ processName: '', rows: [row], orphan: true });
+        }
+    }
+
+    let trimmedCount = 0;
+    const limited = groups.flatMap(group => {
+        const rows = group.rows;
+        if (group.orphan || rows.length <= maxRows) return rows;
+
+        const keep = new Set([0]); // E
+        const lastXIndex = rows.reduce((found, row, index) => (
+            row.dataMovementType === 'X' ? index : found
+        ), -1);
+        if (lastXIndex > 0) keep.add(lastXIndex);
+
+        const availableSlots = Math.max(0, maxRows - keep.size);
+        const middleIndexes = rows
+            .map((row, index) => ({ row, index }))
+            .filter(item => item.index !== 0 && item.index !== lastXIndex);
+        const priority = [];
+        const firstR = middleIndexes.find(item => item.row.dataMovementType === 'R');
+        const firstW = middleIndexes.find(item => item.row.dataMovementType === 'W');
+        if (firstR) priority.push(firstR.index);
+        if (firstW) priority.push(firstW.index);
+        middleIndexes.forEach(item => {
+            if (!priority.includes(item.index)) priority.push(item.index);
+        });
+        priority.slice(0, availableSlots).forEach(index => keep.add(index));
+
+        const keptRows = rows.filter((_, index) => keep.has(index));
+        trimmedCount += rows.length - keptRows.length;
+        return keptRows;
+    });
+
+    if (trimmedCount > 0) {
+        console.log(`✂️ 子过程上限保护: 已裁减 ${trimmedCount} 条次要R/W，每个功能过程最多 ${maxRows} 条`);
+    }
+    return limited;
+}
+
 /**
  * 解析Markdown表格
  * @param {string} markdown - AI输出的Markdown内容
@@ -834,7 +886,7 @@ function parseMarkdownTable(markdown, referenceNames = null, headingContext = nu
         console.log(`  🏷️ 已按功能过程独立分配层级（共 ${Object.keys(functionLevelMap).length} 个映射）`);
     }
 
-    return deduplicateTableData(tableData);
+    return limitSubprocessesPerFunction(deduplicateTableData(tableData));
 }
 
 /**
@@ -2607,7 +2659,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
             }
         }
 
-        tableData = ensureFunctionDescriptions(tableData, refFunctions);
+        tableData = limitSubprocessesPerFunction(ensureFunctionDescriptions(tableData, refFunctions));
 
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -2942,7 +2994,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             }
         }
 
-        tableData = ensureFunctionDescriptions(tableData, refFunctions);
+        tableData = limitSubprocessesPerFunction(ensureFunctionDescriptions(tableData, refFunctions));
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -3361,7 +3413,7 @@ ${missedListText}${vagueHint}
 app.post('/api/parse-table', (req, res) => {
     try {
         const { markdown } = req.body;
-        const tableData = ensureFunctionDescriptions(parseMarkdownTable(markdown));
+        const tableData = limitSubprocessesPerFunction(ensureFunctionDescriptions(parseMarkdownTable(markdown)));
         res.json({ success: true, tableData, count: tableData.length });
     } catch (error) {
         res.status(500).json({ error: '表格解析失败: ' + error.message });
