@@ -1651,21 +1651,6 @@ function isUsableDocumentChapterSplit(chapters) {
     return selectedCount >= Math.min(2, realChapters.length);
 }
 
-function hasRepeatedChapterLeadText(chapters) {
-    if (!Array.isArray(chapters) || chapters.length < 4) return false;
-    const leads = chapters
-        .map(ch => {
-            const body = String(ch?.content || '')
-                .replace(String(ch?.title || ''), '')
-                .slice(0, 260);
-            return normalizeModuleMatchText(body).slice(0, 120);
-        })
-        .filter(lead => lead.length >= 40);
-    if (leads.length < 4) return false;
-    const uniqueCount = new Set(leads).size;
-    return uniqueCount <= Math.ceil(leads.length * 0.45);
-}
-
 function findModuleForChapter(chapter, modules) {
     const chapterNorm = normalizeModuleMatchText(chapter?.title);
     if (!chapterNorm || !Array.isArray(modules)) return null;
@@ -1863,7 +1848,11 @@ function splitIntoChapters(text) {
     function isHeading(line) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.length < 2) return false;
-        if (BODY_ENDINGS.test(trimmed)) return false;
+        // Requirement headings commonly carry a trailing workload/count marker,
+        // e.g. "1.1 元数据采集（578）". A closing parenthesis normally looks
+        // sentence-like, but must not disqualify this numbered-heading form.
+        const hasTrailingCount = /[（(]\s*\d+\s*[）)]$/.test(trimmed);
+        if (BODY_ENDINGS.test(trimmed) && !hasTrailingCount) return false;
         if (BODY_INDICATORS.test(trimmed)) return false;
         for (const { pattern, maxLen } of HEADING_RULES) {
             if (trimmed.length <= maxLen && pattern.test(trimmed)) return true;
@@ -1978,9 +1967,12 @@ app.post('/api/split-chapters', (req, res) => {
         }
         const documentChapters = splitIntoChapters(documentContent);
         const moduleAlignedChapters = splitIntoModuleAlignedChapters(documentContent, moduleStructure);
-        const alignedLooksRepeated = hasRepeatedChapterLeadText(moduleAlignedChapters);
-        const useDocumentChapters = isUsableDocumentChapterSplit(documentChapters)
-            && (!moduleAlignedChapters || alignedLooksRepeated);
+        // The selectable chapter list must reflect the source document's headings.
+        // AI-recognized modules are an extraction scaffold, not a replacement table
+        // of contents: their fuzzy anchors can point several modules at the same
+        // paragraph and produce repeated, synthetic "chapters". Only fall back to
+        // the scaffold when the source document has no usable heading structure.
+        const useDocumentChapters = isUsableDocumentChapterSplit(documentChapters);
         const moduleScaffoldChapters = useDocumentChapters
             ? null
             : (moduleAlignedChapters || buildModuleScaffoldChapters(documentContent, moduleStructure));
@@ -1990,7 +1982,7 @@ app.post('/api/split-chapters', (req, res) => {
         const moduleAligned = Boolean(moduleScaffoldChapters);
         console.log(`📑 章节识别完成: 共 ${chapters.length} 个章节`);
         if (useDocumentChapters) {
-            console.log(`   document-split: using source chapter boundaries${alignedLooksRepeated ? ' (module-aligned split looked repetitive)' : ''}`);
+            console.log('   document-split: using source chapter boundaries');
         }
         if (moduleScaffoldChapters) {
             console.log(`   module-aligned: ${chapters.length}/${moduleStructure?.modules?.length || 0}`);
