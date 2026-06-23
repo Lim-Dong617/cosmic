@@ -72,6 +72,20 @@ const normalizeHeadingMatchText = (text) => String(text || '')
     .toLowerCase()
     .trim();
 
+const deduplicateFunctionObjects = (functions = []) => {
+    const seen = new Set();
+    return functions.filter(func => {
+        const key = String(func?.functionName || '')
+            .normalize('NFKC')
+            .replace(/[\s_\-—–，,。；;：:（）()【】\[\]]/g, '')
+            .toLowerCase()
+            .trim();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+};
+
 const isLikelyDocumentHeading = (line) => {
     const trimmed = String(line || '').trim();
     if (!trimmed || trimmed.length < 2 || trimmed.length > 80) return false;
@@ -1397,7 +1411,9 @@ function App({ user, token, onLogout }) {
 
             setFunctionListText(allFunctions);
             // 自动解析为结构化数据
-            const parsed = inheritMissingFunctionLevels(parseFunctionListText(allFunctions));
+            const parsed = deduplicateFunctionObjects(
+                inheritMissingFunctionLevels(parseFunctionListText(allFunctions))
+            );
 
             // ── 将章节的 level1/level2/level3 注入到每个功能过程对象 ──
             // chapters 状态里已有后端返回的层级信息，通过 sourceChapter 匹配 title
@@ -1426,6 +1442,7 @@ function App({ user, token, onLogout }) {
             });
 
             const leveledParsed = inheritMissingFunctionLevels(parsed);
+            setFunctionListText(functionsToText(leveledParsed));
             setParsedFunctions(leveledParsed);
             setCurrentStep(3);
             updateAnalysisProgress({
@@ -1471,7 +1488,10 @@ function App({ user, token, onLogout }) {
             if (allFunctions) {
                 // 部分成功
                 setFunctionListText(allFunctions);
-                const parsed = inheritMissingFunctionLevels(parseFunctionListText(allFunctions));
+                const parsed = deduplicateFunctionObjects(
+                    inheritMissingFunctionLevels(parseFunctionListText(allFunctions))
+                );
+                setFunctionListText(functionsToText(parsed));
                 setParsedFunctions(parsed);
                 setCurrentStep(3);
                 setMessages(prev => [...prev, {

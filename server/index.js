@@ -161,19 +161,57 @@ function dedupeFunctionsByName(functions = []) {
     return deduped;
 }
 
-function uniquifyFunctionNames(functions = []) {
-    const counts = new Map();
+function cleanBusinessContextName(value) {
+    return String(value || '')
+        .normalize('NFKC')
+        .replace(/^\s*\d+(?:\.\d+)*[.、\s]*/, '')
+        .replace(/[（(]\s*\d+\s*[）)]\s*$/, '')
+        .replace(/(?:定义|状态|配置)?管理$/, '')
+        .trim();
+}
+
+function buildBusinessObjectQualifiers(chapterName, moduleStructure) {
+    const genericObjects = [
+        '标签', '版本', '任务', '记录', '规则', '模型', '报表', '日志',
+        '文件', '接口', '告警', '预警', '工单', '角色', '权限', '指标',
+        '资产', '目录', '申请', '流程'
+    ];
+    const relevantModules = getRelevantModulesForChapter(moduleStructure?.modules || [], chapterName);
+    const contexts = [
+        chapterName,
+        ...relevantModules.flatMap(mod => [mod.level3, mod.level2, mod.level1])
+    ]
+        .map(cleanBusinessContextName)
+        .filter(Boolean);
+    const qualifiers = new Map();
+
+    for (const context of contexts) {
+        for (const genericObject of genericObjects) {
+            if (qualifiers.has(genericObject)) continue;
+            const objectIndex = context.indexOf(genericObject);
+            if (objectIndex <= 0) continue;
+            const prefix = context.slice(0, objectIndex).trim();
+            if (prefix.length < 2 || prefix.length > 10) continue;
+            if (/创建|新增|编辑|修改|删除|查询|查看|启用|停用|导入|导出|同步|生成|执行/.test(prefix)) continue;
+            qualifiers.set(genericObject, `${prefix}${genericObject}`);
+        }
+    }
+    return qualifiers;
+}
+
+function qualifyFunctionNames(functions = [], chapterName = '', moduleStructure = null) {
+    const qualifiers = buildBusinessObjectQualifiers(chapterName, moduleStructure);
+    if (qualifiers.size === 0) return functions;
+
     return functions.map(func => {
-        const name = (func.functionName || '').trim();
-        const key = normalizeProcessName(name);
-        if (!key) return func;
-        const next = (counts.get(key) || 0) + 1;
-        counts.set(key, next);
-        if (next === 1) return func;
-        return {
-            ...func,
-            functionName: `${name}（${next}）`
-        };
+        const originalName = String(func.functionName || '').trim();
+        let qualifiedName = originalName;
+        for (const [genericObject, fullObject] of qualifiers) {
+            if (qualifiedName.includes(fullObject) || !qualifiedName.includes(genericObject)) continue;
+            qualifiedName = qualifiedName.replace(genericObject, fullObject);
+            break;
+        }
+        return qualifiedName === originalName ? func : { ...func, functionName: qualifiedName };
     });
 }
 
@@ -2274,14 +2312,14 @@ app.post('/api/extract-functions', async (req, res) => {
             return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
         }
         let reply = completion.choices[0].message.content;
-        let functions = extractFunctionsFromText(reply);
-        if (isV4Flash) {
-            const before = functions.length;
-            functions = uniquifyFunctionNames(functions);
-            if (functions.some((func, idx) => func.functionName !== extractFunctionsFromText(reply)[idx]?.functionName)) {
-                console.log(`🏷️ V4功能过程重名保留: ${before} 个候选，已为重名项追加序号`);
-                reply = buildFunctionListText(functions);
-            }
+        const extractedFunctions = extractFunctionsFromText(reply);
+        let functions = qualifyFunctionNames(extractedFunctions, chapterName, moduleStructure);
+        functions = dedupeFunctionsByName(functions);
+        const namesAdjusted = functions.length !== extractedFunctions.length
+            || functions.some((func, idx) => func.functionName !== extractedFunctions[idx]?.functionName);
+        if (namesAdjusted) {
+            console.log(`🏷️ 功能过程名称整理: ${extractedFunctions.length} 个候选 → ${functions.length} 个唯一完整名称`);
+            reply = buildFunctionListText(functions);
         }
         if (extractionMode === 'quantity' && targetCount > 0) {
             const maxAllowed = Math.max(1, Math.ceil(targetCount * 1.05));
