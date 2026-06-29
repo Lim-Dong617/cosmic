@@ -3151,6 +3151,16 @@ textarea.setting-input {
     margin: 0;
 }
 
+.seq-export-toggle.cosmic-experience-toggle:has(input:checked) {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.14), rgba(16, 185, 129, 0.08));
+    border-color: rgba(245, 158, 11, 0.42);
+    color: #d97706;
+}
+
+.seq-export-toggle.cosmic-experience-toggle input[type="checkbox"] {
+    accent-color: #f59e0b;
+}
+
 .excel-template-select {
     display: inline-flex;
     align-items: center;

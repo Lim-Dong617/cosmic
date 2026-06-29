@@ -24,7 +24,9 @@ const {
     COSMIC_QUANTITY_PRIORITY_PROMPT,
     SENSENOVA_V4_FUNCTION_EXTRACTION_PROMPT,
     SENSENOVA_V4_QUANTITY_PRIORITY_PROMPT,
-    SENSENOVA_V4_COSMIC_SPLIT_PROMPT
+    SENSENOVA_V4_COSMIC_SPLIT_PROMPT,
+    buildCosmicSplitPrompt,
+    buildSensenovaV4CosmicSplitPrompt
 } = require('./prompts');
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
 const { authRouter } = require('./auth');
@@ -143,10 +145,38 @@ function getFunctionExtractionPrompt(modelName, extractionMode, requestedModel =
         : FUNCTION_EXTRACTION_PROMPT;
 }
 
-function getCosmicSplitPrompt(modelName, requestedModel = null) {
+function getCosmicSplitPrompt(modelName, requestedModel = null, options = {}) {
+    const useEnhancedExperience = typeof options === 'boolean'
+        ? options
+        : Boolean(options?.useEnhancedExperience);
+    if (useEnhancedExperience) {
+        return isSenseNovaV4Model(modelName, requestedModel)
+            ? buildSensenovaV4CosmicSplitPrompt(true, true)
+            : buildCosmicSplitPrompt(true, true);
+    }
     return isSenseNovaV4Model(modelName, requestedModel)
         ? SENSENOVA_V4_COSMIC_SPLIT_PROMPT
         : COSMIC_SPLIT_PROMPT;
+}
+
+function allowsQueryOnlyWithoutWrite(functionName, useEnhancedExperience = false) {
+    if (!useEnhancedExperience) return false;
+    const name = String(functionName || '');
+    const hasQueryIntent = /(查询|查看|检索|搜索|浏览|列表|详情)/.test(name);
+    const hasWriteIntent = /(新增|创建|修改|编辑|删除|导入|导出|保存|提交|审批|受理|派发|同步|采集|汇总|生成|推送|发送|更新|配置|维护|处理|闭环|流转)/.test(name);
+    return hasQueryIntent && !hasWriteIntent;
+}
+
+function isCosmicProcessIncomplete(functionName, hasR, hasW, hasX, useEnhancedExperience = false) {
+    const missingWrite = !hasW && !allowsQueryOnlyWithoutWrite(functionName, useEnhancedExperience);
+    return !hasR || missingWrite || !hasX;
+}
+
+function getCosmicCompletenessRule(useEnhancedExperience = false) {
+    if (!useEnhancedExperience) {
+        return '每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程。';
+    }
+    return '每个功能过程必须有完整数据移动：一般使用 E + R(≥1) + W(≥1) + X；纯查询/查看/检索类且没有持久化写入时允许 E + R(≥1) + X，不要强行补W；新增、修改、删除、导入、导出落文件、流程、定时、同步、采集、汇总、生成等仍必须包含W。';
 }
 
 function dedupeFunctionsByName(functions = []) {
@@ -2399,17 +2429,18 @@ app.post('/api/extract-functions', async (req, res) => {
 
 app.post('/api/cosmic-split', async (req, res) => {
     try {
-        const { functionList, documentContent = '', userGuidelines = '', previousResults = [], batchIndex = 0, totalBatches = 1, userConfig = null, headingContext = null, functionLevelMap = null } = req.body;
+        const { functionList, documentContent = '', userGuidelines = '', previousResults = [], batchIndex = 0, totalBatches = 1, userConfig = null, headingContext = null, functionLevelMap = null, useEnhancedExperience = false } = req.body;
 
         if (!functionList) {
             return res.status(400).json({ error: '缺少功能过程列表' });
         }
 
-        console.log(`🔄 开始COSMIC拆分 (批次 ${batchIndex + 1}/${totalBatches})...`);
+        console.log(`🔄 开始COSMIC拆分 (批次 ${batchIndex + 1}/${totalBatches})...${useEnhancedExperience ? ' [经验增强版]' : ''}`);
         const modelName = getModelName(userConfig);
         const requestedModel = userConfig?.model || null;
         const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
-        const activeSplitPrompt = getCosmicSplitPrompt(modelName, requestedModel);
+        const activeSplitPrompt = getCosmicSplitPrompt(modelName, requestedModel, { useEnhancedExperience });
+        const completenessRule = getCosmicCompletenessRule(useEnhancedExperience);
 
         // 构建已完成的提示
         let userPrompt = '';
@@ -2426,11 +2457,11 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 **请只拆分上面列表中未出现在"已完成"中的功能过程。**
 **【重要】请严格按照上方功能过程列表的顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节顺序。**
 **【必须遵守】输出表格中的"功能过程"名称必须与上方列表完全一致，不得自行修改、合并或重命名。**
-每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程。
+${completenessRule}
 输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述。
 只输出Markdown表格，不要其他说明。`;
         } else {
-            userPrompt = `请对以下功能过程进行COSMIC拆分：\n\n${functionList}\n\n**【重要】请严格按照上方功能过程列表的先后顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节/目录顺序，输出结果必须保持一致。**\n**【必须遵守】输出表格中的"功能过程"名称必须与上方列表完全一致，不得自行修改、合并或重命名。**\n输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述。`;
+            userPrompt = `请对以下功能过程进行COSMIC拆分：\n\n${functionList}\n\n**【重要】请严格按照上方功能过程列表的先后顺序进行拆分输出，不要打乱顺序。列表的顺序对应文档的章节/目录顺序，输出结果必须保持一致。**\n**【必须遵守】输出表格中的"功能过程"名称必须与上方列表完全一致，不得自行修改、合并或重命名。**\n${completenessRule}\n输出表格必须包含"功能描述"列，且只在每个功能过程的E行填写一段流程型描述。`;
         }
 
         if (documentContent) {
@@ -2493,7 +2524,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
         let hasR = false, hasW = false, hasX = false;
         for (const row of tableData) {
             if (row.dataMovementType === 'E' && row.functionalProcess) {
-                if (currentProc && (!hasR || !hasW || !hasX)) {
+                if (currentProc && isCosmicProcessIncomplete(currentProc, hasR, hasW, hasX, useEnhancedExperience)) {
                     incompleteFuncs.push(currentProc);
                 }
                 currentProc = row.functionalProcess;
@@ -2502,19 +2533,23 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
             else if (row.dataMovementType === 'W') hasW = true;
             else if (row.dataMovementType === 'X') hasX = true;
         }
-        if (currentProc && (!hasR || !hasW || !hasX)) {
+        if (currentProc && isCosmicProcessIncomplete(currentProc, hasR, hasW, hasX, useEnhancedExperience)) {
             incompleteFuncs.push(currentProc);
         }
 
         if (incompleteFuncs.length > 0) {
-            console.warn(`⚠️ COSMIC拆分: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个JSON补拆中...`);
+            console.warn(`⚠️ COSMIC拆分: 检测到 ${incompleteFuncs.length} 个功能过程缺少必要数据移动，逐个JSON补拆中...`);
             
             for (const funcName of incompleteFuncs) {
                 try {
+                    const canOmitWrite = allowsQueryOnlyWithoutWrite(funcName, useEnhancedExperience);
+                    const repairTypeRule = canOmitWrite
+                        ? '必须包含3个对象：E(1个) + R(至少1个) + X(1个)。该功能是纯查询/查看类且无持久化写入时，不要强行补W'
+                        : '必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)';
                     const singleRepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。
 
 要求：
-- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)
+- ${repairTypeRule}
 - 只输出JSON数组，不要任何其他文字
 
 输出格式示例：
@@ -2542,13 +2577,13 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
                         if (jsonMatch) {
                             try {
                                 const parsed = JSON.parse(jsonMatch[0]);
-                                if (Array.isArray(parsed) && parsed.length >= 4) {
+                                if (Array.isArray(parsed) && parsed.length >= (canOmitWrite ? 3 : 4)) {
                                     const hasE = parsed.some(r => r.dmt === 'E');
                                     const hasR = parsed.some(r => r.dmt === 'R');
                                     const hasW = parsed.some(r => r.dmt === 'W');
                                     const hasX = parsed.some(r => r.dmt === 'X');
 
-                                    if (hasE && hasR && hasW && hasX) {
+                                    if (hasE && hasR && hasX && (hasW || canOmitWrite)) {
                                         const origERow = tableData.find(r => r.dataMovementType === 'E' && r.functionalProcess && r.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
                                         const fUser = origERow?.functionalUser || '';
                                         const tEvent = origERow?.triggerEvent || '';
@@ -2690,21 +2725,22 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
             userConfig = null,
             headingContext = null,     // 当前章节的层级上下文 {level1, level2, level3}（兼容旧版）
             functionLevelMap = null,   // 每个功能过程独立的层级映射 {funcName: {level1, level2, level3}}
-            generateDescription = true // 是否生成功能描述
+            generateDescription = true, // 是否生成功能描述
+            useEnhancedExperience = false // 是否使用COSMIC拆分经验增强版
         } = req.body;
 
         if (!batchFunctions || batchFunctions.length === 0) {
             return res.status(400).json({ error: '缺少本批次的功能过程列表' });
         }
 
-        console.log(`🔄 COSMIC分段拆分 (批次 ${batchIndex + 1}/${totalBatches}): ${batchFunctions.length} 个功能过程...${generateDescription ? ' [含功能描述]' : ' [不含功能描述]'}`);
+        console.log(`🔄 COSMIC分段拆分 (批次 ${batchIndex + 1}/${totalBatches}): ${batchFunctions.length} 个功能过程...${generateDescription ? ' [含功能描述]' : ' [不含功能描述]'}${useEnhancedExperience ? ' [经验增强版]' : ''}`);
         const modelName = getModelName(userConfig);
         const requestedModel = userConfig?.model || null;
         const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
-        const { buildCosmicSplitPrompt, buildSensenovaV4CosmicSplitPrompt } = require('./prompts');
         const activeSplitPrompt = isV4Flash
-            ? buildSensenovaV4CosmicSplitPrompt(generateDescription)
-            : buildCosmicSplitPrompt(generateDescription);
+            ? buildSensenovaV4CosmicSplitPrompt(generateDescription, useEnhancedExperience)
+            : buildCosmicSplitPrompt(generateDescription, useEnhancedExperience);
+        const completenessRule = getCosmicCompletenessRule(useEnhancedExperience);
 
         // 将本批次功能过程组成文本
         const batchFunctionText = batchFunctions.join('\n\n');
@@ -2744,7 +2780,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         userPrompt += `\n\n## ⚡ 再次确认（必须遵守）
 - 上方列出的 **${batchFuncNames.length} 个功能过程必须全部出现在输出表格中**，一个都不能少
 - 功能过程名称与"背景参考"中的名称相似也必须单独拆分，不能以"已完成"为由跳过
-- **【最重要】每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程，绝对禁止只输出E行就跳到下一个功能过程！**
+- **【最重要】${completenessRule} 绝对禁止只输出E行就跳到下一个功能过程！**
 - **输出顺序：必须逐个功能过程完整输出（先输出功能A的E→R→W→X全部行，再输出功能B的E→R→W→X全部行），禁止先列出所有E行再补R/W/X！**
 - 输出表格中的"功能过程"列名称必须与上方列表**完全一致**，不得修改`;
 
@@ -2808,7 +2844,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         for (const row of tableData) {
             if (row.dataMovementType === 'E' && row.functionalProcess) {
                 // 检查上一个功能过程是否完整
-                if (currentProc && (!hasR || !hasW || !hasX)) {
+                if (currentProc && isCosmicProcessIncomplete(currentProc, hasR, hasW, hasX, useEnhancedExperience)) {
                     incompleteFuncs.push(currentProc);
                 }
                 currentProc = row.functionalProcess;
@@ -2818,20 +2854,24 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             else if (row.dataMovementType === 'X') hasX = true;
         }
         // 检查最后一个功能过程
-        if (currentProc && (!hasR || !hasW || !hasX)) {
+        if (currentProc && isCosmicProcessIncomplete(currentProc, hasR, hasW, hasX, useEnhancedExperience)) {
             incompleteFuncs.push(currentProc);
         }
 
         if (incompleteFuncs.length > 0) {
-            console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少R/W/X，逐个JSON补拆中...`);
+            console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少必要数据移动，逐个JSON补拆中...`);
             
             for (const funcName of incompleteFuncs) {
                 try {
                     // 使用JSON格式输出，彻底绕过Markdown表格解析问题
+                    const canOmitWrite = allowsQueryOnlyWithoutWrite(funcName, useEnhancedExperience);
+                    const repairTypeRule = canOmitWrite
+                        ? '必须包含3个对象：E(1个) + R(至少1个) + X(1个)。该功能是纯查询/查看类且无持久化写入时，不要强行补W'
+                        : '必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)';
                     const singleRepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。
 
 要求：
-- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)
+- ${repairTypeRule}
 - 只输出JSON数组，不要任何其他文字
 
 输出格式示例：
@@ -2860,13 +2900,13 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                         if (jsonMatch) {
                             try {
                                 const parsed = JSON.parse(jsonMatch[0]);
-                                if (Array.isArray(parsed) && parsed.length >= 4) {
+                                if (Array.isArray(parsed) && parsed.length >= (canOmitWrite ? 3 : 4)) {
                                     const hasE = parsed.some(r => r.dmt === 'E');
                                     const hasR = parsed.some(r => r.dmt === 'R');
                                     const hasW = parsed.some(r => r.dmt === 'W');
                                     const hasX = parsed.some(r => r.dmt === 'X');
 
-                                    if (hasE && hasR && hasW && hasX) {
+                                    if (hasE && hasR && hasX && (hasW || canOmitWrite)) {
                                         // 找到原E行的functionalUser和triggerEvent
                                         const origERow = tableData.find(r => r.dataMovementType === 'E' && r.functionalProcess && r.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
                                         const fUser = origERow?.functionalUser || '';
@@ -3016,11 +3056,12 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
 app.post('/api/continue-analyze', async (req, res) => {
     try {
-        const { documentContent, previousResults = [], round = 1, targetFunctions = 30, understanding = null, userGuidelines = '', userConfig = null, coverageVerification: prevCoverage = null, extractionMode = 'precise' } = req.body;
+        const { documentContent, previousResults = [], round = 1, targetFunctions = 30, understanding = null, userGuidelines = '', userConfig = null, coverageVerification: prevCoverage = null, extractionMode = 'precise', useEnhancedExperience = false } = req.body;
 
         const completedFunctions = [...new Set(previousResults.map(r => r.functionalProcess).filter(Boolean))];
         const modelName = getModelName(userConfig);
         const isQuantityMode = extractionMode === 'quantity';
+        const completenessRule = getCosmicCompletenessRule(useEnhancedExperience);
 
         // 仅数量优先模式才使用目标数量
         let effectiveTarget = null;
@@ -3102,7 +3143,7 @@ ${understandingContext}
 |功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|功能描述|
 |:---|:---|:---|:---|:---|:---|:---|:---|
 
-每个功能过程必须有 E + R(≥1) + W(≥1) + X 四种子过程，功能描述只在E行填写。`;
+${completenessRule} 功能描述只在E行填写。`;
         } else {
             // 关键修复：第2轮及之后也要传递文档内容，否则AI看不到原文
             // 构建遗漏功能提示（如果有覆盖度验证结果）
@@ -3132,14 +3173,14 @@ ${missedHint}
 ## 要求
 ${targetRequirement}
 - 请仔细逐段阅读文档，找出上面"已完成"列表中未覆盖的功能
-- 每个功能过程必须有 E + R + W + X 四种子过程
+- ${completenessRule}
 - 输出表格必须包含"功能描述"列，功能描述只在E行填写，内容要描述业务处理过程
 - 只输出Markdown表格，不要其他说明
 - 如果文档中的所有功能确实都已完成，回复"[ALL_DONE]"`;
         }
 
         console.log(`📊 第 ${round} 轮分析，已完成 ${completedFunctions.length} 个功能过程...`);
-        const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null);
+        const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null, { useEnhancedExperience });
 
         const completion = await callAIWithRetry({
             messages: [
@@ -3424,9 +3465,9 @@ app.post('/api/parse-table', (req, res) => {
 
 app.post('/api/chat/stream', async (req, res) => {
     try {
-        const { messages, documentContent, userGuidelines = '', userConfig = null, tableData = [], functionListText = '' } = req.body;
+        const { messages, documentContent, userGuidelines = '', userConfig = null, tableData = [], functionListText = '', useEnhancedExperience = false } = req.body;
         const modelName = getModelName(userConfig);
-        const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null);
+        const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null, { useEnhancedExperience });
 
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');

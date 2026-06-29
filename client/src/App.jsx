@@ -454,6 +454,12 @@ function App({ user, token, onLogout }) {
     const [exportWithDiagrams, setExportWithDiagrams] = useState(false);
     const [excelExportTemplate, setExcelExportTemplate] = useState('standard');
     const [generateDescription, setGenerateDescription] = useState(true); // 是否在拆分时生成功能描述
+    const [useEnhancedCosmicExperience, setUseEnhancedCosmicExperience] = useState(() => {
+        if (typeof window !== 'undefined') {
+            return window.localStorage.getItem('useEnhancedCosmicExperience') === 'true';
+        }
+        return false;
+    });
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
     const [isSupplementingDescription, setIsSupplementingDescription] = useState(false); // 是否正在补充功能描述
@@ -535,8 +541,9 @@ function App({ user, token, onLogout }) {
             window.localStorage.setItem('selectedModel', selectedModel);
             window.localStorage.setItem('minFunctionCount', String(minFunctionCount));
             window.localStorage.setItem('analysisMode', analysisMode);
+            window.localStorage.setItem('useEnhancedCosmicExperience', useEnhancedCosmicExperience ? 'true' : 'false');
         }
-    }, [selectedModel, minFunctionCount, analysisMode]);
+    }, [selectedModel, minFunctionCount, analysisMode, useEnhancedCosmicExperience]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1625,7 +1632,8 @@ function App({ user, token, onLogout }) {
                     userConfig: getUserConfig(),
                     headingContext,
                     functionLevelMap,
-                    generateDescription
+                    generateDescription,
+                    useEnhancedExperience: useEnhancedCosmicExperience
                 }, { signal });
 
                 return {
@@ -1700,7 +1708,9 @@ function App({ user, token, onLogout }) {
                             previousResults: allTableData,
                             userConfig: getUserConfig(),
                             headingContext: batchHeadingCtx,
-                            functionLevelMap: Object.keys(batchFunctionLevelMap).length > 0 ? batchFunctionLevelMap : null
+                            functionLevelMap: Object.keys(batchFunctionLevelMap).length > 0 ? batchFunctionLevelMap : null,
+                            generateDescription,
+                            useEnhancedExperience: useEnhancedCosmicExperience
                         }, { signal });
 
                         if (res.data.success) {
@@ -2025,7 +2035,9 @@ function App({ user, token, onLogout }) {
                         previousResults: allTableData,
                         userConfig: getUserConfig(),
                         headingContext: retryHeadingCtx,
-                        functionLevelMap: Object.keys(retryFunctionLevelMap).length > 0 ? retryFunctionLevelMap : null
+                        functionLevelMap: Object.keys(retryFunctionLevelMap).length > 0 ? retryFunctionLevelMap : null,
+                        generateDescription,
+                        useEnhancedExperience: useEnhancedCosmicExperience
                     }, { signal });
 
                     if (res.data.success) {
@@ -2206,7 +2218,8 @@ function App({ user, token, onLogout }) {
                     userGuidelines,
                     userConfig: getUserConfig(),
                     coverageVerification: lastCoverage,
-                    extractionMode
+                    extractionMode,
+                    useEnhancedExperience: useEnhancedCosmicExperience
                 }, { signal });
 
                 if (response.data.success) {
@@ -2273,7 +2286,8 @@ function App({ user, token, onLogout }) {
                     userGuidelines,
                     userConfig: getUserConfig(),
                     tableData,
-                    functionListText
+                    functionListText,
+                    useEnhancedExperience: useEnhancedCosmicExperience
                 })
             });
 
@@ -2438,6 +2452,17 @@ function App({ user, token, onLogout }) {
                 <option value="standard">标准结果</option>
                 <option value="assessment">COSMIC评估模板</option>
             </select>
+        </label>
+    );
+
+    const renderEnhancedExperienceToggle = () => (
+        <label className="seq-export-toggle cosmic-experience-toggle" title="拆分前注入COSMIC经验规则：查询不强制写W、CRUD/导入导出/流程/定时/接口按经验模板校准">
+            <input
+                type="checkbox"
+                checked={useEnhancedCosmicExperience}
+                onChange={e => setUseEnhancedCosmicExperience(e.target.checked)}
+            />
+            <BookOpen size={12} /> 拆分经验增强版
         </label>
     );
 
@@ -2924,7 +2949,8 @@ function App({ user, token, onLogout }) {
                     previousResults: tableData,
                     batchIndex: 0,
                     totalBatches: 1,
-                    userConfig: getUserConfig()
+                    userConfig: getUserConfig(),
+                    useEnhancedExperience: useEnhancedCosmicExperience
                 });
 
                 if (splitRes.data.success && splitRes.data.tableData && splitRes.data.tableData.length > 0) {
@@ -3467,6 +3493,7 @@ function App({ user, token, onLogout }) {
                                                             <input type="checkbox" checked={generateDescription} onChange={e => setGenerateDescription(e.target.checked)} />
                                                             <FileText size={12} /> 生成功能描述
                                                         </label>
+                                                        {renderEnhancedExperienceToggle()}
                                                         <button className="btn btn-success btn-sm" onClick={startCosmicSplit} disabled={isLoading}>
                                                             <Sparkles size={14} /> 确认·开始COSMIC拆分
                                                         </button>
@@ -3507,6 +3534,7 @@ function App({ user, token, onLogout }) {
                                         <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>提取模式：</span>
                                         <button onClick={() => handleExtractionModeChange('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--accent-violet)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Target size={12} /> 精准模式</button>
                                         <button onClick={() => handleExtractionModeChange('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><BarChart3 size={12} /> 数量优先</button>
+                                        {renderEnhancedExperienceToggle()}
                                         {extractionMode === 'quantity' && (
                                             <>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>

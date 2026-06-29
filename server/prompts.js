@@ -815,17 +815,59 @@ const SENSENOVA_V4_COSMIC_SPLIT_PROMPT = `${COSMIC_SPLIT_PROMPT}
 6. 数据组可以复用真实业务表名，不要为了”全表唯一”人为制造大量近义数据组；同一功能过程内保证清晰即可。
 7. 如果输入功能过程本身已经过细或相似，仍必须按输入名称逐个输出完整ERWX，不能跳过或合并任何一个。`;
 
+const COSMIC_EXPERIENCE_ENHANCEMENT_PROMPT = `
+# COSMIC拆分经验增强版（可选，最高优先级校准）
+
+以下规则来自COSMIC拆分经验文档，用于校准拆分粒度、触发事件、数据移动和常见模板。开启增强版时，优先遵守本节；但仍不得跳过、合并、改名输入列表中的功能过程。
+
+## 通用拆分规范
+1. 站在需求方/功能用户角度度量需求，不从实现细节角度拆分；评审不关注临时表、缓存、Redis、日志、页面标题、确认框、上一页/下一页等实现或界面细节。
+2. 功能用户、触发事件、功能过程三者必须匹配：
+   - 用户触发：发起者/接收者通常写“用户”或“xx系统用户”。
+   - 时钟触发：发起者写“定时触发器/定时调度器”；短信类定时接收者可为用户，其他业务类定时接收者写本系统。
+   - 接口调用触发：仅当外部系统调用本系统时使用；我方定时调用外部接口通常按时钟触发处理。
+3. 触发事件只使用“用户触发、时钟触发、接口调用触发”三类。
+4. 功能过程名称使用“动词 + 明确业务对象”，不能过短；时钟触发建议以“定时”开头，接口调用触发建议写“同步xxx数据”。
+5. 不要过度拆分：一个功能过程通常不超过5个子过程；子过程必须以E开始，以X或W结束；每个功能过程一般只有1个E、1个X。
+6. 子过程描述中，R/W必须直观体现对持久化数据或文件的读写；不要直接写“校验/验证/核查/统计/计算”，应写成读取数据、保存结果、输出结果等数据移动。
+7. 数据组必须是名词性数据对象，不能含动词：
+   - E：用户/接口请求写“xxx请求”；时钟触发写“xxx定时任务/触发信号”。
+   - R/W：固定写业务表或文件，如“xxx表/xxx文件”；不要写临时表、缓存表。
+   - X：写“业务对象 + 动作结果/响应”，如“xxx查询结果、xxx新增结果”。
+8. 同一功能过程内避免出现完全相同的“子过程描述 + 数据移动类型 + 数据组”、或完全相同的“数据移动类型 + 数据组/数据属性”。确实是同一数据组时，应合并为核心R/W，不要堆叠相似行。
+
+## 经验模板
+1. 查询/查看类：通常使用 E + R + X，不要强行增加W；查询操作一般不涉及写入。模板：触发xxx查询请求(E) -> 获取xxx数据(R) -> 输出xxx查询结果(X)。
+2. 新增类：通常使用 E + W + X；只有需要读取关联业务表、校验主数据或依赖配置时才补R。模板：触发xxx新增请求(E) -> 写入xxx信息(W) -> 输出xxx新增结果(X)。
+3. 修改类：通常使用 E + R + W + X。模板：触发xxx修改请求(E) -> 获取xxx数据(R) -> 修改xxx信息(W) -> 输出xxx修改结果(X)。
+4. 删除类：通常使用 E + W + X；仅在需要读取状态/关联关系校验时补R。模板：触发xxx删除请求(E) -> 删除/更新xxx信息(W) -> 输出xxx删除结果(X)。
+5. 导入类：通常使用 E + R + W + X。模板：触发xxx导入请求(E) -> 读取xxx Excel文件数据(R) -> 写入xxx数据(W) -> 输出xxx导入结果(X)。
+6. 导出类：通常使用 E + R + X；如果服务器明确生成并持久化Excel文件，才使用 E + R + W + X，其中W为“写入xxx数据到导出文件/保存xxx导出文件”。
+7. 流程类：派单、受理、审批一般按用户触发，使用 E + R + W + X；R读取下一环节处理人/环节信息，W写入主表、实例表或审批表，X输出处理结果。
+8. 定时统计/报表汇总类：功能用户为“发起者：定时调度器 接收者：xxx系统”，通常使用 E + R + W；需要向用户或外部系统呈现/通知完成结果时再补X。
+9. 数据采集类：主动文件采集可拆为“文件采集下载”和“文件数据汇总/入库”两个功能；若输入列表已给为一个功能过程，可使用 E + W + W 或 E + R + W + X，但总行数不得超过5。
+10. 接口类：
+   - 外部系统查询本系统：接口调用触发，E + R + X。
+   - 外部系统同步/写入本系统：接口调用触发，E + W + X。
+   - 本系统定时调用外部接口获取或推送数据：通常按时钟触发，不写成接口调用触发。
+
+## 反例约束
+1. 不要出现功能用户、触发事件和功能过程不匹配。例如“定时汇总”不能写成用户触发；外部调用本系统的接口才是接口调用触发。
+2. 不要把一个查询功能拆成多个全是R的子过程而缺少统一输出；查询类应有清晰的E和X，多个读取来源可合并或保留1~2个核心R。
+3. 操作日志、临时缓存、页面模型、模板导出、纯界面翻页/确认等不作为独立功能过程或独立数据移动。`;
+
 
 /**
  * 动态生成 COSMIC 拆分 prompt
  * @param {boolean} includeDescription - 是否生成功能描述
+ * @param {boolean} useEnhancedExperience - 是否注入COSMIC拆分经验增强规则
  */
-function buildCosmicSplitPrompt(includeDescription = true) {
-    const basePrompt = COSMIC_SPLIT_PROMPT;
+function buildCosmicSplitPrompt(includeDescription = true, useEnhancedExperience = false) {
+    let prompt = COSMIC_SPLIT_PROMPT;
 
     if (!includeDescription) {
         // 移除功能描述相关的要求
-        return basePrompt
+        prompt = prompt
             .replace(/### 功能描述要求[\s\S]*?(?=###|##|$)/g, '')
             .replace(/、功能描述/g, '')
             .replace(/和功能描述/g, '')
@@ -834,11 +876,13 @@ function buildCosmicSplitPrompt(includeDescription = true) {
             .replace(/功能描述只在E行填写[^。]*。/g, '');
     }
 
-    return basePrompt;
+    return useEnhancedExperience
+        ? `${prompt}\n\n${COSMIC_EXPERIENCE_ENHANCEMENT_PROMPT}`
+        : prompt;
 }
 
-function buildSensenovaV4CosmicSplitPrompt(includeDescription = true) {
-    return buildCosmicSplitPrompt(includeDescription);
+function buildSensenovaV4CosmicSplitPrompt(includeDescription = true, useEnhancedExperience = false) {
+    return buildCosmicSplitPrompt(includeDescription, useEnhancedExperience);
 }
 
 
@@ -853,6 +897,7 @@ module.exports = {
   SENSENOVA_V4_FUNCTION_EXTRACTION_PROMPT,
   SENSENOVA_V4_QUANTITY_PRIORITY_PROMPT,
   SENSENOVA_V4_COSMIC_SPLIT_PROMPT,
+  COSMIC_EXPERIENCE_ENHANCEMENT_PROMPT,
   buildCosmicSplitPrompt,
   buildSensenovaV4CosmicSplitPrompt
 };
