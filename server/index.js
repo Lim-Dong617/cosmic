@@ -159,24 +159,161 @@ function getCosmicSplitPrompt(modelName, requestedModel = null, options = {}) {
         : COSMIC_SPLIT_PROMPT;
 }
 
-function allowsQueryOnlyWithoutWrite(functionName, useEnhancedExperience = false) {
-    if (!useEnhancedExperience) return false;
-    const name = String(functionName || '');
+function getCosmicMoveRequirements(functionName, useEnhancedExperience = false) {
+    const standard = {
+        template: '标准业务处理',
+        requireR: true,
+        requireW: true,
+        requireX: true,
+        allowR: true,
+        allowW: true,
+        allowX: true
+    };
+    if (!useEnhancedExperience) return standard;
+
+    const name = String(functionName || '').replace(/\s+/g, '');
     const hasQueryIntent = /(查询|查看|检索|搜索|浏览|列表|详情)/.test(name);
-    const hasWriteIntent = /(新增|创建|修改|编辑|删除|导入|导出|保存|提交|审批|受理|派发|同步|采集|汇总|生成|推送|发送|更新|配置|维护|处理|闭环|流转)/.test(name);
-    return hasQueryIntent && !hasWriteIntent;
+    const hasMutationIntent = /(新增|创建|新建|添加|修改|编辑|删除|移除|导入|导出|保存|提交|审批|审核|受理|派发|派单|同步|汇总|统计|生成|推送|发送|更新|配置|维护|处理|闭环|流转|执行|下载|上传)/.test(name);
+
+    if (/(导出|下载.*报表|下载.*Excel|下载.*文件)/.test(name)) {
+        return { template: '导出类 E-R-X', requireR: true, requireW: false, requireX: true, allowR: true, allowW: true, allowX: true };
+    }
+    if (/(导入|上传)/.test(name)) {
+        return { template: '导入类 E-R-W-X', requireR: true, requireW: true, requireX: true, allowR: true, allowW: true, allowX: true };
+    }
+    if (hasQueryIntent && !hasMutationIntent) {
+        return { template: '查询/查看类 E-R-X', requireR: true, requireW: false, requireX: true, allowR: true, allowW: false, allowX: true };
+    }
+    if (/(新增|创建|新建|添加|删除|移除|注销|作废)/.test(name) && !/(修改|编辑|更新|导入|导出|审批|审核|受理|派发|派单|流转|闭环|处理|提交|执行|统计|汇总|生成|同步)/.test(name)) {
+        return { template: '新增/删除类 E-W-X', requireR: false, requireW: true, requireX: true, allowR: false, allowW: true, allowX: true };
+    }
+    if (/(定时|自动|周期).*(统计|汇总|报表|生成)|(?:统计|汇总).*(定时|自动|周期)/.test(name)) {
+        return { template: '定时统计/汇总类 E-R-W', requireR: true, requireW: true, requireX: false, allowR: true, allowW: true, allowX: true };
+    }
+    if (/(接口|外部系统|第三方).*(查询|查看)|(?:查询|查看).*(接口|外部系统|第三方)/.test(name)) {
+        return { template: '外部接口查询类 E-R-X', requireR: true, requireW: false, requireX: true, allowR: true, allowW: false, allowX: true };
+    }
+    if (/(接口|外部系统|第三方).*(同步|写入|新增|推送|接收)|(?:同步|写入|推送|接收).*(接口|外部系统|第三方)/.test(name)) {
+        return { template: '外部接口写入类 E-W-X', requireR: false, requireW: true, requireX: true, allowR: false, allowW: true, allowX: true };
+    }
+
+    return standard;
+}
+
+function allowsQueryOnlyWithoutWrite(functionName, useEnhancedExperience = false) {
+    const requirements = getCosmicMoveRequirements(functionName, useEnhancedExperience);
+    return useEnhancedExperience && requirements.requireR && !requirements.requireW && requirements.requireX;
 }
 
 function isCosmicProcessIncomplete(functionName, hasR, hasW, hasX, useEnhancedExperience = false) {
-    const missingWrite = !hasW && !allowsQueryOnlyWithoutWrite(functionName, useEnhancedExperience);
-    return !hasR || missingWrite || !hasX;
+    const requirements = getCosmicMoveRequirements(functionName, useEnhancedExperience);
+    return (requirements.requireR && !hasR)
+        || (requirements.requireW && !hasW)
+        || (requirements.requireX && !hasX);
+}
+
+function getCosmicRepairPolicy(functionName, useEnhancedExperience = false) {
+    const requirements = getCosmicMoveRequirements(functionName, useEnhancedExperience);
+    const requiredParts = ['E(1个)'];
+    if (requirements.requireR) requiredParts.push('R(至少1个)');
+    if (requirements.requireW) requiredParts.push('W(至少1个)');
+    if (requirements.requireX) requiredParts.push('X(1个)');
+
+    const avoidParts = [];
+    if (!requirements.allowR) avoidParts.push('不要输出R，不要编造读取配置、读取原有数据或读取状态');
+    if (!requirements.allowW) avoidParts.push('不要输出W，除非原文明确要求持久化保存');
+    if (!requirements.allowX) avoidParts.push('不要默认补X，除非需要向用户或外部系统呈现/通知结果');
+
+    const rule = useEnhancedExperience
+        ? `按“${requirements.template}”经验模板输出：必须包含 ${requiredParts.join(' + ')}。${avoidParts.join('；')}`
+        : `必须包含 ${requiredParts.join(' + ')}`;
+
+    return {
+        requirements,
+        minRows: requiredParts.length,
+        rule
+    };
+}
+
+function isCosmicRepairValid(parsed, policy) {
+    const hasE = parsed.some(r => r.dmt === 'E');
+    const hasR = parsed.some(r => r.dmt === 'R');
+    const hasW = parsed.some(r => r.dmt === 'W');
+    const hasX = parsed.some(r => r.dmt === 'X');
+    const req = policy.requirements;
+
+    return hasE
+        && (!req.requireR || hasR)
+        && (!req.requireW || hasW)
+        && (!req.requireX || hasX)
+        && (req.allowR || !hasR)
+        && (req.allowW || !hasW)
+        && (req.allowX || !hasX);
+}
+
+function buildCosmicRepairPrompt(functionName, useEnhancedExperience = false) {
+    const policy = getCosmicRepairPolicy(functionName, useEnhancedExperience);
+    const example = [
+        { dmt: 'E', subProcess: '接收xxx请求', dataGroup: 'xxx请求数据', dataAttributes: '请求ID、操作类型、时间戳、参数' }
+    ];
+    if (policy.requirements.requireR) {
+        example.push({ dmt: 'R', subProcess: '读取xxx数据', dataGroup: 'xxx数据表', dataAttributes: '编号、名称、状态、更新时间' });
+    }
+    if (policy.requirements.requireW) {
+        example.push({ dmt: 'W', subProcess: '保存xxx信息', dataGroup: 'xxx数据表', dataAttributes: '编号、名称、状态、保存时间' });
+    }
+    if (policy.requirements.requireX) {
+        example.push({ dmt: 'X', subProcess: '返回xxx结果', dataGroup: 'xxx处理结果', dataAttributes: '结果码、处理状态、提示信息、响应时间' });
+    }
+
+    const prompt = `请对功能过程"${functionName}"进行COSMIC拆分，严格按JSON数组格式输出。
+
+要求：
+- ${policy.rule}
+- 只输出JSON数组，不要任何其他文字
+
+输出格式示例：
+${JSON.stringify(example, null, 2)}
+
+现在请输出"${functionName}"的COSMIC拆分JSON：`;
+
+    return { prompt, policy };
+}
+
+function applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience = false) {
+    if (!useEnhancedExperience || !Array.isArray(tableData)) return tableData;
+
+    const pruned = [];
+    let currentProc = '';
+    let removedCount = 0;
+
+    for (const row of tableData) {
+        if (row.dataMovementType === 'E' && row.functionalProcess) {
+            currentProc = row.functionalProcess;
+        }
+        const requirements = getCosmicMoveRequirements(currentProc, true);
+        const shouldRemove = (row.dataMovementType === 'R' && !requirements.allowR)
+            || (row.dataMovementType === 'W' && !requirements.allowW)
+            || (row.dataMovementType === 'X' && !requirements.allowX);
+
+        if (shouldRemove) {
+            removedCount++;
+            continue;
+        }
+        pruned.push(row);
+    }
+
+    if (removedCount > 0) {
+        console.log(`🧭 COSMIC经验增强版: 按模板移除 ${removedCount} 条非必要数据移动`);
+    }
+    return pruned;
 }
 
 function getCosmicCompletenessRule(useEnhancedExperience = false) {
     if (!useEnhancedExperience) {
         return '每个功能过程必须有完整的 E + R(≥1) + W(≥1) + X 子过程。';
     }
-    return '每个功能过程必须有完整数据移动：一般使用 E + R(≥1) + W(≥1) + X；纯查询/查看/检索类且没有持久化写入时允许 E + R(≥1) + X，不要强行补W；新增、修改、删除、导入、导出落文件、流程、定时、同步、采集、汇总、生成等仍必须包含W。';
+    return '增强版开启：先按功能过程名称匹配经验模板，不要默认补齐E+R+W+X。查询/查看/列表/详情使用E+R+X且禁止强补W；新增/创建/删除使用E+W+X且禁止编造读取配置/原有数据作为R；修改/导入/流程使用E+R+W+X；导出使用E+R+X，只有明确服务端保存导出文件才补W；定时统计/汇总使用E+R+W，只有需要呈现或通知结果才补X。';
 }
 
 function dedupeFunctionsByName(functions = []) {
@@ -2517,6 +2654,7 @@ ${completenessRule}
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
         let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, isV4Flash ? 'sequential' : 'fuzzy');
+        tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
 
         // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
         const incompleteFuncs = [];
@@ -2542,25 +2680,7 @@ ${completenessRule}
             
             for (const funcName of incompleteFuncs) {
                 try {
-                    const canOmitWrite = allowsQueryOnlyWithoutWrite(funcName, useEnhancedExperience);
-                    const repairTypeRule = canOmitWrite
-                        ? '必须包含3个对象：E(1个) + R(至少1个) + X(1个)。该功能是纯查询/查看类且无持久化写入时，不要强行补W'
-                        : '必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)';
-                    const singleRepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。
-
-要求：
-- ${repairTypeRule}
-- 只输出JSON数组，不要任何其他文字
-
-输出格式示例：
-[
-  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},
-  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},
-  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},
-  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}
-]
-
-现在请输出"${funcName}"的COSMIC拆分JSON：`;
+                    const { prompt: singleRepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
                     const singleRepair = await callAIWithRetry({
                         messages: [
@@ -2577,13 +2697,13 @@ ${completenessRule}
                         if (jsonMatch) {
                             try {
                                 const parsed = JSON.parse(jsonMatch[0]);
-                                if (Array.isArray(parsed) && parsed.length >= (canOmitWrite ? 3 : 4)) {
+                                if (Array.isArray(parsed) && parsed.length >= repairPolicy.minRows) {
                                     const hasE = parsed.some(r => r.dmt === 'E');
                                     const hasR = parsed.some(r => r.dmt === 'R');
                                     const hasW = parsed.some(r => r.dmt === 'W');
                                     const hasX = parsed.some(r => r.dmt === 'X');
 
-                                    if (hasE && hasR && hasX && (hasW || canOmitWrite)) {
+                                    if (isCosmicRepairValid(parsed, repairPolicy)) {
                                         const origERow = tableData.find(r => r.dataMovementType === 'E' && r.functionalProcess && r.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
                                         const fUser = origERow?.functionalUser || '';
                                         const tEvent = origERow?.triggerEvent || '';
@@ -2646,7 +2766,7 @@ ${completenessRule}
 
                 for (const funcName of skippedProcesses) {
                     try {
-                        const v4RepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。\n\n要求：\n- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)\n- 只输出JSON数组，不要任何其他文字\n\n输出格式示例：\n[\n  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},\n  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},\n  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},\n  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}\n]\n\n现在请输出"${funcName}"的COSMIC拆分JSON：`;
+                        const { prompt: v4RepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
                         const v4Repair = await callAIWithRetry({
                             messages: [{ role: 'user', content: v4RepairPrompt }],
@@ -2659,9 +2779,7 @@ ${completenessRule}
                             const jsonMatch = v4Repair.choices[0].message.content.match(/\[[\s\S]*\]/);
                             if (jsonMatch) {
                                 const parsed = JSON.parse(jsonMatch[0]);
-                                if (Array.isArray(parsed) && parsed.length >= 4 &&
-                                    parsed.some(r => r.dmt === 'E') && parsed.some(r => r.dmt === 'R') &&
-                                    parsed.some(r => r.dmt === 'W') && parsed.some(r => r.dmt === 'X')) {
+                                if (Array.isArray(parsed) && parsed.length >= repairPolicy.minRows && isCosmicRepairValid(parsed, repairPolicy)) {
 
                                     const refFunc = refFunctions.find(f => normalizeProcessName(f.functionName) === normalizeProcessName(funcName));
                                     const funcLevels = functionLevelMap?.[funcName] || {};
@@ -2694,6 +2812,7 @@ ${completenessRule}
             }
         }
 
+        tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
         tableData = limitSubprocessesPerFunction(ensureFunctionDescriptions(tableData, refFunctions));
 
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
@@ -2836,6 +2955,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
         let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, isV4Flash ? 'sequential' : 'fuzzy');
+        tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
 
         // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
         const incompleteFuncs = [];
@@ -2864,25 +2984,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             for (const funcName of incompleteFuncs) {
                 try {
                     // 使用JSON格式输出，彻底绕过Markdown表格解析问题
-                    const canOmitWrite = allowsQueryOnlyWithoutWrite(funcName, useEnhancedExperience);
-                    const repairTypeRule = canOmitWrite
-                        ? '必须包含3个对象：E(1个) + R(至少1个) + X(1个)。该功能是纯查询/查看类且无持久化写入时，不要强行补W'
-                        : '必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)';
-                    const singleRepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。
-
-要求：
-- ${repairTypeRule}
-- 只输出JSON数组，不要任何其他文字
-
-输出格式示例：
-[
-  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},
-  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},
-  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},
-  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}
-]
-
-现在请输出"${funcName}"的COSMIC拆分JSON：`;
+                    const { prompt: singleRepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
                     const singleRepair = await callAIWithRetry({
                         messages: [
@@ -2900,13 +3002,13 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                         if (jsonMatch) {
                             try {
                                 const parsed = JSON.parse(jsonMatch[0]);
-                                if (Array.isArray(parsed) && parsed.length >= (canOmitWrite ? 3 : 4)) {
+                                if (Array.isArray(parsed) && parsed.length >= repairPolicy.minRows) {
                                     const hasE = parsed.some(r => r.dmt === 'E');
                                     const hasR = parsed.some(r => r.dmt === 'R');
                                     const hasW = parsed.some(r => r.dmt === 'W');
                                     const hasX = parsed.some(r => r.dmt === 'X');
 
-                                    if (hasE && hasR && hasX && (hasW || canOmitWrite)) {
+                                    if (isCosmicRepairValid(parsed, repairPolicy)) {
                                         // 找到原E行的functionalUser和triggerEvent
                                         const origERow = tableData.find(r => r.dataMovementType === 'E' && r.functionalProcess && r.functionalProcess.toLowerCase().trim() === funcName.toLowerCase().trim());
                                         const fUser = origERow?.functionalUser || '';
@@ -2986,7 +3088,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
                 for (const funcName of skippedProcesses) {
                     try {
-                        const v4RepairPrompt = `请对功能过程"${funcName}"进行COSMIC拆分，严格按JSON数组格式输出。\n\n要求：\n- 必须包含4个对象：E(1个) + R(至少1个) + W(至少1个) + X(1个)\n- 只输出JSON数组，不要任何其他文字\n\n输出格式示例：\n[\n  {"dmt":"E","subProcess":"接收xxx请求","dataGroup":"xxx请求数据","dataAttributes":"请求ID、操作类型、时间戳、参数"},\n  {"dmt":"R","subProcess":"读取xxx配置数据","dataGroup":"xxx配置表","dataAttributes":"配置ID、配置名称、配置值、更新时间"},\n  {"dmt":"W","subProcess":"保存xxx处理结果","dataGroup":"xxx结果记录表","dataAttributes":"记录ID、处理结果、状态、保存时间"},\n  {"dmt":"X","subProcess":"返回xxx处理响应","dataGroup":"xxx响应数据","dataAttributes":"响应码、处理状态、结果摘要、响应时间"}\n]\n\n现在请输出"${funcName}"的COSMIC拆分JSON：`;
+                        const { prompt: v4RepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
                         const v4Repair = await callAIWithRetry({
                             messages: [{ role: 'user', content: v4RepairPrompt }],
@@ -2999,9 +3101,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                             const jsonMatch = v4Repair.choices[0].message.content.match(/\[[\s\S]*\]/);
                             if (jsonMatch) {
                                 const parsed = JSON.parse(jsonMatch[0]);
-                                if (Array.isArray(parsed) && parsed.length >= 4 &&
-                                    parsed.some(r => r.dmt === 'E') && parsed.some(r => r.dmt === 'R') &&
-                                    parsed.some(r => r.dmt === 'W') && parsed.some(r => r.dmt === 'X')) {
+                                if (Array.isArray(parsed) && parsed.length >= repairPolicy.minRows && isCosmicRepairValid(parsed, repairPolicy)) {
 
                                     const funcInfo = batchFuncInfoMap[funcName] || {};
                                     const funcLevels = functionLevelMap?.[funcName] || {};
@@ -3034,6 +3134,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             }
         }
 
+        tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
         tableData = limitSubprocessesPerFunction(ensureFunctionDescriptions(tableData, refFunctions));
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
