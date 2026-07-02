@@ -8,6 +8,7 @@ const multer = require('multer');
 const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
 const docx = require('docx');
+const JSZip = require('jszip');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
@@ -39,6 +40,190 @@ const PORT = parseInt(process.env.PORT, 10) || 3001;
 const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '300', 10);
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const REQUEST_BODY_LIMIT = `${MAX_UPLOAD_MB}mb`;
+
+function escapeXmlAttr(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function stripManualHeadingNumber(text) {
+    return String(text || '').replace(/^\s*\d+(?:\.\d+)*\.?\s*/, '').trim();
+}
+
+function nextWordNumberingId(xml, attrName) {
+    const regex = new RegExp(`w:${attrName}="(\\d+)"`, 'g');
+    let max = 0;
+    let match;
+    while ((match = regex.exec(xml))) {
+        max = Math.max(max, Number(match[1]));
+    }
+    return max + 1;
+}
+
+function getWordStyleBlocks(stylesXml) {
+    return [...String(stylesXml || '').matchAll(/<w:style\b(?=[^>]*w:type="paragraph")[^>]*>[\s\S]*?<\/w:style>/g)]
+        .map(match => match[0]);
+}
+
+function detectHeadingStyleIds(stylesXml) {
+    const byName = {};
+    const byOutline = {};
+
+    for (const block of getWordStyleBlocks(stylesXml)) {
+        const styleId = block.match(/\bw:styleId="([^"]+)"/)?.[1];
+        if (!styleId) continue;
+
+        const name = block.match(/<w:name\b[^>]*\bw:val="([^"]*)"/)?.[1] || '';
+        const outline = block.match(/<w:outlineLvl\b[^>]*\bw:val="(\d+)"/)?.[1];
+        const headingName = name.toLowerCase().match(/^heading\s+([1-4])$/);
+        const chineseHeadingName = name.match(/^标题\s*([1-4])$/);
+
+        if (headingName) byName[Number(headingName[1]) - 1] = styleId;
+        if (chineseHeadingName) byName[Number(chineseHeadingName[1]) - 1] = styleId;
+        if (outline && Number(outline) >= 0 && Number(outline) <= 3) {
+            byOutline[Number(outline)] ||= styleId;
+        }
+    }
+
+    return [0, 1, 2, 3].map(level => (
+        byName[level]
+        || byOutline[level]
+        || ['Heading1', 'Heading2', 'Heading3', 'Heading4'][level]
+    ));
+}
+
+function buildHeadingNumberingLevel(level, styleId) {
+    const lvlText = Array.from({ length: level + 1 }, (_, index) => `%${index + 1}`).join('.') + '.';
+    const safeStyleId = escapeXmlAttr(styleId);
+    return [
+        `<w:lvl w:ilvl="${level}">`,
+        '<w:start w:val="1"/>',
+        '<w:numFmt w:val="decimal"/>',
+        `<w:pStyle w:val="${safeStyleId}"/>`,
+        '<w:suff w:val="space"/>',
+        `<w:lvlText w:val="${lvlText}"/>`,
+        '<w:lvlJc w:val="left"/>',
+        '<w:pPr><w:ind w:left="0" w:hanging="0"/></w:pPr>',
+        '</w:lvl>'
+    ].join('');
+}
+
+function addHeadingNumberingDefinition(numberingXml, headingStyleIds) {
+    if (!numberingXml || !numberingXml.includes('</w:numbering>')) return { xml: numberingXml, numId: null };
+
+    const abstractNumId = nextWordNumberingId(numberingXml, 'abstractNumId');
+    const numId = nextWordNumberingId(numberingXml, 'numId');
+    const levelsXml = headingStyleIds
+        .map((styleId, level) => buildHeadingNumberingLevel(level, styleId))
+        .join('');
+
+    const definition = [
+        `<w:abstractNum w:abstractNumId="${abstractNumId}">`,
+        '<w:nsid w:val="6B9E4A21"/>',
+        '<w:multiLevelType w:val="multilevel"/>',
+        '<w:tmpl w:val="6B9E4A21"/>',
+        levelsXml,
+        '</w:abstractNum>',
+        `<w:num w:numId="${numId}"><w:abstractNumId w:val="${abstractNumId}"/></w:num>`
+    ].join('');
+
+    return {
+        xml: numberingXml.replace('</w:numbering>', `${definition}</w:numbering>`),
+        numId
+    };
+}
+
+function buildNumPr(level, numId) {
+    return `<w:numPr><w:ilvl w:val="${level}"/><w:numId w:val="${numId}"/></w:numPr>`;
+}
+
+function setHeadingStyleNumbering(stylesXml, headingStyleIds, numId) {
+    let xml = stylesXml;
+
+    headingStyleIds.forEach((styleId, level) => {
+        const escapedStyleId = styleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const styleRegex = new RegExp(`<w:style\\b(?=[^>]*w:styleId="${escapedStyleId}")[^>]*>[\\s\\S]*?<\\/w:style>`);
+        xml = xml.replace(styleRegex, (styleBlock) => {
+            const numPr = buildNumPr(level, numId);
+            const outline = `<w:outlineLvl w:val="${level}"/>`;
+            if (/<w:pPr\b[^>]*>[\s\S]*?<\/w:pPr>/.test(styleBlock)) {
+                return styleBlock.replace(/<w:pPr\b([^>]*)>([\s\S]*?)<\/w:pPr>/, (_match, attrs, inner) => {
+                    const cleaned = inner
+                        .replace(/<w:numPr>[\s\S]*?<\/w:numPr>/g, '')
+                        .replace(/<w:outlineLvl\b[^>]*\/>/g, '');
+                    return `<w:pPr${attrs}>${cleaned}${numPr}${outline}</w:pPr>`;
+                });
+            }
+            return styleBlock.replace(/(<w:name\b[^>]*\/>)/, `$1<w:pPr>${numPr}${outline}</w:pPr>`);
+        });
+    });
+
+    return xml;
+}
+
+function setHeadingParagraphNumbering(documentXml, headingStyleIds, numId) {
+    const styleToLevel = new Map(headingStyleIds.map((styleId, level) => [styleId, level]));
+    return documentXml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraphXml) => {
+        const styleId = paragraphXml.match(/<w:pStyle\b[^>]*\bw:val="([^"]+)"/)?.[1];
+        if (!styleToLevel.has(styleId)) return paragraphXml;
+
+        const level = styleToLevel.get(styleId);
+        const numPr = buildNumPr(level, numId);
+        if (/<w:pPr\b[^>]*>[\s\S]*?<\/w:pPr>/.test(paragraphXml)) {
+            return paragraphXml.replace(/<w:pPr\b([^>]*)>([\s\S]*?)<\/w:pPr>/, (_match, attrs, inner) => {
+                const cleaned = inner.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/g, '');
+                const pStyleMatch = cleaned.match(/<w:pStyle\b[^>]*\/>/);
+                if (!pStyleMatch) return `<w:pPr${attrs}>${numPr}${cleaned}</w:pPr>`;
+                const insertAt = pStyleMatch.index + pStyleMatch[0].length;
+                return `<w:pPr${attrs}>${cleaned.slice(0, insertAt)}${numPr}${cleaned.slice(insertAt)}</w:pPr>`;
+            });
+        }
+        return paragraphXml.replace(/(<w:p\b[^>]*>)/, `$1<w:pPr>${numPr}</w:pPr>`);
+    });
+}
+
+function setUpdateFieldsOnOpen(settingsXml) {
+    if (!settingsXml || !settingsXml.includes('</w:settings>')) return settingsXml;
+    if (/<w:updateFields\b/.test(settingsXml)) {
+        return settingsXml.replace(/<w:updateFields\b[^>]*\/>/, '<w:updateFields w:val="true"/>');
+    }
+    return settingsXml.replace('</w:settings>', '<w:updateFields w:val="true"/></w:settings>');
+}
+
+async function applyAutoHeadingNumbering(docxBuffer) {
+    const zip = await JSZip.loadAsync(docxBuffer);
+    const documentFile = zip.file('word/document.xml');
+    const stylesFile = zip.file('word/styles.xml');
+    const numberingFile = zip.file('word/numbering.xml');
+
+    if (!documentFile || !stylesFile || !numberingFile) return docxBuffer;
+
+    let documentXml = await documentFile.async('string');
+    let stylesXml = await stylesFile.async('string');
+    let numberingXml = await numberingFile.async('string');
+    const headingStyleIds = detectHeadingStyleIds(stylesXml);
+    const { xml: patchedNumberingXml, numId } = addHeadingNumberingDefinition(numberingXml, headingStyleIds);
+
+    if (!numId) return docxBuffer;
+
+    numberingXml = patchedNumberingXml;
+    stylesXml = setHeadingStyleNumbering(stylesXml, headingStyleIds, numId);
+    documentXml = setHeadingParagraphNumbering(documentXml, headingStyleIds, numId);
+
+    zip.file('word/numbering.xml', numberingXml);
+    zip.file('word/styles.xml', stylesXml);
+    zip.file('word/document.xml', documentXml);
+
+    const settingsFile = zip.file('word/settings.xml');
+    if (settingsFile) {
+        zip.file('word/settings.xml', setUpdateFieldsOnOpen(await settingsFile.async('string')));
+    }
+
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
 
 // ═══════════════════════ 中间件 ═══════════════════════
 
@@ -4750,7 +4935,7 @@ app.post('/api/export-word', async (req, res) => {
             border: options.border
         });
 
-        const heading = (text, level, color = '1A1A2E') => paragraph(text, {
+        const heading = (text, level, color = '1A1A2E') => paragraph(stripManualHeadingNumber(text), {
             bold: true,
             size: level === 1 ? 32 : level === 2 ? 27 : 23,
             color,
@@ -5019,7 +5204,8 @@ app.post('/api/export-word', async (req, res) => {
             }]
         });
 
-        const buffer = await Packer.toBuffer(doc);
+        const rawBuffer = await Packer.toBuffer(doc);
+        const buffer = await applyAutoHeadingNumbering(rawBuffer);
 
         console.log(`✅ Word文档生成成功，大小: ${(buffer.length / 1024).toFixed(1)} KB`);
 
