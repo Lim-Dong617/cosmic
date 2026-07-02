@@ -774,15 +774,92 @@ function App({ user, token, onLogout }) {
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
+    const processCosmicExcelFile = async (file) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('userConfig', JSON.stringify(getUserConfig()));
+
+        try {
+            setIsLoading(true);
+            setUploadProgress(0);
+            const res = await axios.post('/api/parse-cosmic-excel', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+                timeout: 300000,
+                onUploadProgress: (e) => {
+                    if (e.total) setUploadProgress(Math.round((e.loaded * 100) / e.total));
+                }
+            });
+
+            if (res.data.success) {
+                const importedTableData = orderCosmicTableData(
+                    res.data.tableData || [],
+                    res.data.parsedFunctions || [],
+                    res.data.moduleStructure || null
+                );
+                setDocumentContent(res.data.documentContent || '');
+                setDocumentName(res.data.filename);
+                setTableData(importedTableData);
+                setParsedFunctions(res.data.parsedFunctions || []);
+                setFunctionListText(res.data.functionListText || '');
+                setModuleStructure(res.data.moduleStructure || null);
+                setChapters([]);
+                setQuantityPlan(null);
+                setFailedBatchInfo([]);
+                setCoverageResult(null);
+                setCurrentStep(0);
+                setShowFunctionListEditor(false);
+                setShowChapterView(false);
+                setIsWaitingForAnalysis(false);
+                setExportWithDiagrams(true);
+                resetAnalysisProgress();
+                setUploadProgress(100);
+
+                const counts = res.data.dmtCounts || {};
+                const descGen = res.data.descriptionGeneration || {};
+                const descStatus = descGen.source === 'excel'
+                    ? '使用Excel原有功能描述'
+                    : descGen.source === 'local-fallback'
+                        ? `AI生成失败，已用本地规则兜底 ${descGen.fallbackCount || 0} 条`
+                        : `已调用AI生成/补齐功能描述 ${descGen.generatedCount || 0} 条`;
+                setMessages(prev => [...prev,
+                    {
+                        role: 'system',
+                        content: `已导入已拆分 COSMIC Excel：${res.data.filename}\n格式：${res.data.format?.name || 'COSMIC拆分表'} | 工作表：${res.data.format?.sheetName || '-'} | 功能过程：${res.data.functionCount} 个 | CFP：${res.data.count}\nERWX：E×${counts.E || 0} R×${counts.R || 0} W×${counts.W || 0} X×${counts.X || 0}\n功能描述：${descStatus}`
+                    },
+                    {
+                        role: 'assistant',
+                        content: '已识别拆分结果，并跳过 COSMIC 拆分流程。已默认开启“附带时序图”，可以直接查看时序图，或导出带时序图的 Word 需求文档。',
+                        showActions: true
+                    }
+                ]);
+                showToast(`已导入 ${res.data.functionCount} 个功能过程，可直接导出Word`);
+                ensureConversation(res.data.filename);
+            }
+        } catch (error) {
+            const msg = error.response?.data?.error || error.message;
+            setErrorMessage(`COSMIC Excel解析失败: ${msg}`);
+        } finally {
+            setIsLoading(false);
+            setTimeout(() => setUploadProgress(0), 1000);
+        }
+    };
+
     const processFile = async (file) => {
         setErrorMessage('');
         const ext = '.' + file.name.split('.').pop().toLowerCase();
-        if (!['.docx', '.txt', '.md'].includes(ext)) {
-            setErrorMessage(`不支持的文件格式: ${ext}，请上传 .docx, .txt 或 .md 文件`);
+        const docExts = ['.docx', '.txt', '.md'];
+        const cosmicExcelExts = ['.xlsx', '.xlsm', '.xls'];
+        if (![...docExts, ...cosmicExcelExts].includes(ext)) {
+            setErrorMessage(`不支持的文件格式: ${ext}，请上传 .docx, .txt, .md 或 .xlsx/.xlsm 文件`);
             return;
         }
         if (file.size > MAX_UPLOAD_BYTES) {
             setErrorMessage(`文件大小超过限制（最大${MAX_UPLOAD_MB}MB）`);
+            return;
+        }
+
+        if (cosmicExcelExts.includes(ext)) {
+            await processCosmicExcelFile(file);
             return;
         }
 
@@ -2489,10 +2566,14 @@ function App({ user, token, onLogout }) {
 
             if (response.data.success) {
                 setTableData(response.data.tableData);
+                const descGen = response.data.descriptionGeneration || {};
+                const descStatus = descGen.source === 'local-fallback'
+                    ? `AI生成失败，已用本地规则兜底 ${descGen.fallbackCount || 0} 条`
+                    : `AI生成 ${descGen.generatedCount || 0} 条${descGen.fallbackCount ? `，本地兜底 ${descGen.fallbackCount} 条` : ''}`;
                 showToast('功能描述补充完成');
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `✅ **功能描述已补充**\n\n已为 ${response.data.supplementedCount} 个功能过程生成功能描述。`
+                    content: `✅ **功能描述已补充**\n\n已为 ${response.data.supplementedCount} 个功能过程重新生成功能描述。\n\n${descStatus}。`
                 }]);
             }
         } catch (error) {
@@ -3384,8 +3465,8 @@ function App({ user, token, onLogout }) {
                                     <div className="welcome-features">
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon violet"><FileText size={18} /></div>
-                                            <h3>智能文档解析</h3>
-                                            <p>支持 .docx, .txt, .md 格式，自动提取功能描述</p>
+                                            <h3>文档/Excel解析</h3>
+                                            <p>支持需求文档和已拆分COSMIC Excel，自动识别格式</p>
                                         </div>
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon blue"><Brain size={18} /></div>
@@ -3395,7 +3476,7 @@ function App({ user, token, onLogout }) {
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon cyan"><BarChart3 size={18} /></div>
                                             <h3>专业级输出</h3>
-                                            <p>标准Markdown表格 + Excel导出，直接交付使用</p>
+                                            <p>标准拆分表、时序图和Word需求文档，直接交付使用</p>
                                         </div>
                                     </div>
 
@@ -3410,14 +3491,14 @@ function App({ user, token, onLogout }) {
                                         onDrop={handleDrop}
                                     >
                                         <div className="upload-zone-icon"><Upload size={34} /></div>
-                                        <h3>上传需求文档</h3>
+                                        <h3>上传需求文档或COSMIC Excel</h3>
                                         <p>拖拽文件到此处，或点击选择文件</p>
-                                        <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>支持 .docx, .txt, .md 格式</p>
+                                        <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>支持 .docx, .txt, .md, .xlsx, .xlsm 格式</p>
                                     </div>
                                     <input
                                         ref={fileInputRef}
                                         type="file"
-                                        accept=".docx,.txt,.md"
+                                        accept=".docx,.txt,.md,.xlsx,.xlsm,.xls"
                                         onChange={handleFileSelect}
                                         style={{ display: 'none' }}
                                     />
@@ -3444,10 +3525,13 @@ function App({ user, token, onLogout }) {
                                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <Download size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Excel'}
                                                         </button>
                                                         {renderExcelTemplateSelect()}
-                                                        <label className="seq-export-toggle" title="导出Excel时附带每个功能过程的时序图">
+                                                        <label className="seq-export-toggle" title="导出Excel/Word时附带每个功能过程的时序图">
                                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                                             <GitBranch size={12} /> 附带时序图
                                                         </label>
+                                                        <button className="btn btn-sm" onClick={exportWord} disabled={isGeneratingDiagrams} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为带时序图的Word需求文档">
+                                                            {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Word'}
+                                                        </button>
                                                         <button className="btn btn-secondary btn-sm" onClick={supplementDescription} disabled={isSupplementingDescription || isLoading} title="为功能过程补充功能描述">
                                                             {isSupplementingDescription ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isSupplementingDescription ? '补充中...' : '补充功能描述'}
                                                         </button>
@@ -3659,7 +3743,7 @@ function App({ user, token, onLogout }) {
                                 <div className="input-wrapper">
                                     <textarea
                                         className="input-textarea"
-                                        placeholder={documentContent ? '输入特殊要求或追问...' : '请先上传需求文档...'}
+                                        placeholder={documentContent ? '输入特殊要求或追问...' : '请先上传需求文档或COSMIC Excel...'}
                                         value={inputText}
                                         onChange={e => setInputText(e.target.value)}
                                         onKeyDown={handleKeyDown}
@@ -3679,7 +3763,7 @@ function App({ user, token, onLogout }) {
 
                             {/* Hidden file input for re-upload */}
                             {!messages.length && !documentContent ? null : (
-                                <input ref={fileInputRef} type="file" accept=".docx,.txt,.md" onChange={handleFileSelect} style={{ display: 'none' }} />
+                                <input ref={fileInputRef} type="file" accept=".docx,.txt,.md,.xlsx,.xlsm,.xls" onChange={handleFileSelect} style={{ display: 'none' }} />
                             )}
                         </div>
                     </div>

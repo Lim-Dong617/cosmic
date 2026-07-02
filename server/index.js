@@ -82,11 +82,11 @@ const upload = multer({
     fileFilter: (req, file, cb) => {
         file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
         const ext = path.extname(file.originalname).toLowerCase();
-        const allowedExts = ['.docx', '.doc', '.txt', '.md'];
+        const allowedExts = ['.docx', '.doc', '.txt', '.md', '.xlsx', '.xlsm', '.xls'];
         if (allowedExts.includes(ext)) {
             cb(null, true);
         } else {
-            cb(new Error(`不支持的文件格式: ${ext}，请上传 .docx, .txt 或 .md 文件`));
+            cb(new Error(`不支持的文件格式: ${ext}，请上传 .docx, .txt, .md 或 .xlsx/.xlsm 文件`));
         }
     }
 });
@@ -631,6 +631,455 @@ function orderSequenceDiagrams(sequenceDiagrams, tableData) {
         if (ar !== br) return ar - br;
         return sequenceDiagrams.indexOf(a) - sequenceDiagrams.indexOf(b);
     });
+}
+
+function normalizeCosmicDmt(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return null;
+    if (/COSMIC规定|四种数据移动|四选一|必填|输入.*输出.*读.*写|E.*R.*W.*X/.test(s)) return null;
+    const up = s.toUpperCase();
+    if (up === 'E' || up === 'ENTRY' || s === '输入' || s === '入' || s === '进入') return 'E';
+    if (up === 'R' || up === 'READ' || s === '读' || s === '读取') return 'R';
+    if (up === 'W' || up === 'WRITE' || s === '写' || s === '写入' || s === '保存') return 'W';
+    if (up === 'X' || up === 'EXIT' || s === '输出' || s === '退出' || s === '出') return 'X';
+
+    const withoutParen = up.replace(/[（(].*?[)）]/g, '').trim();
+    if (['E', 'R', 'W', 'X'].includes(withoutParen)) return withoutParen;
+
+    const dashMatch = up.match(/^([ERWX])\s*[-—–]\s*/);
+    if (dashMatch) return dashMatch[1];
+
+    const numPrefixMatch = up.match(/^\d+\s*[-—–.、]\s*([ERWX])$/);
+    if (numPrefixMatch) return numPrefixMatch[1];
+
+    const embeddedMatch = up.match(/\b([ERWX])\b/);
+    if (embeddedMatch && /数据移动|移动类型|输入|读取|写入|输出|ENTRY|READ|WRITE|EXIT/i.test(s)) {
+        return embeddedMatch[1];
+    }
+    return null;
+}
+
+function isCosmicExcelInstructionRow(values) {
+    const text = values.filter(Boolean).join('\n');
+    return /来源于需求文档|必填|选填|COSMIC规定|四种数据移动|四选一|功能处理可能只有一个触发输入|填写说明|人工填写/.test(text);
+}
+
+function excelCellValueToText(value) {
+    if (value === null || value === undefined) return '';
+    if (value instanceof Date) return value.toISOString().slice(0, 10);
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return String(value);
+    }
+    if (Array.isArray(value)) {
+        return value.map(excelCellValueToText).filter(Boolean).join(' ');
+    }
+    if (typeof value === 'object') {
+        if (value.richText) {
+            return value.richText.map(part => part.text || '').join('');
+        }
+        if (value.text) return String(value.text);
+        if (value.result !== undefined) return excelCellValueToText(value.result);
+        if (value.hyperlink) return String(value.text || value.hyperlink || '');
+        if (value.error) return String(value.error);
+    }
+    return '';
+}
+
+function getExcelCellText(cell) {
+    return sanitizeText(excelCellValueToText(cell?.value));
+}
+
+function normalizeExcelHeader(value) {
+    return String(value || '')
+        .replace(/\s+/g, '')
+        .replace(/[：:]/g, '')
+        .trim();
+}
+
+function buildCosmicExcelColumnMap(headers) {
+    const normalized = headers.map(normalizeExcelHeader);
+    const findCol = (...predicates) => {
+        const index = normalized.findIndex(header => header && predicates.some(predicate => predicate(header)));
+        return index >= 0 ? index + 1 : 0;
+    };
+
+    return {
+        level1: findCol(h => h.includes('一级标题') || h.includes('一级模块') || h.includes('一级业务功能')),
+        level2: findCol(h => h.includes('二级标题') || h.includes('二级模块') || h.includes('二级业务功能')),
+        level3: findCol(h => h.includes('三级标题') || h.includes('三级模块') || h.includes('三级业务功能')),
+        functionalUser: findCol(h => h === '功能用户' || (h.includes('功能用户') && !h.includes('需求'))),
+        triggerEvent: findCol(h => h.includes('触发事件')),
+        functionalProcess: findCol(h => h === '功能过程' || (h.includes('功能过程') && !h.includes('描述'))),
+        subProcessDesc: findCol(h => h.includes('子过程描述') || h.includes('子处理')),
+        dataMovementType: findCol(h => h.includes('数据移动类型') || h === '数据移动' || h === '类型' || h.includes('移动类型')),
+        dataGroup: findCol(h => h.includes('数据组')),
+        dataAttributes: findCol(h => h.includes('数据属性')),
+        functionDescription: findCol(h => h === '功能描述' || h.includes('功能过程描述') || (h.includes('功能描述') && !h.includes('用户需求')))
+    };
+}
+
+function scoreCosmicExcelHeader(headers, columnMap, sheetName = '') {
+    if (!columnMap.functionalProcess || !columnMap.dataMovementType) return 0;
+    if (!columnMap.subProcessDesc && !columnMap.dataGroup && !columnMap.dataAttributes) return 0;
+
+    let score = 20;
+    for (const key of ['functionalUser', 'triggerEvent', 'subProcessDesc', 'dataGroup', 'dataAttributes']) {
+        if (columnMap[key]) score += 5;
+    }
+    for (const key of ['level1', 'level2', 'level3', 'functionDescription']) {
+        if (columnMap[key]) score += 3;
+    }
+
+    const headerText = headers.join('|');
+    if (/功能点拆分表|COSMIC拆分结果|COSMIC|拆分/.test(sheetName)) score += 8;
+    if (/修订标识|OPEX|CAPEX|CFP评估师核定/.test(headerText)) score += 8;
+    return score;
+}
+
+function detectCosmicExcelLayout(workbook) {
+    let best = null;
+
+    for (const worksheet of workbook.worksheets) {
+        const rowLimit = Math.min(30, worksheet.rowCount || 0);
+        const colLimit = Math.min(80, Math.max(worksheet.actualColumnCount || 0, worksheet.columnCount || 0, 18));
+
+        for (let rowNumber = 1; rowNumber <= rowLimit; rowNumber++) {
+            const row = worksheet.getRow(rowNumber);
+            const headers = [];
+            for (let col = 1; col <= colLimit; col++) {
+                headers.push(getExcelCellText(row.getCell(col)));
+            }
+            const columnMap = buildCosmicExcelColumnMap(headers);
+            const score = scoreCosmicExcelHeader(headers, columnMap, worksheet.name);
+            if (score > (best?.score || 0)) {
+                best = { worksheet, headerRowNumber: rowNumber, columnMap, headers, score };
+            }
+        }
+    }
+
+    return best && best.score > 0 ? best : null;
+}
+
+function getDefaultSubProcessDesc(dmt, processName) {
+    const cleanProcess = cleanProcessDisplayName(processName) || '该功能';
+    return {
+        E: `接收${cleanProcess}请求`,
+        R: `读取${cleanProcess}相关数据`,
+        W: `保存${cleanProcess}处理结果`,
+        X: `返回${cleanProcess}处理结果`
+    }[dmt] || `${cleanProcess}数据移动`;
+}
+
+function parseCosmicExcelRows(worksheet, headerRowNumber, columnMap) {
+    const tableData = [];
+    let currentFunctionalUser = '';
+    let currentTriggerEvent = '';
+    let currentFunctionalProcess = '';
+    let currentL1 = '';
+    let currentL2 = '';
+    let currentL3 = '';
+
+    const getByKey = (row, key) => {
+        const col = columnMap[key];
+        return col ? getExcelCellText(row.getCell(col)) : '';
+    };
+
+    for (let rowNumber = headerRowNumber + 1; rowNumber <= worksheet.rowCount; rowNumber++) {
+        const row = worksheet.getRow(rowNumber);
+        const rawValues = [
+            getByKey(row, 'level1'),
+            getByKey(row, 'level2'),
+            getByKey(row, 'level3'),
+            getByKey(row, 'functionalUser'),
+            getByKey(row, 'triggerEvent'),
+            getByKey(row, 'functionalProcess'),
+            getByKey(row, 'subProcessDesc'),
+            getByKey(row, 'dataMovementType'),
+            getByKey(row, 'dataGroup'),
+            getByKey(row, 'dataAttributes'),
+            getByKey(row, 'functionDescription')
+        ];
+        if (isCosmicExcelInstructionRow(rawValues)) continue;
+
+        const dmt = normalizeCosmicDmt(getByKey(row, 'dataMovementType'));
+        if (!dmt) continue;
+
+        const rawLevel1 = getByKey(row, 'level1');
+        const rawLevel2 = getByKey(row, 'level2');
+        const rawLevel3 = getByKey(row, 'level3');
+        const rawFuncUser = getByKey(row, 'functionalUser');
+        const rawTrigger = getByKey(row, 'triggerEvent');
+        const rawProcess = getByKey(row, 'functionalProcess');
+
+        if (rawLevel1) currentL1 = rawLevel1;
+        if (rawLevel2) currentL2 = rawLevel2;
+        if (rawLevel3) currentL3 = rawLevel3;
+        if (rawFuncUser) currentFunctionalUser = rawFuncUser;
+        if (rawTrigger) currentTriggerEvent = rawTrigger;
+        if (rawProcess) currentFunctionalProcess = rawProcess;
+
+        if (dmt === 'E' && !currentFunctionalProcess) continue;
+        if (dmt !== 'E' && !currentFunctionalProcess) continue;
+
+        let subProcessDesc = getByKey(row, 'subProcessDesc');
+        if (!subProcessDesc) {
+            subProcessDesc = getDefaultSubProcessDesc(dmt, currentFunctionalProcess);
+        }
+
+        tableData.push({
+            functionalUser: currentFunctionalUser,
+            triggerEvent: currentTriggerEvent,
+            functionalProcess: dmt === 'E' ? currentFunctionalProcess : '',
+            subProcessDesc,
+            dataMovementType: dmt,
+            dataGroup: getByKey(row, 'dataGroup') || '待补充',
+            dataAttributes: getByKey(row, 'dataAttributes') || '待补充',
+            functionDescription: dmt === 'E' ? getByKey(row, 'functionDescription') : '',
+            level1: currentL1,
+            level2: currentL2,
+            level3: currentL3
+        });
+    }
+
+    return tableData;
+}
+
+function buildParsedFunctionsFromTableData(tableData) {
+    return tableData
+        .filter(row => row.dataMovementType === 'E' && row.functionalProcess)
+        .map((row, index) => ({
+            id: `imported_${index + 1}`,
+            triggerEvent: row.triggerEvent || '',
+            functionalUser: row.functionalUser || '',
+            functionName: row.functionalProcess || '',
+            description: row.functionDescription || '',
+            selected: true,
+            sourceChapter: row.level3 || row.level2 || row.level1 || '',
+            level1: row.level1 || '',
+            level2: row.level2 || '',
+            level3: row.level3 || ''
+        }));
+}
+
+function buildFunctionListTextFromTableData(tableData) {
+    return buildParsedFunctionsFromTableData(tableData)
+        .map(func => [
+            `## 触发事件：${func.triggerEvent || '用户触发'}`,
+            `## 功能用户：${func.functionalUser || '发起者：用户 接收者：用户'}`,
+            `## 功能过程：${func.functionName}`,
+            `## 功能过程描述：${func.description || `${func.functionName}功能过程`}`
+        ].join('\n'))
+        .join('\n\n');
+}
+
+function buildModuleStructureFromTableData(tableData) {
+    const modules = [];
+    const seen = new Set();
+    for (const row of tableData) {
+        if (row.dataMovementType !== 'E') continue;
+        const level1 = row.level1 || '';
+        const level2 = row.level2 || '';
+        const level3 = row.level3 || '';
+        if (!level1 && !level2 && !level3) continue;
+        const key = [level1, level2, level3].join('\u0001');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        modules.push({
+            level1,
+            level2,
+            level3,
+            businessObjects: [],
+            triggerTypes: row.triggerEvent ? [row.triggerEvent] : [],
+            estimatedFunctions: tableData.filter(r => (
+                r.dataMovementType === 'E'
+                && (r.level1 || '') === level1
+                && (r.level2 || '') === level2
+                && (r.level3 || '') === level3
+            )).length || 1
+        });
+    }
+    return modules.length > 0 ? { modules, totalEstimated: modules.reduce((sum, m) => sum + m.estimatedFunctions, 0) } : null;
+}
+
+function getCosmicExcelFormatName(layout) {
+    const headerText = (layout?.headers || []).join('|');
+    if (/修订标识|OPEX|CAPEX|CFP评估师核定/.test(headerText) || /功能点拆分表/.test(layout?.worksheet?.name || '')) {
+        return 'COSMIC评估模板';
+    }
+    return '标准COSMIC拆分结果';
+}
+
+function parseJsonBodyField(value, fallback = null) {
+    if (!value) return fallback;
+    if (typeof value === 'object') return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function buildFunctionGroupsFromTableData(tableData = []) {
+    const groups = [];
+    let currentGroup = null;
+    let currentFuncUser = '';
+    let currentTrigger = '';
+    let currentL1 = '';
+    let currentL2 = '';
+    let currentL3 = '';
+
+    for (const row of tableData || []) {
+        if (row.level1) currentL1 = row.level1;
+        if (row.level2) currentL2 = row.level2;
+        if (row.level3) currentL3 = row.level3;
+
+        if (row.dataMovementType === 'E' && row.functionalProcess) {
+            if (row.functionalUser) currentFuncUser = row.functionalUser;
+            if (row.triggerEvent) currentTrigger = row.triggerEvent;
+            currentGroup = {
+                functionalProcess: row.functionalProcess,
+                functionalUser: currentFuncUser,
+                triggerEvent: currentTrigger,
+                functionDescription: row.functionDescription || '',
+                level1: row.level1 || currentL1 || '',
+                level2: row.level2 || currentL2 || '',
+                level3: row.level3 || currentL3 || '',
+                rows: [row],
+                eRow: row
+            };
+            groups.push(currentGroup);
+        } else if (currentGroup) {
+            currentGroup.rows.push(row);
+        }
+    }
+    return groups;
+}
+
+function parseAiDescriptionJson(content) {
+    const text = String(content || '').trim();
+    if (!text) return [];
+
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const source = fenced ? fenced[1].trim() : text;
+    const candidates = [
+        source,
+        source.match(/\[[\s\S]*\]/)?.[0],
+        source.match(/\{[\s\S]*\}/)?.[0]
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            if (Array.isArray(parsed)) return parsed;
+            if (Array.isArray(parsed.descriptions)) return parsed.descriptions;
+            if (Array.isArray(parsed.items)) return parsed.items;
+        } catch {
+            // Try the next candidate.
+        }
+    }
+    return [];
+}
+
+async function generateFunctionDescriptionsWithAI(tableData, userConfig = null, options = {}) {
+    const groups = buildFunctionGroupsFromTableData(tableData);
+    if (groups.length === 0) {
+        return { tableData: tableData || [], generatedCount: 0, fallbackCount: 0, usedAI: false, error: null };
+    }
+
+    const forceRegenerate = Boolean(options.forceRegenerate);
+    const targetGroups = groups.filter(group => (
+        forceRegenerate || !isUsefulFunctionDescription(group.eRow.functionDescription || group.eRow.functionalDescription || '')
+    ));
+    if (targetGroups.length === 0) {
+        return { tableData, generatedCount: 0, fallbackCount: 0, usedAI: false, error: null };
+    }
+
+    const modelName = getModelName(userConfig);
+    const descriptions = new Map();
+    const batchSize = 10;
+    let aiError = null;
+
+    const systemPrompt = `你是资深软件需求分析师，负责把COSMIC功能点拆分结果改写为业务需求说明书中的“功能描述”。
+要求：
+1. 只输出JSON数组，不要Markdown，不要解释。
+2. 每项包含 processName 和 functionDescription 两个字段。
+3. functionDescription 用中文自然段，80~160字，面向需求文档读者，说明发起者、触发场景、系统处理逻辑、读取/写入数据和输出结果。
+4. 不要只罗列数据组；不要改变功能过程名称；不要编造与输入步骤无关的业务能力。`;
+
+    for (let start = 0; start < targetGroups.length; start += batchSize) {
+        const batch = targetGroups.slice(start, start + batchSize);
+        const payload = batch.map(group => ({
+            processName: group.functionalProcess,
+            module: {
+                level1: group.level1 || '',
+                level2: group.level2 || '',
+                level3: group.level3 || ''
+            },
+            functionalUser: group.functionalUser || '',
+            triggerEvent: group.triggerEvent || '',
+            dataMoves: group.rows.map(row => ({
+                type: row.dataMovementType || '',
+                subProcess: row.subProcessDesc || '',
+                dataGroup: row.dataGroup || '',
+                dataAttributes: row.dataAttributes || ''
+            }))
+        }));
+
+        try {
+            console.log(`🧠 AI补充功能描述: ${start + 1}-${start + batch.length}/${targetGroups.length}`);
+            const completion = await callAIWithRetry({
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: `请为以下COSMIC功能过程生成需求说明书里的功能描述：\n${JSON.stringify(payload, null, 2)}` }
+                ],
+                model: modelName,
+                temperature: 0.25,
+                max_tokens: Math.min(12000, 1200 + batch.length * 650)
+            });
+            const reply = completion?.choices?.[0]?.message?.content || '';
+            const parsed = parseAiDescriptionJson(reply);
+            for (const item of parsed) {
+                const processName = item.processName || item.functionalProcess || item.name || '';
+                const description = normalizeFunctionDescription(item.functionDescription || item.description || '', processName);
+                if (processName && isUsefulFunctionDescription(description)) {
+                    descriptions.set(normalizeProcessName(processName), description);
+                }
+            }
+        } catch (error) {
+            aiError = error;
+            console.warn(`⚠️ AI补充功能描述失败，回退本地规则: ${error.message}`);
+            break;
+        }
+    }
+
+    let generatedCount = 0;
+    let fallbackCount = 0;
+    for (const group of targetGroups) {
+        const key = normalizeProcessName(group.functionalProcess);
+        const aiDescription = descriptions.get(key);
+        const description = aiDescription || buildFunctionDescription(
+            group.functionalProcess,
+            group.rows,
+            '',
+            group.functionalUser,
+            group.triggerEvent
+        );
+
+        if (aiDescription) generatedCount++;
+        else fallbackCount++;
+
+        for (const row of group.rows) {
+            row.functionDescription = row.dataMovementType === 'E' ? description : '';
+        }
+    }
+
+    return {
+        tableData,
+        generatedCount,
+        fallbackCount,
+        usedAI: generatedCount > 0,
+        error: aiError ? aiError.message : null
+    };
 }
 
 /**
@@ -1571,6 +2020,125 @@ app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req
     } catch (error) {
         console.error('解析文档失败:', error);
         res.status(500).json({ error: '解析文档失败: ' + error.message });
+    } finally {
+        if (uploadedPath) {
+            fs.promises.unlink(uploadedPath).catch(() => {});
+        }
+    }
+});
+
+app.post('/api/parse-cosmic-excel', upload.single('file'), handleMulterError, async (req, res) => {
+    const uploadedPath = req.file?.path;
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: '请上传文件' });
+        }
+
+        const ext = path.extname(req.file.originalname).toLowerCase();
+        if (ext === '.xls') {
+            return res.status(400).json({ error: '暂不支持旧版 .xls 文件，请另存为 .xlsx 或 .xlsm 后上传' });
+        }
+        if (!['.xlsx', '.xlsm'].includes(ext)) {
+            return res.status(400).json({ error: '请上传已拆分的 COSMIC Excel 文件（.xlsx 或 .xlsm）' });
+        }
+
+        console.log(`📊 解析COSMIC Excel: ${req.file.originalname}, 大小: ${req.file.size} bytes`);
+
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(uploadedPath);
+
+        const layout = detectCosmicExcelLayout(workbook);
+        if (!layout) {
+            return res.status(400).json({
+                error: '未识别到COSMIC拆分表头，请确认Excel中包含“功能过程、子过程描述、数据移动类型、数据组、数据属性”等列'
+            });
+        }
+
+        const userConfig = parseJsonBodyField(req.body.userConfig, null);
+        const parsedRows = parseCosmicExcelRows(layout.worksheet, layout.headerRowNumber, layout.columnMap);
+        const eRowsBeforeDescription = parsedRows.filter(row => row.dataMovementType === 'E' && row.functionalProcess);
+        const usefulDescriptionCount = eRowsBeforeDescription.filter(row => (
+            isUsefulFunctionDescription(row.functionDescription || row.functionalDescription || '')
+        )).length;
+        const shouldRegenerateAllDescriptions = eRowsBeforeDescription.length > 0 && usefulDescriptionCount === 0;
+        const shouldSupplementMissingDescriptions = eRowsBeforeDescription.length > usefulDescriptionCount;
+
+        let tableData = parsedRows;
+        let descriptionGeneration = {
+            source: 'excel',
+            generatedCount: 0,
+            fallbackCount: 0,
+            missingBefore: Math.max(0, eRowsBeforeDescription.length - usefulDescriptionCount),
+            error: null
+        };
+        if (shouldRegenerateAllDescriptions || shouldSupplementMissingDescriptions) {
+            const generationResult = await generateFunctionDescriptionsWithAI(tableData, userConfig, {
+                forceRegenerate: shouldRegenerateAllDescriptions
+            });
+            tableData = generationResult.tableData;
+            descriptionGeneration = {
+                source: generationResult.generatedCount > 0
+                    ? (shouldRegenerateAllDescriptions ? 'ai-regenerated' : 'ai-supplemented')
+                    : 'local-fallback',
+                generatedCount: generationResult.generatedCount,
+                fallbackCount: generationResult.fallbackCount,
+                missingBefore: Math.max(0, eRowsBeforeDescription.length - usefulDescriptionCount),
+                error: generationResult.error
+            };
+        } else {
+            tableData = ensureFunctionDescriptions(tableData);
+        }
+        const functionCount = tableData.filter(row => row.dataMovementType === 'E' && row.functionalProcess).length;
+
+        if (!tableData.length || functionCount === 0) {
+            return res.status(400).json({ error: '已识别到表头，但未解析到有效的COSMIC数据行，请检查“数据移动类型”列是否填写 E/R/W/X' });
+        }
+
+        const parsedFunctions = buildParsedFunctionsFromTableData(tableData);
+        const moduleStructure = buildModuleStructureFromTableData(tableData);
+        const dmtCounts = tableData.reduce((acc, row) => {
+            if (row.dataMovementType) acc[row.dataMovementType] = (acc[row.dataMovementType] || 0) + 1;
+            return acc;
+        }, {});
+        const formatName = getCosmicExcelFormatName(layout);
+        const documentContent = [
+            `已导入已拆分COSMIC文件：${req.file.originalname}`,
+            `识别格式：${formatName}`,
+            `工作表：${layout.worksheet.name}`,
+            `功能过程：${functionCount} 个`,
+            `数据移动/CFP：${tableData.length} 条`,
+            `ERWX统计：E×${dmtCounts.E || 0} R×${dmtCounts.R || 0} W×${dmtCounts.W || 0} X×${dmtCounts.X || 0}`,
+            `功能描述：${descriptionGeneration.source === 'excel'
+                ? '使用Excel原有描述'
+                : descriptionGeneration.source === 'local-fallback'
+                    ? 'AI生成失败，已使用本地规则兜底'
+                    : `已调用AI生成 ${descriptionGeneration.generatedCount} 条`}`
+        ].join('\n');
+
+        res.json({
+            success: true,
+            filename: req.file.originalname,
+            fileSize: req.file.size,
+            tableData,
+            parsedFunctions,
+            functionListText: buildFunctionListTextFromTableData(tableData),
+            moduleStructure,
+            documentContent,
+            count: tableData.length,
+            functionCount,
+            dmtCounts,
+            descriptionGeneration,
+            format: {
+                name: formatName,
+                sheetName: layout.worksheet.name,
+                headerRow: layout.headerRowNumber,
+                hasLevels: Boolean(layout.columnMap.level1 || layout.columnMap.level2 || layout.columnMap.level3),
+                hasDescription: Boolean(layout.columnMap.functionDescription)
+            }
+        });
+    } catch (error) {
+        console.error('解析COSMIC Excel失败:', error);
+        res.status(500).json({ error: '解析COSMIC Excel失败: ' + error.message });
     } finally {
         if (uploadedPath) {
             fs.promises.unlink(uploadedPath).catch(() => {});
@@ -4097,13 +4665,37 @@ app.post('/api/export-word', async (req, res) => {
 
         console.log(`📝 开始生成Word文档，共 ${exportTableData.length} 行数据...`);
 
+        const {
+            Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun,
+            AlignmentType, BorderStyle, Table, TableRow, TableCell, WidthType,
+            VerticalAlign, TableOfContents
+        } = docx;
+
+        const font = '微软雅黑';
+        const cleanFilename = String(documentName || filename || 'XX项目需求')
+            .replace(/^COSMIC功能规格说明书[_-]?/, '')
+            .replace(/^COSMIC拆分[_-]?/, '')
+            .replace(/\.(docx|xlsx|xlsm|xls)$/i, '')
+            .trim();
+        const projectTitle = cleanFilename || 'XX项目需求';
+        const requirementTitle = /需求/.test(projectTitle) ? projectTitle : `${projectTitle}需求`;
+        const now = new Date();
+        const issueMonth = `${now.getFullYear()}年${String(now.getMonth() + 1).padStart(2, '0')}月`;
+
         // ── 1. 将 tableData 按功能过程分组 ──
         const functionGroups = [];
         let currentGroup = null;
         let currentFuncUser = '';
         let currentTrigger = '';
+        let currentL1 = '';
+        let currentL2 = '';
+        let currentL3 = '';
 
         for (const row of exportTableData) {
+            if (row.level1) currentL1 = row.level1;
+            if (row.level2) currentL2 = row.level2;
+            if (row.level3) currentL3 = row.level3;
+
             if (row.dataMovementType === 'E' && row.functionalProcess) {
                 if (row.functionalUser) currentFuncUser = row.functionalUser;
                 if (row.triggerEvent) currentTrigger = row.triggerEvent;
@@ -4112,9 +4704,10 @@ app.post('/api/export-word', async (req, res) => {
                     functionalUser: currentFuncUser,
                     triggerEvent: currentTrigger,
                     functionDescription: row.functionDescription || '',
-                    // 从功能过程名称提取章节标记 [xxx]
-                    chapter: (row.functionalProcess.match(/\[(.+?)\]/) || [])[1] || '',
                     cleanName: row.functionalProcess.replace(/\[.*?\]\s*/, '').trim(),
+                    level1: row.level1 || currentL1 || '',
+                    level2: row.level2 || currentL2 || '',
+                    level3: row.level3 || currentL3 || '',
                     rows: [row]
                 };
                 functionGroups.push(currentGroup);
@@ -4123,247 +4716,289 @@ app.post('/api/export-word', async (req, res) => {
             }
         }
 
-        // ── 2. 按章节（一级模块）分组 ──
-        const chapterMap = new Map();
-        for (const group of functionGroups) {
-            const chapter = group.chapter || '功能需求';
-            if (!chapterMap.has(chapter)) chapterMap.set(chapter, []);
-            chapterMap.get(chapter).push(group);
-        }
-
-        // ── 3. 构建时序图映射 ──
-        const diagramMap = new Map();
-        if (orderedSequenceDiagrams && orderedSequenceDiagrams.length > 0) {
-            for (const diag of orderedSequenceDiagrams) {
-                if (diag.processName) {
-                    diagramMap.set(diag.processName, diag);
-                }
-            }
-        }
-
-        // ── 4. 构建 Word 文档 ──
-        const { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, BorderStyle, TableOfContents } = docx;
-
-        const docChildren = [];
-
-        // 文档标题
-        docChildren.push(
-            new Paragraph({
-                children: [new TextRun({ text: documentName || filename, bold: true, size: 36, font: '微软雅黑' })],
-                heading: HeadingLevel.TITLE,
-                alignment: AlignmentType.CENTER,
-                spacing: { after: 400 }
-            })
-        );
-
-        // 副标题
-        const uniqueFuncs = [...new Set(exportTableData.map(r => r.functionalProcess).filter(Boolean))];
+        const uniqueFuncs = functionGroups.map(g => g.functionalProcess);
         const totalCfp = exportTableData.length;
-        docChildren.push(
-            new Paragraph({
-                children: [new TextRun({
-                    text: `软件评估功能点拆分报告  |  共 ${uniqueFuncs.length} 个功能过程  |  ${totalCfp} CFP`,
-                    size: 22, font: '微软雅黑', color: '666666'
-                })],
-                alignment: AlignmentType.CENTER,
-                spacing: { after: 600 }
-            })
-        );
-
-        // ERWX 统计概览
         const eCount = exportTableData.filter(r => r.dataMovementType === 'E').length;
         const rCount = exportTableData.filter(r => r.dataMovementType === 'R').length;
         const wCount = exportTableData.filter(r => r.dataMovementType === 'W').length;
         const xCount = exportTableData.filter(r => r.dataMovementType === 'X').length;
-        docChildren.push(
-            new Paragraph({
-                children: [new TextRun({
-                    text: `数据移动统计：E(进入)×${eCount}  R(读取)×${rCount}  W(写入)×${wCount}  X(退出)×${xCount}`,
-                    size: 20, font: '微软雅黑', color: '888888'
-                })],
-                alignment: AlignmentType.CENTER,
-                spacing: { after: 400 }
-            })
-        );
 
-        // 分隔线
-        docChildren.push(new Paragraph({
-            children: [new TextRun({ text: '' })],
-            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '6C5CE7' } },
-            spacing: { after: 400 }
-        }));
-
-        // ── 5. 逐章节 → 逐功能过程生成内容 ──
-        let chapterIndex = 0;
-        for (const [chapterName, groups] of chapterMap) {
-            chapterIndex++;
-
-            // Heading 1: 章节/一级模块 (对应 Java 的 addModule)
-            docChildren.push(
-                new Paragraph({
-                    children: [new TextRun({
-                        text: `${chapterIndex}  功能需求（${chapterName}）`,
-                        bold: true, size: 32, font: '微软雅黑', color: '1A1A2E'
-                    })],
-                    heading: HeadingLevel.HEADING_1,
-                    spacing: { before: 600, after: 300 }
-                })
-            );
-
-            for (let fi = 0; fi < groups.length; fi++) {
-                const group = groups[fi];
-                const funcNumber = `${chapterIndex}.${fi + 1}`;
-
-                // Heading 2: 功能过程名称(新增) (对应 Java 的 addFuncPoint)
-                docChildren.push(
-                    new Paragraph({
-                        children: [new TextRun({
-                            text: `${funcNumber}  ${group.cleanName}（新增）`,
-                            bold: true, size: 28, font: '微软雅黑', color: '2D3436'
-                        })],
-                        heading: HeadingLevel.HEADING_2,
-                        spacing: { before: 400, after: 200 }
-                    })
-                );
-
-                // 功能用户 & 触发事件
-                docChildren.push(
-                    new Paragraph({
-                        children: [
-                            new TextRun({ text: '功能用户：', bold: true, size: 21, font: '微软雅黑', color: '636E72' }),
-                            new TextRun({ text: group.functionalUser || '未指定', size: 21, font: '微软雅黑' }),
-                            new TextRun({ text: '    触发事件：', bold: true, size: 21, font: '微软雅黑', color: '636E72' }),
-                            new TextRun({ text: group.triggerEvent || '未指定', size: 21, font: '微软雅黑' })
-                        ],
-                        spacing: { after: 200 }
-                    })
-                );
-
-                // ── Heading 3: 关键时序图/业务逻辑图 (对应 Java 的 addFuncDetial) ──
-                docChildren.push(
-                    new Paragraph({
-                        children: [new TextRun({
-                            text: `${funcNumber}.1  关键时序图/业务逻辑图`,
-                            bold: true, size: 24, font: '微软雅黑', color: '6C5CE7'
-                        })],
-                        heading: HeadingLevel.HEADING_3,
-                        spacing: { before: 300, after: 200 }
-                    })
-                );
-
-                // 嵌入时序图 (对应 Java 的 addPNGImage)
-                const diagram = diagramMap.get(group.functionalProcess);
-                if (diagram && diagram.imageBase64) {
-                    try {
-                        const imgBuffer = Buffer.from(diagram.imageBase64, 'base64');
-                        const imgWidth = diagram.width || 800;
-                        const imgHeight = diagram.height || 400;
-                        // 最大宽度 550px，按比例缩放
-                        const maxWidth = 550;
-                        const scale = Math.min(1, maxWidth / imgWidth);
-                        const displayWidth = Math.round(imgWidth * scale);
-                        const displayHeight = Math.round(imgHeight * scale);
-
-                        docChildren.push(
-                            new Paragraph({
-                                children: [new ImageRun({
-                                    data: imgBuffer,
-                                    transformation: { width: displayWidth, height: displayHeight },
-                                    type: 'png'
-                                })],
-                                alignment: AlignmentType.CENTER,
-                                spacing: { after: 200 }
-                            })
-                        );
-                    } catch (imgErr) {
-                        console.warn(`  ⚠️ 时序图嵌入失败 (${group.cleanName}):`, imgErr.message);
-                        docChildren.push(
-                            new Paragraph({
-                                children: [new TextRun({ text: `[时序图嵌入失败: ${imgErr.message}]`, color: 'E74C3C', size: 20, font: '微软雅黑' })],
-                                spacing: { after: 200 }
-                            })
-                        );
-                    }
-                } else {
-                    docChildren.push(
-                        new Paragraph({
-                            children: [new TextRun({ text: '（时序图未生成，可在导出时勾选"附带时序图"重新导出）', color: '999999', size: 20, font: '微软雅黑', italics: true })],
-                            spacing: { after: 200 }
-                        })
-                    );
-                }
-
-                // "本时序图步骤如下：" (对应 Java 的 addContent)
-                docChildren.push(
-                    new Paragraph({
-                        children: [new TextRun({ text: '本时序图步骤如下：', bold: true, size: 21, font: '微软雅黑' })],
-                        spacing: { after: 100 }
-                    })
-                );
-
-                // 列出每个子过程步骤 (对应 Java 的 lambda$null$3 中的 "%d) %s(%s)")
-                let stepIndex = 0;
-                for (const row of group.rows) {
-                    stepIndex++;
-                    const dmtLabels = { E: '进入', R: '读取', W: '写入', X: '退出' };
-                    const dmtLabel = dmtLabels[row.dataMovementType] || row.dataMovementType;
-                    const dmtColors = { E: '3B82F6', R: '10B981', W: 'F59E0B', X: '8B5CF6' };
-                    const stepColor = dmtColors[row.dataMovementType] || '333333';
-
-                    docChildren.push(
-                        new Paragraph({
-                            children: [
-                                new TextRun({ text: `${stepIndex}) `, bold: true, size: 21, font: '微软雅黑' }),
-                                new TextRun({ text: `${row.subProcessDesc || ''}`, size: 21, font: '微软雅黑' }),
-                                new TextRun({ text: `（${dmtLabel}`, size: 21, font: '微软雅黑', color: stepColor }),
-                                new TextRun({ text: row.dataGroup ? ` - ${row.dataGroup}` : '', size: 21, font: '微软雅黑', color: stepColor }),
-                                new TextRun({ text: '）', size: 21, font: '微软雅黑', color: stepColor })
-                            ],
-                            spacing: { after: 60 },
-                            indent: { left: 480 }
-                        })
-                    );
-                }
-
-                // ── Heading 3: 功能描述 (对应 Java 的 addFuncDetial("功能描述")) ──
-                if (hasDescription) {
-                    docChildren.push(
-                        new Paragraph({
-                            children: [new TextRun({
-                                text: `${funcNumber}.2  功能描述`,
-                                bold: true, size: 24, font: '微软雅黑', color: '6C5CE7'
-                            })],
-                            heading: HeadingLevel.HEADING_3,
-                            spacing: { before: 300, after: 200 }
-                        })
-                    );
-
-                    const functionDescription = group.functionDescription || buildFunctionDescription(
-                        group.functionalProcess,
-                        group.rows,
-                        '',
-                        group.functionalUser,
-                        group.triggerEvent
-                    );
-
-                    docChildren.push(
-                        new Paragraph({
-                            children: [new TextRun({ text: functionDescription, size: 21, font: '微软雅黑' })],
-                            spacing: { after: 100 }
-                        })
-                    );
-                }
-
-                // 功能过程间间距
-                docChildren.push(new Paragraph({ children: [new TextRun({ text: '' })], spacing: { after: 200 } }));
+        // ── 2. 构建时序图映射 ──
+        const diagramMap = new Map();
+        if (orderedSequenceDiagrams && orderedSequenceDiagrams.length > 0) {
+            for (const diag of orderedSequenceDiagrams) {
+                if (diag.processName) diagramMap.set(diag.processName, diag);
             }
         }
+
+        const paragraph = (text, options = {}) => new Paragraph({
+            children: [new TextRun({
+                text: String(text || ''),
+                bold: Boolean(options.bold),
+                italics: Boolean(options.italics),
+                size: options.size || 21,
+                color: options.color || '333333',
+                font
+            })],
+            alignment: options.alignment,
+            heading: options.heading,
+            spacing: options.spacing || { after: 120, line: 300 },
+            indent: options.indent,
+            border: options.border
+        });
+
+        const heading = (text, level, color = '1A1A2E') => paragraph(text, {
+            bold: true,
+            size: level === 1 ? 32 : level === 2 ? 27 : 23,
+            color,
+            heading: level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3,
+            spacing: { before: level === 1 ? 560 : 320, after: 180 }
+        });
+
+        const tableCell = (text, options = {}) => new TableCell({
+            children: [paragraph(text, {
+                bold: options.bold,
+                size: options.size || 18,
+                color: options.color || '333333',
+                alignment: options.alignment,
+                spacing: { after: 0, line: 260 }
+            })],
+            width: options.width ? { size: options.width, type: WidthType.DXA } : undefined,
+            margins: { top: 90, bottom: 90, left: 120, right: 120 },
+            verticalAlign: VerticalAlign.CENTER,
+            shading: options.fill ? { fill: options.fill } : undefined
+        });
+
+        const simpleTable = (headers, rows, widths = []) => new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [
+                new TableRow({
+                    tableHeader: true,
+                    children: headers.map((header, index) => tableCell(header, {
+                        bold: true,
+                        color: 'FFFFFF',
+                        fill: '1F4E78',
+                        alignment: AlignmentType.CENTER,
+                        width: widths[index]
+                    }))
+                }),
+                ...rows.map(row => new TableRow({
+                    children: row.map((cell, index) => tableCell(cell, {
+                        alignment: index === 0 ? AlignmentType.CENTER : undefined,
+                        width: widths[index]
+                    }))
+                }))
+            ]
+        });
+
+        const moduleSummaryMap = new Map();
+        for (const group of functionGroups) {
+            const key = [group.level1 || '', group.level2 || '', group.level3 || ''].join('\u0001');
+            if (!moduleSummaryMap.has(key)) {
+                moduleSummaryMap.set(key, {
+                    level1: group.level1 || '未指定',
+                    level2: group.level2 || '未指定',
+                    level3: group.level3 || '未指定',
+                    funcCount: 0,
+                    cfp: 0
+                });
+            }
+            const item = moduleSummaryMap.get(key);
+            item.funcCount += 1;
+            item.cfp += group.rows.length;
+        }
+        const moduleSummaryRows = [...moduleSummaryMap.values()].map((item, index) => [
+            String(index + 1),
+            item.level1,
+            item.level2,
+            item.level3,
+            String(item.funcCount),
+            String(item.cfp)
+        ]);
+
+        const docChildren = [];
+
+        // 封面：参考“XX项目需求 / 业务需求说明书 / 公司 / 年月”模板。
+        docChildren.push(
+            paragraph(requirementTitle, {
+                bold: true,
+                size: 42,
+                color: '1F4E78',
+                alignment: AlignmentType.CENTER,
+                spacing: { before: 900, after: 360 }
+            }),
+            paragraph('业务需求说明书', {
+                bold: true,
+                size: 34,
+                color: '333333',
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 720 }
+            }),
+            paragraph(`功能过程 ${uniqueFuncs.length} 个    CFP ${totalCfp}    E/R/W/X ${eCount}/${rCount}/${wCount}/${xCount}`, {
+                size: 21,
+                color: '666666',
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 900 }
+            }),
+            paragraph('COSMIC 拆分智能分析系统', {
+                size: 22,
+                color: '666666',
+                alignment: AlignmentType.CENTER,
+                spacing: { before: 900, after: 120 }
+            }),
+            paragraph(issueMonth, {
+                size: 21,
+                color: '666666',
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 600 }
+            }),
+            new Paragraph({
+                children: [new TextRun({ text: '', font })],
+                border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '1F4E78' } },
+                spacing: { after: 360 }
+            }),
+            paragraph('目录', { bold: true, size: 28, color: '1F4E78', spacing: { before: 300, after: 120 } }),
+            new TableOfContents('目录', { hyperlink: true, headingStyleRange: '1-3' })
+        );
+
+        docChildren.push(heading('1. 需求说明', 1));
+        docChildren.push(heading('1.1. 总体描述', 2));
+        docChildren.push(paragraph(`本文档参考《附件1XX项目需求说明书V1.0.0》模板生成，基于已导入的 COSMIC 功能点拆分结果形成业务需求说明书。文档覆盖 ${uniqueFuncs.length} 个功能需求，合计 ${totalCfp} CFP，并为每个功能需求保留关键时序图/业务逻辑图、功能描述和数据移动步骤。`));
+        docChildren.push(heading('1.2. 建设目标', 2));
+        docChildren.push(paragraph('1）形成与功能模块层级一致的业务需求说明，便于评审、开发、测试和规模度量引用。'));
+        docChildren.push(paragraph('2）将 COSMIC 拆分中的功能过程、功能用户、触发事件、数据移动类型和数据组转化为可交付的需求描述。'));
+        docChildren.push(paragraph('3）在导出时嵌入关键时序图/业务逻辑图，直观说明用户、系统和数据库之间的交互过程。'));
+        docChildren.push(heading('1.3. 建设必要性', 2));
+        docChildren.push(paragraph('通过统一的需求说明书模板承载拆分结果，可以减少人工整理表格和文档的重复工作，提高需求材料、规模评估材料和后续研发材料之间的一致性。'));
+        docChildren.push(heading('1.4. 系统现状', 2));
+        docChildren.push(heading('1.4.1. 系统概况', 3));
+        docChildren.push(paragraph(`本次导入数据已识别 ${moduleSummaryRows.length || 1} 个功能模块组合，涉及 ${uniqueFuncs.length} 个功能过程。`));
+        docChildren.push(heading('1.4.2. 系统已实现功能', 3));
+        docChildren.push(paragraph('已实现或待建设功能以“需求功能清单”为准，清单中保留一级模块、二级模块、三级模块和对应功能需求名称。'));
+        docChildren.push(heading('1.4.3. 存在问题', 3));
+        docChildren.push(paragraph('现有拆分表偏向规模评估口径，缺少面向阅读和评审的业务需求说明结构，因此需要转换为带时序图和功能描述的需求说明书。'));
+
+        docChildren.push(heading('2. 功能架构图', 1));
+        docChildren.push(paragraph('功能架构图应分层分域展示一级、二级、三级模块。当前版本根据 COSMIC 拆分表中的模块字段自动生成模块清单，可在定稿时替换或补充正式架构图。'));
+        if (moduleSummaryRows.length > 0) {
+            docChildren.push(simpleTable(
+                ['序号', '一级模块', '二级模块', '三级模块', '功能过程数', 'CFP'],
+                moduleSummaryRows,
+                [700, 2200, 2200, 2600, 1000, 900]
+            ));
+        }
+
+        docChildren.push(heading('3. 功能需求', 1));
+        for (let fi = 0; fi < functionGroups.length; fi++) {
+            const group = functionGroups[fi];
+            const funcNumber = `3.${fi + 1}`;
+            docChildren.push(heading(`${funcNumber}. ${group.cleanName || group.functionalProcess}（新增）`, 2));
+            docChildren.push(paragraph(`一级模块：${group.level1 || '未指定'}    二级模块：${group.level2 || '未指定'}    三级模块：${group.level3 || '未指定'}`, { color: '666666', size: 19 }));
+            docChildren.push(paragraph(`功能用户：${group.functionalUser || '未指定'}    触发事件：${group.triggerEvent || '未指定'}`, { color: '666666', size: 19 }));
+
+            docChildren.push(heading(`${funcNumber}.1. 关键时序图/业务逻辑图`, 3, '1F4E78'));
+            const diagram = diagramMap.get(group.functionalProcess);
+            if (diagram && diagram.imageBase64) {
+                try {
+                    const imgBuffer = Buffer.from(diagram.imageBase64, 'base64');
+                    const imgWidth = diagram.width || 800;
+                    const imgHeight = diagram.height || 400;
+                    const maxWidth = 550;
+                    const scale = Math.min(1, maxWidth / imgWidth);
+                    const displayWidth = Math.round(imgWidth * scale);
+                    const displayHeight = Math.round(imgHeight * scale);
+
+                    docChildren.push(new Paragraph({
+                        children: [new ImageRun({
+                            data: imgBuffer,
+                            transformation: { width: displayWidth, height: displayHeight },
+                            type: 'png'
+                        })],
+                        alignment: AlignmentType.CENTER,
+                        spacing: { after: 200 }
+                    }));
+                } catch (imgErr) {
+                    console.warn(`  ⚠️ 时序图嵌入失败 (${group.cleanName}):`, imgErr.message);
+                    docChildren.push(paragraph(`[时序图嵌入失败: ${imgErr.message}]`, { color: 'E74C3C' }));
+                }
+            } else {
+                docChildren.push(paragraph('（时序图未生成，可在导出时勾选“附带时序图”重新导出）', { color: '999999', italics: true }));
+            }
+
+            docChildren.push(paragraph('本时序图步骤如下：', { bold: true }));
+            group.rows.forEach((row, index) => {
+                const dmtLabels = { E: '进入', R: '读取', W: '写入', X: '退出' };
+                const dmtLabel = dmtLabels[row.dataMovementType] || row.dataMovementType;
+                docChildren.push(paragraph(`${index + 1}）${row.subProcessDesc || ''}（${dmtLabel}${row.dataGroup ? ` - ${row.dataGroup}` : ''}）`, {
+                    indent: { left: 480 },
+                    spacing: { after: 60, line: 280 }
+                }));
+            });
+
+            docChildren.push(heading(`${funcNumber}.2. 功能描述`, 3, '1F4E78'));
+            const functionDescription = group.functionDescription || buildFunctionDescription(
+                group.functionalProcess,
+                group.rows,
+                '',
+                group.functionalUser,
+                group.triggerEvent
+            );
+            docChildren.push(paragraph(functionDescription));
+        }
+
+        docChildren.push(heading(`3.${functionGroups.length + 1}. 需求功能清单`, 2));
+        docChildren.push(simpleTable(
+            ['序号', '功能需求', '一级模块', '二级模块', '三级模块', 'CFP'],
+            functionGroups.map((group, index) => [
+                String(index + 1),
+                group.cleanName || group.functionalProcess,
+                group.level1 || '未指定',
+                group.level2 || '未指定',
+                group.level3 || '未指定',
+                String(group.rows.length)
+            ]),
+            [700, 2600, 1800, 1800, 2300, 800]
+        ));
+
+        docChildren.push(heading('4. 附加值调整因子说明', 1));
+        docChildren.push(paragraph('本章节参考模板保留附加值调整因子说明结构，具体取值可由评估人员结合项目实际情况确认。'));
+        docChildren.push(heading('4.1. 需求变更规模因子', 2));
+        docChildren.push(simpleTable(
+            ['需求变更规模因子(CF)', '描述', '调整因子'],
+            [
+                ['匡算', '项目投资阶段初步计算投资，是最粗略的投资测算。', '2.00'],
+                ['概算', '项目可研阶段，根据有代表性的资料综合测算。', '1.50'],
+                ['预算', '项目立项或采购阶段形成的相对明确测算。', '1.20'],
+                ['结算', '项目实施完成后，按实际交付范围进行确认。', '1.00']
+            ],
+            [1800, 5600, 1200]
+        ));
+        docChildren.push(heading('4.2. 应用领域', 2));
+        docChildren.push(simpleTable(
+            ['应用类型', '描述', '调整因子'],
+            [
+                ['业务处理', '办公自动化系统、日常管理及业务处理应用软件等。', '1.0'],
+                ['应用集成', '企业服务总线、应用集成等。', '1.2'],
+                ['实时控制', '对实时性、可靠性要求较高的控制类系统。', '1.4']
+            ],
+            [1800, 5600, 1200]
+        ));
+        docChildren.push(heading('4.3. 质量及特性', 2));
+        docChildren.push(simpleTable(
+            ['质量特性', '判断标准', '建议取值'],
+            [
+                ['分布式处理', '通过网络进行客户端/服务器及网络基础应用分布处理和传输。', '按项目确认'],
+                ['性能', '应答时间或处理率对高峰时间或业务时间较重要。', '按项目确认'],
+                ['可靠性', '发生故障时修复难度、经济损失或业务影响较高。', '按项目确认']
+            ],
+            [1800, 5600, 1200]
+        ));
 
         // ── 6. 生成并发送文档 ──
         const doc = new Document({
             creator: 'COSMIC 拆分智能分析系统',
-            title: documentName || filename,
-            description: 'COSMIC功能规模拆分报告 - 自动生成',
+            title: requirementTitle,
+            description: '业务需求说明书 - 自动生成',
             styles: {
                 default: {
                     document: {
@@ -5402,60 +6037,23 @@ if (process.env.NODE_ENV === 'production') {
             }
 
             console.log('🔄 补充功能描述中...');
-
-            // 按功能过程分组
-            const functionGroups = [];
-            let currentGroup = null;
-
-            for (const row of tableData) {
-                if (row.dataMovementType === 'E' && row.functionalProcess) {
-                    if (currentGroup) functionGroups.push(currentGroup);
-                    currentGroup = {
-                        functionalProcess: row.functionalProcess,
-                        functionalUser: row.functionalUser || '',
-                        triggerEvent: row.triggerEvent || '',
-                        rows: [row]
-                    };
-                } else if (currentGroup) {
-                    currentGroup.rows.push(row);
-                }
-            }
-            if (currentGroup) functionGroups.push(currentGroup);
-
-            console.log(`📊 共 ${functionGroups.length} 个功能过程需要补充功能描述`);
-
-            // 使用 buildFunctionDescription 为每个功能过程生成描述
-            let supplementedCount = 0;
-            const updatedTableData = [];
-
-            for (const group of functionGroups) {
-                const description = buildFunctionDescription(
-                    group.functionalProcess,
-                    group.rows,
-                    '',
-                    group.functionalUser,
-                    group.triggerEvent
-                );
-
-                for (const row of group.rows) {
-                    if (row.dataMovementType === 'E') {
-                        updatedTableData.push({
-                            ...row,
-                            functionDescription: description
-                        });
-                        supplementedCount++;
-                    } else {
-                        updatedTableData.push(row);
-                    }
-                }
-            }
+            const generationResult = await generateFunctionDescriptionsWithAI(tableData, userConfig, {
+                forceRegenerate: true
+            });
+            const supplementedCount = generationResult.generatedCount + generationResult.fallbackCount;
 
             console.log(`✅ 功能描述补充完成，共补充 ${supplementedCount} 个`);
 
             res.json({
                 success: true,
-                tableData: updatedTableData,
-                supplementedCount
+                tableData: generationResult.tableData,
+                supplementedCount,
+                descriptionGeneration: {
+                    source: generationResult.generatedCount > 0 ? 'ai-regenerated' : 'local-fallback',
+                    generatedCount: generationResult.generatedCount,
+                    fallbackCount: generationResult.fallbackCount,
+                    error: generationResult.error
+                }
             });
         } catch (error) {
             console.error('❌ 补充功能描述失败:', error);
