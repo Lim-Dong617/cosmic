@@ -15,6 +15,7 @@ import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
 
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 
 const initialAnalysisProgress = {
     visible: false,
@@ -784,7 +785,7 @@ function App({ user, token, onLogout }) {
             setUploadProgress(0);
             const res = await axios.post('/api/parse-cosmic-excel', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
-                timeout: 300000,
+                timeout: COSMIC_EXCEL_IMPORT_TIMEOUT_MS,
                 onUploadProgress: (e) => {
                     if (e.total) setUploadProgress(Math.round((e.loaded * 100) / e.total));
                 }
@@ -836,7 +837,10 @@ function App({ user, token, onLogout }) {
                 ensureConversation(res.data.filename);
             }
         } catch (error) {
-            const msg = error.response?.data?.error || error.message;
+            const isTimeout = error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '');
+            const msg = isTimeout
+                ? `导入超过 ${Math.round(COSMIC_EXCEL_IMPORT_TIMEOUT_MS / 60000)} 分钟，请稍后重试或检查外部AI服务响应是否正常`
+                : (error.response?.data?.error || error.message);
             setErrorMessage(`COSMIC Excel解析失败: ${msg}`);
         } finally {
             setIsLoading(false);

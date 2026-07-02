@@ -996,7 +996,10 @@ async function generateFunctionDescriptionsWithAI(tableData, userConfig = null, 
 
     const modelName = getModelName(userConfig);
     const descriptions = new Map();
-    const batchSize = 10;
+    const configuredBatchSize = Number.parseInt(process.env.DESCRIPTION_AI_BATCH_SIZE || '', 10);
+    const batchSize = Number.isFinite(configuredBatchSize)
+        ? Math.max(5, Math.min(25, configuredBatchSize))
+        : 20;
     let aiError = null;
 
     const systemPrompt = `你是资深软件需求分析师，负责把COSMIC功能点拆分结果改写为业务需求说明书中的“功能描述”。
