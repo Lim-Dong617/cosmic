@@ -578,6 +578,12 @@ textarea.setting-input {
     margin-top: 16px;
 }
 
+.welcome-screen .analysis-progress-panel {
+    align-self: center;
+    max-width: 680px;
+    text-align: left;
+}
+
 .welcome-feature {
     padding: 24px 16px;
     border-radius: var(--radius-lg);

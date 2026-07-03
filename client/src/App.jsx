@@ -16,6 +16,13 @@ import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
+const COSMIC_EXCEL_IMPORT_STEPS = [
+    { percent: 28, current: 2, phase: '读取工作簿', detail: '服务端正在读取 Excel 工作簿和工作表。' },
+    { percent: 44, current: 3, phase: '识别表头和层级', detail: '正在识别 COSMIC 表头、模块层级和数据移动列。' },
+    { percent: 62, current: 4, phase: '整理拆分结果', detail: '正在整理功能过程、ERWX 子过程和 CFP 统计。' },
+    { percent: 78, current: 4, phase: '补齐功能描述', detail: '正在检查功能描述，必要时会调用 AI 或本地规则补齐。' },
+    { percent: 91, current: 4, phase: '等待结果返回', detail: '服务端仍在处理，请保持页面打开，完成后会自动展示结果。' }
+];
 
 const initialAnalysisProgress = {
     visible: false,
@@ -527,6 +534,7 @@ function App({ user, token, onLogout }) {
     const fileInputRef = useRef(null);
     const dropZoneRef = useRef(null);
     const abortControllerRef = useRef(null);
+    const excelProgressTimerRef = useRef(null);
     const documentHeadingOutline = useMemo(
         () => extractDocumentHeadingOutline(documentContent),
         [documentContent]
@@ -549,6 +557,10 @@ function App({ user, token, onLogout }) {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, streamingContent]);
+
+    useEffect(() => () => {
+        if (excelProgressTimerRef.current) clearInterval(excelProgressTimerRef.current);
+    }, []);
 
     // 自动保存对话（防抖）
     useEffect(() => {
@@ -644,6 +656,43 @@ function App({ user, token, onLogout }) {
     const resetAnalysisProgress = useCallback(() => {
         setAnalysisProgress(initialAnalysisProgress);
     }, []);
+
+    const clearExcelProgressTimer = useCallback(() => {
+        if (excelProgressTimerRef.current) {
+            clearInterval(excelProgressTimerRef.current);
+            excelProgressTimerRef.current = null;
+        }
+    }, []);
+
+    const startExcelImportProgress = useCallback((file) => {
+        clearExcelProgressTimer();
+        let stepIndex = 0;
+        const fileSizeMb = file?.size ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : '';
+        updateAnalysisProgress({
+            status: 'running',
+            title: 'COSMIC Excel 导入',
+            phase: '上传文件',
+            percent: 6,
+            current: 1,
+            total: 5,
+            detail: `正在上传 ${file?.name || 'Excel 文件'}，随后会自动解析拆分结果。`,
+            stats: fileSizeMb
+        });
+        excelProgressTimerRef.current = setInterval(() => {
+            const step = COSMIC_EXCEL_IMPORT_STEPS[Math.min(stepIndex, COSMIC_EXCEL_IMPORT_STEPS.length - 1)];
+            stepIndex += 1;
+            setAnalysisProgress(prev => {
+                if (!prev.visible || prev.status !== 'running' || prev.title !== 'COSMIC Excel 导入') return prev;
+                return {
+                    ...prev,
+                    ...step,
+                    total: 5,
+                    percent: Math.max(prev.percent || 0, step.percent),
+                    stats: prev.stats || fileSizeMb
+                };
+            });
+        }, 2200);
+    }, [clearExcelProgressTimer, updateAnalysisProgress]);
 
     const AnalysisProgressPanel = () => {
         if (!analysisProgress.visible) return null;
@@ -783,11 +832,26 @@ function App({ user, token, onLogout }) {
         try {
             setIsLoading(true);
             setUploadProgress(0);
+            startExcelImportProgress(file);
             const res = await axios.post('/api/parse-cosmic-excel', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
                 timeout: COSMIC_EXCEL_IMPORT_TIMEOUT_MS,
                 onUploadProgress: (e) => {
-                    if (e.total) setUploadProgress(Math.round((e.loaded * 100) / e.total));
+                    if (!e.total) return;
+                    const rawPercent = Math.round((e.loaded * 100) / e.total);
+                    setUploadProgress(rawPercent);
+                    setAnalysisProgress(prev => {
+                        if (!prev.visible || prev.title !== 'COSMIC Excel 导入' || (prev.percent || 0) > 26) return prev;
+                        return {
+                            ...prev,
+                            status: 'running',
+                            phase: '上传文件',
+                            percent: Math.max(prev.percent || 0, 6 + Math.round(rawPercent * 0.2)),
+                            current: 1,
+                            total: 5,
+                            detail: `正在上传 ${file.name}，上传完成后服务端会继续解析 Excel。`
+                        };
+                    });
                 }
             });
 
@@ -812,7 +876,7 @@ function App({ user, token, onLogout }) {
                 setShowChapterView(false);
                 setIsWaitingForAnalysis(false);
                 setExportWithDiagrams(true);
-                resetAnalysisProgress();
+                clearExcelProgressTimer();
                 setUploadProgress(100);
 
                 const counts = res.data.dmtCounts || {};
@@ -822,6 +886,16 @@ function App({ user, token, onLogout }) {
                     : descGen.source === 'local-fallback'
                         ? `AI生成失败，已用本地规则兜底 ${descGen.fallbackCount || 0} 条`
                         : `已调用AI生成/补齐功能描述 ${descGen.generatedCount || 0} 条`;
+                updateAnalysisProgress({
+                    status: 'done',
+                    title: 'COSMIC Excel 导入',
+                    phase: '导入完成',
+                    percent: 100,
+                    current: 5,
+                    total: 5,
+                    detail: `已识别 ${res.data.functionCount || 0} 个功能过程，生成 ${res.data.count || 0} 条 CFP 明细。`,
+                    stats: `E×${counts.E || 0} R×${counts.R || 0} W×${counts.W || 0} X×${counts.X || 0}`
+                });
                 setMessages(prev => [...prev,
                     {
                         role: 'system',
@@ -841,8 +915,20 @@ function App({ user, token, onLogout }) {
             const msg = isTimeout
                 ? `导入超过 ${Math.round(COSMIC_EXCEL_IMPORT_TIMEOUT_MS / 60000)} 分钟，请稍后重试或检查外部AI服务响应是否正常`
                 : (error.response?.data?.error || error.message);
+            clearExcelProgressTimer();
+            updateAnalysisProgress({
+                status: 'waiting',
+                title: 'COSMIC Excel 导入失败',
+                phase: '处理失败',
+                percent: 100,
+                current: 0,
+                total: 0,
+                detail: msg || '导入过程中发生错误。',
+                stats: ''
+            });
             setErrorMessage(`COSMIC Excel解析失败: ${msg}`);
         } finally {
+            clearExcelProgressTimer();
             setIsLoading(false);
             setTimeout(() => setUploadProgress(0), 1000);
         }
@@ -3483,6 +3569,7 @@ function App({ user, token, onLogout }) {
                                             <p>标准拆分表、时序图和Word需求文档，直接交付使用</p>
                                         </div>
                                     </div>
+                                    <AnalysisProgressPanel />
 
                                     {/* Upload Zone */}
                                     <div
