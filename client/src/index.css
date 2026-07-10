@@ -3167,6 +3167,62 @@ textarea.setting-input {
     accent-color: #f59e0b;
 }
 
+.split-execution-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 16px;
+    background: var(--bg-tertiary);
+    white-space: nowrap;
+}
+
+.split-execution-label {
+    padding: 0 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.split-execution-toggle button {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 13px;
+    color: var(--text-muted);
+    background: transparent;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: all 0.18s ease;
+}
+
+.split-execution-toggle button:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: rgba(108, 92, 231, 0.08);
+}
+
+.split-execution-toggle button.active.stable {
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.split-execution-toggle button.active.fast {
+    color: #fff;
+    background: linear-gradient(135deg, #6c5ce7, #3b82f6);
+    box-shadow: 0 2px 7px rgba(108, 92, 231, 0.24);
+}
+
+.split-execution-toggle button:disabled {
+    cursor: not-allowed;
+    opacity: 0.65;
+}
+
 .excel-template-select {
     display: inline-flex;
     align-items: center;

@@ -16,6 +16,7 @@ import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
+const COSMIC_FAST_BATCH_CONCURRENCY = 3;
 const COSMIC_EXCEL_IMPORT_STEPS = [
     { percent: 28, current: 2, phase: '读取工作簿', detail: '服务端正在读取 Excel 工作簿和工作表。' },
     { percent: 44, current: 3, phase: '识别表头和层级', detail: '正在识别 COSMIC 表头、模块层级和数据移动列。' },
@@ -468,6 +469,13 @@ function App({ user, token, onLogout }) {
         }
         return false;
     });
+    const [splitExecutionMode, setSplitExecutionMode] = useState(() => {
+        if (typeof window !== 'undefined') {
+            const savedMode = window.localStorage.getItem('cosmicSplitExecutionMode');
+            return savedMode === 'stable' ? 'stable' : 'fast';
+        }
+        return 'fast';
+    });
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
     const [isSupplementingDescription, setIsSupplementingDescription] = useState(false); // 是否正在补充功能描述
@@ -551,8 +559,9 @@ function App({ user, token, onLogout }) {
             window.localStorage.setItem('minFunctionCount', String(minFunctionCount));
             window.localStorage.setItem('analysisMode', analysisMode);
             window.localStorage.setItem('useEnhancedCosmicExperience', useEnhancedCosmicExperience ? 'true' : 'false');
+            window.localStorage.setItem('cosmicSplitExecutionMode', splitExecutionMode);
         }
-    }, [selectedModel, minFunctionCount, analysisMode, useEnhancedCosmicExperience]);
+    }, [selectedModel, minFunctionCount, analysisMode, useEnhancedCosmicExperience, splitExecutionMode]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1689,9 +1698,14 @@ function App({ user, token, onLogout }) {
 
     // ═══════════ 两步骤模式：阶段2 - COSMIC分段拆分（批次模式，断网安全） ═══════════
     const COSMIC_BATCH_SIZE = 2; // 每批拆分2个功能过程（V3.2必须逐个完整输出ERWX，批次越小越可靠）
-    const COSMIC_BATCH_CONCURRENCY = 2; // 保持小批次质量策略，仅把独立批次做受控并发
 
     const startCosmicSplit = async () => {
+        // Lock the selected mode for this run so concurrency cannot change midway.
+        const batchConcurrency = splitExecutionMode === 'fast' ? COSMIC_FAST_BATCH_CONCURRENCY : 1;
+        const executionModeLabel = batchConcurrency > 1
+            ? `快速模式（${batchConcurrency} 路并发）`
+            : '稳健模式（串行）';
+
         // 先同步结构化数据回 text
         let activeFunctions = inheritMissingFunctionLevels(parsedFunctions).filter(f => f.selected !== false);
         if (activeFunctions.length === 0) {
@@ -1745,7 +1759,7 @@ function App({ user, token, onLogout }) {
         });
         setMessages(prev => [...prev, {
             role: 'system',
-            content: `**阶段2：COSMIC分段拆分**\n共 **${totalFunctions}** 个功能过程，分为 **${totalBatches}** 个批次（每批 ${COSMIC_BATCH_SIZE} 个），逐批拆分中...\n\n*分段模式：即使中途断网，已完成的批次数据也会保留。*`
+            content: `**阶段2：COSMIC分段拆分**\n共 **${totalFunctions}** 个功能过程，分为 **${totalBatches}** 个批次（每批 ${COSMIC_BATCH_SIZE} 个），正在使用 **${executionModeLabel}** 拆分...\n\n*每个批次携带原始序号，返回后仍按功能清单的提交顺序汇总；已完成批次会即时保留。*`
         }]);
 
         let allTableData = [];
@@ -1827,7 +1841,7 @@ function App({ user, token, onLogout }) {
         };
 
         try {
-            if (COSMIC_BATCH_CONCURRENCY <= 1) {
+            if (batchConcurrency <= 1) {
                 for (let bi = 0; bi < totalBatches; bi++) {
                     if (signal.aborted) return;
 
@@ -1961,11 +1975,11 @@ function App({ user, token, onLogout }) {
 
                 // 最终汇总
             } else {
-                for (let windowStart = 0; windowStart < totalBatches; windowStart += COSMIC_BATCH_CONCURRENCY) {
+                for (let windowStart = 0; windowStart < totalBatches; windowStart += batchConcurrency) {
                     if (signal.aborted) return;
 
                     const windowIndexes = [];
-                    for (let bi = windowStart; bi < Math.min(windowStart + COSMIC_BATCH_CONCURRENCY, totalBatches); bi++) {
+                    for (let bi = windowStart; bi < Math.min(windowStart + batchConcurrency, totalBatches); bi++) {
                         windowIndexes.push(bi);
                     }
                     const activeNames = windowIndexes
@@ -2050,7 +2064,7 @@ function App({ user, token, onLogout }) {
                         throw new Error(failedBatches[0]?.error || 'All COSMIC batches failed');
                     }
 
-                    if (windowStart + COSMIC_BATCH_CONCURRENCY < totalBatches) {
+                    if (windowStart + batchConcurrency < totalBatches) {
                         try {
                             await waitWithAbort(5000);
                         } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
@@ -2067,6 +2081,7 @@ function App({ user, token, onLogout }) {
             }
             summaryContent += `\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
             summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
+            summaryContent += `\n- 执行模式：${executionModeLabel}`;
             if (missingSplitFunctions.length > 0) {
                 const missingList = missingSplitFunctions.map(f => `- ${f.functionName}`).join('\n');
                 summaryContent += `\n\n⚠️ **检测到 ${missingSplitFunctions.length} 个功能过程未完成COSMIC拆分**\n${missingList}\n\n建议点击**「重试失败批次」**或重新拆分缺失功能过程。`;
@@ -2075,7 +2090,7 @@ function App({ user, token, onLogout }) {
             if (batchTimings.length > 0) {
                 const avgSeconds = batchTimings.reduce((sum, item) => sum + item.durationMs, 0) / batchTimings.length / 1000;
                 const slowest = batchTimings.reduce((max, item) => item.durationMs > max.durationMs ? item : max, batchTimings[0]);
-                summaryContent += `\n- 批次耗时：平均 ${avgSeconds.toFixed(1)}s，最慢第 ${slowest.index + 1} 批 ${(slowest.durationMs / 1000).toFixed(1)}s，并发数 ${COSMIC_BATCH_CONCURRENCY}`;
+                summaryContent += `\n- 批次耗时：平均 ${avgSeconds.toFixed(1)}s，最慢第 ${slowest.index + 1} 批 ${(slowest.durationMs / 1000).toFixed(1)}s`;
             }
 
             if (failedBatches.length > 0) {
@@ -2631,6 +2646,35 @@ function App({ user, token, onLogout }) {
             />
             <BookOpen size={12} /> 拆分经验增强版
         </label>
+    );
+
+    const renderSplitExecutionModeToggle = () => (
+        <div
+            className="split-execution-toggle"
+            role="group"
+            aria-label="COSMIC 拆分执行模式"
+            title={splitExecutionMode === 'fast'
+                ? `最多同时提交 ${COSMIC_FAST_BATCH_CONCURRENCY} 个独立批次，返回结果按原提交顺序汇总`
+                : '每次只提交 1 个批次，适合容易限流或更看重稳定性的模型'}
+        >
+            <span className="split-execution-label">拆分执行</span>
+            <button
+                type="button"
+                className={splitExecutionMode === 'stable' ? 'active stable' : ''}
+                onClick={() => setSplitExecutionMode('stable')}
+                disabled={isLoading}
+            >
+                稳健
+            </button>
+            <button
+                type="button"
+                className={splitExecutionMode === 'fast' ? 'active fast' : ''}
+                onClick={() => setSplitExecutionMode('fast')}
+                disabled={isLoading}
+            >
+                <Zap size={11} /> 快速
+            </button>
+        </div>
     );
 
     // ═══════════ 补充功能描述 ═══════════
@@ -3669,6 +3713,7 @@ function App({ user, token, onLogout }) {
                                                             <FileText size={12} /> 生成功能描述
                                                         </label>
                                                         {renderEnhancedExperienceToggle()}
+                                                        {renderSplitExecutionModeToggle()}
                                                         <button className="btn btn-success btn-sm" onClick={startCosmicSplit} disabled={isLoading}>
                                                             <Sparkles size={14} /> 确认·开始COSMIC拆分
                                                         </button>
@@ -3710,6 +3755,7 @@ function App({ user, token, onLogout }) {
                                         <button onClick={() => handleExtractionModeChange('precise')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'precise' ? 'var(--accent-violet)' : 'var(--bg-tertiary)', color: extractionMode === 'precise' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'precise' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Target size={12} /> 精准模式</button>
                                         <button onClick={() => handleExtractionModeChange('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><BarChart3 size={12} /> 数量优先</button>
                                         {renderEnhancedExperienceToggle()}
+                                        {renderSplitExecutionModeToggle()}
                                         {extractionMode === 'quantity' && (
                                             <>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>
