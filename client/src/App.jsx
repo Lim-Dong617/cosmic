@@ -16,7 +16,7 @@ import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
-const COSMIC_FAST_BATCH_CONCURRENCY = 3;
+const COSMIC_FAST_CONCURRENCY = 3;
 const COSMIC_EXCEL_IMPORT_STEPS = [
     { percent: 28, current: 2, phase: '读取工作簿', detail: '服务端正在读取 Excel 工作簿和工作表。' },
     { percent: 44, current: 3, phase: '识别表头和层级', detail: '正在识别 COSMIC 表头、模块层级和数据移动列。' },
@@ -1427,6 +1427,10 @@ function App({ user, token, onLogout }) {
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
         const signal = abortControllerRef.current.signal;
+        const extractionConcurrency = splitExecutionMode === 'fast' ? COSMIC_FAST_CONCURRENCY : 1;
+        const extractionModeLabel = extractionConcurrency > 1
+            ? `快速模式（${extractionConcurrency} 路并发）`
+            : '稳健模式（串行）';
 
         setIsLoading(true);
         setCurrentStep(2);
@@ -1437,7 +1441,7 @@ function App({ user, token, onLogout }) {
             percent: 42,
             current: 0,
             total: selectedChapters.length,
-            detail: 'Extracting functional processes from selected chapters.',
+            detail: `Extracting functional processes using ${extractionModeLabel}.`,
             stats: `0 functions`
         });
 
@@ -1505,90 +1509,184 @@ function App({ user, token, onLogout }) {
             }]);
         }
 
+        const attachChapterSource = (chapter, functionList) => functionList
+            .split('\n')
+            .filter(line => line.trim())
+            .map(line => {
+                if (
+                    chapter.title !== '全文' &&
+                    /^##\s*功能过程[：:]/.test(line) &&
+                    !/^##\s*功能过程[：:]\s*[\[【]/.test(line)
+                ) {
+                    return line.replace(/^##\s*功能过程[：:]\s*/, `##功能过程：[${chapter.title}] `);
+                }
+                return line;
+            })
+            .join('\n');
+
         try {
-            for (let i = 0; i < selectedChapters.length; i++) {
-                if (signal.aborted) return;
-                const chapter = selectedChapters[i];
-                const chapterTargetCount = quantityChapterTargets[i] || 0;
-                if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
+            if (extractionConcurrency > 1) {
+                const chapterResults = new Array(selectedChapters.length);
+                let completedChapters = 0;
+                let completedFunctionCount = 0;
+
+                const extractChapterConcurrently = async (index) => {
+                    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                    const chapter = selectedChapters[index];
+                    const chapterTargetCount = quantityChapterTargets[index] || 0;
+                    let result;
+
+                    if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
+                        result = { functionList: '', count: 0, skipped: true };
+                    } else {
+                        const res = await axios.post('/api/extract-functions', {
+                            documentContent: chapter.content,
+                            chapterName: chapter.title,
+                            userGuidelines,
+                            userConfig: getUserConfig(),
+                            extractionMode,
+                            moduleStructure: moduleStructure || null,
+                            quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
+                            targetCount: chapterTargetCount
+                        }, { signal });
+
+                        result = {
+                            functionList: res.data.success && res.data.functionList
+                                ? attachChapterSource(chapter, res.data.functionList)
+                                : '',
+                            count: res.data.count || 0,
+                            skipped: false
+                        };
+                    }
+
+                    chapterResults[index] = result;
+                    completedChapters += 1;
+                    completedFunctionCount += result.count;
                     updateAnalysisProgress({
                         phase: 'Function extraction',
-                        percent: 42 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 22),
-                        current: i + 1,
+                        percent: 42 + Math.round((completedChapters / Math.max(selectedChapters.length, 1)) * 22),
+                        current: completedChapters,
                         total: selectedChapters.length,
-                        detail: `Skipped chapter: ${chapter.title} (target 0)`,
-                        stats: `${totalCount} functions found`
+                        detail: result.skipped
+                            ? `Skipped chapter: ${chapter.title} (target 0)`
+                            : `Finished chapter: ${chapter.title}`,
+                        stats: `${completedFunctionCount} functions found · ${extractionModeLabel}`
                     });
-                    continue;
-                }
-                updateAnalysisProgress({
-                    phase: 'Function extraction',
-                    percent: 42 + Math.round((i / Math.max(selectedChapters.length, 1)) * 22),
-                    current: i + 1,
-                    total: selectedChapters.length,
-                    detail: extractionMode === 'quantity' && chapterTargetCount > 0
-                        ? `Analyzing chapter: ${chapter.title} (target ${chapterTargetCount})`
-                        : `Analyzing chapter: ${chapter.title}`,
-                    stats: `${totalCount} functions found`
-                });
+                    return result;
+                };
 
-                setMessages(prev => {
-                    const filtered = prev.filter(m => !m.content.startsWith('🔍'));
-                    return [...filtered, {
-                        role: 'system',
-                        content: `🔍 **功能过程提取 (${i + 1}/${selectedChapters.length})**\n正在分析章节: ${chapter.title}...`
-                    }];
-                });
+                for (let windowStart = 0; windowStart < selectedChapters.length; windowStart += extractionConcurrency) {
+                    if (signal.aborted) return;
+                    const windowIndexes = [];
+                    for (let index = windowStart; index < Math.min(windowStart + extractionConcurrency, selectedChapters.length); index++) {
+                        windowIndexes.push(index);
+                    }
+                    const activeDescriptions = windowIndexes.map(index => {
+                        const chapter = selectedChapters[index];
+                        const target = quantityChapterTargets[index] || 0;
+                        return extractionMode === 'quantity' && target > 0
+                            ? `${chapter.title}（目标 ${target}）`
+                            : chapter.title;
+                    });
 
-                const res = await axios.post('/api/extract-functions', {
-                    documentContent: chapter.content,
-                    chapterName: chapter.title,
-                    userGuidelines,
-                    userConfig: getUserConfig(),
-                    extractionMode,
-                    moduleStructure: moduleStructure || null,
-                    quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
-                    targetCount: chapterTargetCount
-                }, { signal });
+                    updateAnalysisProgress({
+                        phase: 'Function extraction',
+                        percent: 42 + Math.round((completedChapters / Math.max(selectedChapters.length, 1)) * 22),
+                        current: completedChapters,
+                        total: selectedChapters.length,
+                        detail: `Analyzing ${activeDescriptions.length} chapters concurrently: ${activeDescriptions.join('、')}`,
+                        stats: `${completedFunctionCount} functions found · ${extractionModeLabel}`
+                    });
+                    setMessages(prev => {
+                        const filtered = prev.filter(m => !m.content.startsWith('🔍'));
+                        return [...filtered, {
+                            role: 'system',
+                            content: `🔍 **功能过程提取（已完成 ${completedChapters}/${selectedChapters.length}）**\n正在并发分析章节: ${activeDescriptions.join('、')}...`
+                        }];
+                    });
 
-                if (res.data.success && res.data.functionList) {
-                    // 给每条功能附上章节来源标记
-                    const chapterFunctions = res.data.functionList
-                        .split('\n')
-                        .filter(line => line.trim())
-                        .map(line => {
-                            // 如果行内没有章节标记，加上来源
-                            if (
-                                chapter.title !== '全文' &&
-                                /^##\s*功能过程[：:]/.test(line) &&
-                                !/^##\s*功能过程[：:]\s*[\[【]/.test(line)
-                            ) {
-                                return line.replace(/^##\s*功能过程[：:]\s*/, `##功能过程：[${chapter.title}] `);
-                            }
-                            return line;
-                        })
+                    const windowResults = await Promise.allSettled(
+                        windowIndexes.map(index => extractChapterConcurrently(index))
+                    );
+                    allFunctions = chapterResults
+                        .map(result => result?.functionList || '')
+                        .filter(Boolean)
                         .join('\n');
-
-                    allFunctions += (allFunctions ? '\n' : '') + chapterFunctions;
-                    totalCount += res.data.count || 0;
+                    totalCount = chapterResults.reduce((sum, result) => sum + (result?.count || 0), 0);
+                    const failedResult = windowResults.find(result => result.status === 'rejected');
+                    if (failedResult) throw failedResult.reason;
+                }
+            } else {
+                for (let i = 0; i < selectedChapters.length; i++) {
+                    if (signal.aborted) return;
+                    const chapter = selectedChapters[i];
+                    const chapterTargetCount = quantityChapterTargets[i] || 0;
+                    if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
+                        updateAnalysisProgress({
+                            phase: 'Function extraction',
+                            percent: 42 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 22),
+                            current: i + 1,
+                            total: selectedChapters.length,
+                            detail: `Skipped chapter: ${chapter.title} (target 0)`,
+                            stats: `${totalCount} functions found · ${extractionModeLabel}`
+                        });
+                        continue;
+                    }
                     updateAnalysisProgress({
                         phase: 'Function extraction',
-                        percent: 42 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 22),
-                        current: i + 1,
+                        percent: 42 + Math.round((i / Math.max(selectedChapters.length, 1)) * 22),
+                        current: i,
                         total: selectedChapters.length,
-                        detail: `Finished chapter: ${chapter.title}`,
-                        stats: `${totalCount} functions found`
+                        detail: extractionMode === 'quantity' && chapterTargetCount > 0
+                            ? `Analyzing chapter: ${chapter.title} (target ${chapterTargetCount})`
+                            : `Analyzing chapter: ${chapter.title}`,
+                        stats: `${totalCount} functions found · ${extractionModeLabel}`
                     });
-                }
 
-                // 章节间等待，避免频率限制（DeepSeek平台限流严格）
-                if (i < selectedChapters.length - 1) {
-                    try {
-                        await new Promise((resolve, reject) => {
-                            const t = setTimeout(resolve, 4000);
-                            signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                    setMessages(prev => {
+                        const filtered = prev.filter(m => !m.content.startsWith('🔍'));
+                        return [...filtered, {
+                            role: 'system',
+                            content: `🔍 **功能过程提取（已完成 ${i}/${selectedChapters.length}）**\n正在分析章节: ${chapter.title}...`
+                        }];
+                    });
+
+                    const res = await axios.post('/api/extract-functions', {
+                        documentContent: chapter.content,
+                        chapterName: chapter.title,
+                        userGuidelines,
+                        userConfig: getUserConfig(),
+                        extractionMode,
+                        moduleStructure: moduleStructure || null,
+                        quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
+                        targetCount: chapterTargetCount
+                    }, { signal });
+
+                    if (res.data.success && res.data.functionList) {
+                        // 给每条功能附上章节来源标记
+                        const chapterFunctions = attachChapterSource(chapter, res.data.functionList);
+
+                        allFunctions += (allFunctions ? '\n' : '') + chapterFunctions;
+                        totalCount += res.data.count || 0;
+                        updateAnalysisProgress({
+                            phase: 'Function extraction',
+                            percent: 42 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 22),
+                            current: i + 1,
+                            total: selectedChapters.length,
+                            detail: `Finished chapter: ${chapter.title}`,
+                            stats: `${totalCount} functions found · ${extractionModeLabel}`
                         });
-                    } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                    }
+
+                    // 稳健模式保留章节间等待，避免严格限流平台连续请求。
+                    if (i < selectedChapters.length - 1) {
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const t = setTimeout(resolve, 4000);
+                                signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
+                            });
+                        } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                    }
                 }
             }
 
@@ -1660,7 +1758,7 @@ function App({ user, token, onLogout }) {
                 const filtered = prev.filter(m => !m.content.startsWith('🔍'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `## 功能过程提取完成\n\n从 **${selectedChapters.length}** 个章节中共识别到 **${leveledParsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}${estimateGapNote}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
+                    content: `## 功能过程提取完成\n\n使用 **${extractionModeLabel}** 从 **${selectedChapters.length}** 个章节中共识别到 **${leveledParsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}${estimateGapNote}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
                     showFunctionListActions: true,
                     showQuantityEstimateActions: hasLargeEstimateGap,
                     estimateTarget: moduleEstimateTotal
@@ -1701,7 +1799,7 @@ function App({ user, token, onLogout }) {
 
     const startCosmicSplit = async () => {
         // Lock the selected mode for this run so concurrency cannot change midway.
-        const batchConcurrency = splitExecutionMode === 'fast' ? COSMIC_FAST_BATCH_CONCURRENCY : 1;
+        const batchConcurrency = splitExecutionMode === 'fast' ? COSMIC_FAST_CONCURRENCY : 1;
         const executionModeLabel = batchConcurrency > 1
             ? `快速模式（${batchConcurrency} 路并发）`
             : '稳健模式（串行）';
@@ -2652,12 +2750,12 @@ function App({ user, token, onLogout }) {
         <div
             className="split-execution-toggle"
             role="group"
-            aria-label="COSMIC 拆分执行模式"
+            aria-label="COSMIC 执行模式"
             title={splitExecutionMode === 'fast'
-                ? `最多同时提交 ${COSMIC_FAST_BATCH_CONCURRENCY} 个独立批次，返回结果按原提交顺序汇总`
-                : '每次只提交 1 个批次，适合容易限流或更看重稳定性的模型'}
+                ? `功能提取和COSMIC拆分均最多 ${COSMIC_FAST_CONCURRENCY} 路并发，结果按原提交顺序汇总`
+                : '功能提取和COSMIC拆分均串行执行，适合容易限流或更看重稳定性的模型'}
         >
-            <span className="split-execution-label">拆分执行</span>
+            <span className="split-execution-label">执行模式</span>
             <button
                 type="button"
                 className={splitExecutionMode === 'stable' ? 'active stable' : ''}
