@@ -33,6 +33,12 @@ const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_
 const { authRouter } = require('./auth');
 const { initDatabase } = require('./database');
 const { buildCosmicAssessmentWorkbook } = require('./cosmic-template-export');
+const {
+    canonicalFunctionNameKey,
+    isReferenceOnlyChapterTitle,
+    keepLastDuplicateHeadingPositions,
+    orderCosmicTableData
+} = require('./cosmic-quality');
 
 
 const app = express();
@@ -505,7 +511,7 @@ function dedupeFunctionsByName(functions = []) {
     const seen = new Set();
     const deduped = [];
     for (const func of functions) {
-        const key = normalizeProcessName(func.functionName || '');
+        const key = canonicalFunctionNameKey(func.functionName || '');
         if (!key || seen.has(key)) continue;
         seen.add(key);
         deduped.push(func);
@@ -722,82 +728,6 @@ function ensureFunctionDescriptions(tableData, refFunctions = []) {
     }
 
     return tableData;
-}
-
-function extractHeadingNumberParts(title) {
-    const text = String(title || '').trim();
-    if (!text) return null;
-    const match = text.match(/^(\d+(?:\.\d+)*)(?=\s|[^\d.]|$)/);
-    return match ? match[1].split('.').map(n => parseInt(n, 10)) : null;
-}
-
-function compareHeadingNumberParts(a, b) {
-    if (!a && !b) return 0;
-    if (!a) return 1;
-    if (!b) return -1;
-    const len = Math.max(a.length, b.length);
-    for (let i = 0; i < len; i++) {
-        const av = a[i] ?? 0;
-        const bv = b[i] ?? 0;
-        if (av !== bv) return av - bv;
-    }
-    return 0;
-}
-
-function compareHeadingTitle(a, b) {
-    return compareHeadingNumberParts(extractHeadingNumberParts(a), extractHeadingNumberParts(b));
-}
-
-function getGroupLevels(rows) {
-    const levels = { level1: '', level2: '', level3: '' };
-    for (const row of rows) {
-        if (!levels.level1 && row.level1) levels.level1 = row.level1;
-        if (!levels.level2 && row.level2) levels.level2 = row.level2;
-        if (!levels.level3 && row.level3) levels.level3 = row.level3;
-        if (levels.level1 && levels.level2 && levels.level3) break;
-    }
-    return levels;
-}
-
-function orderCosmicTableData(rows) {
-    if (!Array.isArray(rows) || rows.length <= 1) return rows || [];
-
-    const groups = [];
-    let currentGroup = null;
-
-    rows.forEach((row, rowIndex) => {
-        const clonedRow = { ...row };
-        if (clonedRow.dataMovementType === 'E' && clonedRow.functionalProcess) {
-            if (currentGroup) groups.push(currentGroup);
-            currentGroup = {
-                index: rowIndex,
-                processName: clonedRow.functionalProcess,
-                rows: [clonedRow]
-            };
-        } else if (currentGroup) {
-            currentGroup.rows.push(clonedRow);
-        } else {
-            groups.push({
-                index: rowIndex,
-                processName: clonedRow.functionalProcess || '',
-                rows: [clonedRow],
-                orphan: true
-            });
-        }
-    });
-    if (currentGroup) groups.push(currentGroup);
-
-    return groups
-        .sort((a, b) => {
-            const aLevels = getGroupLevels(a.rows);
-            const bLevels = getGroupLevels(b.rows);
-            const headingCmp = compareHeadingTitle(aLevels.level1, bLevels.level1)
-                || compareHeadingTitle(aLevels.level2, bLevels.level2)
-                || compareHeadingTitle(aLevels.level3, bLevels.level3);
-            if (headingCmp !== 0) return headingCmp;
-            return a.index - b.index;
-        })
-        .flatMap(group => group.rows);
 }
 
 function orderSequenceDiagrams(sequenceDiagrams, tableData) {
@@ -2111,7 +2041,13 @@ function restoreWordHeadingNumbers(markdown) {
     const headingRows = lines
         .map((line, index) => {
             const match = line.trim().match(/^(#{1,6})\s+(.+)$/);
-            return match ? { index, level: match[1].length, title: match[2].trim() } : null;
+            return match ? {
+                index,
+                level: match[1].length,
+                // Mammoth escapes manually typed dots in headings ("1\\."), so
+                // normalize the title before checking whether it is numbered.
+                title: match[2].trim().replace(/\\([.>\-])/g, '$1')
+            } : null;
         })
         .filter(Boolean);
 
@@ -2138,6 +2074,10 @@ function restoreWordHeadingNumbers(markdown) {
 
     headingRows.forEach((row, rowIndex) => {
         if (skipFirstAsDocumentTitle && rowIndex === 0) {
+            replacements.set(row.index, row.title);
+            return;
+        }
+        if (/^(?:目录|contents)$/i.test(row.title)) {
             replacements.set(row.index, row.title);
             return;
         }
@@ -2965,10 +2905,14 @@ function splitIntoChapters(text) {
     }
 
     // 第一遍：找所有候选标题行位置
-    const candidatePositions = [];
+    const rawCandidatePositions = [];
     for (let i = 0; i < lines.length; i++) {
-        if (isHeading(lines[i])) candidatePositions.push(i);
+        if (isHeading(lines[i])) rawCandidatePositions.push(i);
     }
+    // Mammoth can emit both TOC entries and body headings as plain text. A TOC
+    // entry followed by explanatory text may otherwise survive the content
+    // length filter and become a duplicate/out-of-order chapter.
+    const candidatePositions = keepLastDuplicateHeadingPositions(lines, rawCandidatePositions);
 
     if (candidatePositions.length === 0) {
         return [{ title: '全文', content: text, charCount: text.length, selected: true }];
@@ -3043,7 +2987,8 @@ function splitIntoChapters(text) {
             title,
             content,
             charCount: content.length,
-            selected: content.length > 50,
+            selected: content.length > 50 && !isReferenceOnlyChapterTitle(title),
+            referenceOnly: isReferenceOnlyChapterTitle(title),
             level1: currentL1,
             level2: currentL2,
             level3: currentL3,

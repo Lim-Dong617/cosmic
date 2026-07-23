@@ -12,6 +12,13 @@ import {
 import NesmaApp from './NesmaApp';
 import HistoryPanel from './HistoryPanel';
 import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
+import {
+    deduplicateFunctionObjects,
+    inheritMissingFunctionLevels,
+    isReferenceOnlyChapterTitle,
+    normalizeProcessOrderKey,
+    orderCosmicTableData
+} from './cosmic-quality';
 
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
@@ -37,38 +44,6 @@ const initialAnalysisProgress = {
     stats: ''
 };
 
-const normalizeProcessOrderKey = (name) => (name || '')
-    .replace(/\[.*?\]\s*/g, '')
-    .replace(/^[\d]+[.、\s]+/, '')
-    .replace(/\s+/g, '')
-    .toLowerCase()
-    .trim();
-
-const extractHeadingNumberParts = (title) => {
-    const text = String(title || '').trim();
-    if (!text) return null;
-    const match = text.match(/^(\d+(?:\.\d+)*)(?=\s|[^\d.]|$)/);
-    return match ? match[1].split('.').map(n => parseInt(n, 10)) : null;
-};
-
-const compareHeadingNumberParts = (a, b) => {
-    if (!a && !b) return 0;
-    if (!a) return 1;
-    if (!b) return -1;
-    const len = Math.max(a.length, b.length);
-    for (let i = 0; i < len; i++) {
-        const av = a[i] ?? 0;
-        const bv = b[i] ?? 0;
-        if (av !== bv) return av - bv;
-    }
-    return 0;
-};
-
-const compareHeadingTitle = (a, b) => compareHeadingNumberParts(
-    extractHeadingNumberParts(a),
-    extractHeadingNumberParts(b)
-);
-
 const stripHeadingNumber = (title) => String(title || '')
     .trim()
     .replace(/^\d+(?:\.\d+)*[.、\s]*/, '')
@@ -80,20 +55,6 @@ const normalizeHeadingMatchText = (text) => String(text || '')
     .replace(/[【】\[\]（）()\-—–_、，,。；;：:\s]/g, '')
     .toLowerCase()
     .trim();
-
-const deduplicateFunctionObjects = (functions = []) => {
-    const seen = new Set();
-    return functions.filter(func => {
-        const key = String(func?.functionName || '')
-            .normalize('NFKC')
-            .replace(/[\s_\-—–，,。；;：:（）()【】\[\]]/g, '')
-            .toLowerCase()
-            .trim();
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
-};
 
 const isLikelyDocumentHeading = (line) => {
     const trimmed = String(line || '').trim();
@@ -118,18 +79,30 @@ const displayLevelsFromHeadingPath = (path) => {
 const extractDocumentHeadingOutline = (text) => {
     if (!text) return [];
     const lines = text.split('\n');
-    const headings = [];
+    const rawHeadings = [];
     for (let i = 0; i < lines.length; i++) {
         const title = lines[i].trim();
         if (!isLikelyDocumentHeading(title)) continue;
         const num = title.match(/^(\d+(?:\.\d+)*)/)?.[1] || '';
-        headings.push({
+        rawHeadings.push({
             title,
             cleanTitle: stripHeadingNumber(title),
             parts: num ? num.split('.').map(n => parseInt(n, 10)) : [],
             lineIndex: i
         });
     }
+
+    // Mammoth may materialize both TOC entries and real body headings as plain
+    // text. Keep the last occurrence so the outline points at the actual body.
+    const lastLineByHeading = new Map();
+    rawHeadings.forEach(heading => {
+        const key = `${heading.parts.join('.')}\u0001${normalizeHeadingMatchText(heading.cleanTitle)}`;
+        lastLineByHeading.set(key, heading.lineIndex);
+    });
+    const headings = rawHeadings.filter(heading => {
+        const key = `${heading.parts.join('.')}\u0001${normalizeHeadingMatchText(heading.cleanTitle)}`;
+        return lastLineByHeading.get(key) === heading.lineIndex;
+    });
 
     const stack = [];
     return headings.map((heading, index) => {
@@ -162,6 +135,7 @@ const matchFunctionToOriginalHeading = (func, outline = []) => {
     let best = null;
     let bestScore = 0;
     for (const heading of outline) {
+        if (isReferenceOnlyChapterTitle(heading.title)) continue;
         const headingTitle = normalizeHeadingMatchText(heading.cleanTitle || heading.title);
         const headingFull = normalizeHeadingMatchText(heading.title);
         const content = normalizeHeadingMatchText(heading.content).slice(0, 2000);
@@ -180,25 +154,6 @@ const matchFunctionToOriginalHeading = (func, outline = []) => {
         }
     }
     return bestScore >= 50 ? best : null;
-};
-
-const buildFunctionOrderMap = (functions = []) => {
-    const map = new Map();
-    functions.forEach((func, index) => {
-        const key = normalizeProcessOrderKey(func.functionName || func.functionalProcess || func);
-        if (key && !map.has(key)) map.set(key, index);
-    });
-    return map;
-};
-
-const buildModuleOrderMap = (moduleStructure) => {
-    const map = new Map();
-    const modules = moduleStructure?.modules || [];
-    modules.forEach((m, index) => {
-        const key = [m.level1 || '', m.level2 || '', m.level3 || ''].join('\u0001');
-        if ((m.level1 || m.level2 || m.level3) && !map.has(key)) map.set(key, index);
-    });
-    return map;
 };
 
 const getQuantityTargetForChapter = (chapter, quantityPlan, fallbackIndex = -1) => {
@@ -232,17 +187,6 @@ const getQuantityTargetForChapter = (chapter, quantityPlan, fallbackIndex = -1) 
         return targetAt(fallbackIndex);
     }
     return null;
-};
-
-const getGroupLevels = (rows) => {
-    const levels = { level1: '', level2: '', level3: '' };
-    for (const row of rows) {
-        if (!levels.level1 && row.level1) levels.level1 = row.level1;
-        if (!levels.level2 && row.level2) levels.level2 = row.level2;
-        if (!levels.level3 && row.level3) levels.level3 = row.level3;
-        if (levels.level1 && levels.level2 && levels.level3) break;
-    }
-    return levels;
 };
 
 const cleanProcessDisplayName = (name) => String(name || '')
@@ -348,92 +292,6 @@ const buildFunctionDescriptionMap = (rows = [], functions = []) => {
         map.set(group.processName, description);
     });
     return map;
-};
-
-const inheritMissingFunctionLevels = (functions = []) => {
-    let lastLevels = { level1: '', level2: '', level3: '', sourceChapter: '' };
-    return functions.map(func => {
-        const hasLevels = func.level1 || func.level2 || func.level3 || func.sourceChapter;
-        if (hasLevels) {
-            lastLevels = {
-                level1: func.level1 || lastLevels.level1,
-                level2: func.level2 || lastLevels.level2,
-                level3: func.level3 || lastLevels.level3,
-                sourceChapter: func.sourceChapter || lastLevels.sourceChapter
-            };
-            return func;
-        }
-        if (!lastLevels.level1 && !lastLevels.level2 && !lastLevels.level3 && !lastLevels.sourceChapter) {
-            return func;
-        }
-        return {
-            ...func,
-            level1: lastLevels.level1,
-            level2: lastLevels.level2,
-            level3: lastLevels.level3,
-            sourceChapter: lastLevels.sourceChapter
-        };
-    });
-};
-
-const orderCosmicTableData = (rows, functions = [], moduleStructure = null) => {
-    if (!Array.isArray(rows) || rows.length <= 1) return rows || [];
-
-    const groups = [];
-    let currentGroup = null;
-
-    rows.forEach((row, rowIndex) => {
-        const clonedRow = { ...row };
-        if (clonedRow.dataMovementType === 'E' && clonedRow.functionalProcess) {
-            if (currentGroup) groups.push(currentGroup);
-            currentGroup = {
-                index: rowIndex,
-                processName: clonedRow.functionalProcess,
-                rows: [clonedRow]
-            };
-        } else if (currentGroup) {
-            currentGroup.rows.push(clonedRow);
-        } else {
-            groups.push({
-                index: rowIndex,
-                processName: clonedRow.functionalProcess || '',
-                rows: [clonedRow],
-                orphan: true
-            });
-        }
-    });
-    if (currentGroup) groups.push(currentGroup);
-
-    const functionOrder = buildFunctionOrderMap(functions);
-    const moduleOrder = buildModuleOrderMap(moduleStructure);
-    const maxRank = Number.MAX_SAFE_INTEGER;
-
-    const getModuleRank = (levels) => {
-        const key = [levels.level1 || '', levels.level2 || '', levels.level3 || ''].join('\u0001');
-        return moduleOrder.has(key) ? moduleOrder.get(key) : maxRank;
-    };
-
-    const compareGroups = (a, b) => {
-        const aLevels = getGroupLevels(a.rows);
-        const bLevels = getGroupLevels(b.rows);
-        const headingCmp = compareHeadingTitle(aLevels.level1, bLevels.level1)
-            || compareHeadingTitle(aLevels.level2, bLevels.level2)
-            || compareHeadingTitle(aLevels.level3, bLevels.level3);
-        if (headingCmp !== 0) return headingCmp;
-
-        const moduleCmp = getModuleRank(aLevels) - getModuleRank(bLevels);
-        if (moduleCmp !== 0) return moduleCmp;
-
-        const aFuncRank = functionOrder.get(normalizeProcessOrderKey(a.processName)) ?? maxRank;
-        const bFuncRank = functionOrder.get(normalizeProcessOrderKey(b.processName)) ?? maxRank;
-        if (aFuncRank !== bFuncRank) return aFuncRank - bFuncRank;
-
-        return a.index - b.index;
-    };
-
-    return groups
-        .sort(compareGroups)
-        .flatMap(group => group.rows);
 };
 
 function App({ user, token, onLogout }) {
@@ -1701,10 +1559,12 @@ function App({ user, token, onLogout }) {
             const chapterLevelMap = {};
             (chapterList || chapters).forEach(ch => {
                 if (ch.title) {
+                    const titleNumber = ch.title.match(/^(\d+(?:\.\d+)*)/)?.[1] || '';
+                    const titleDepth = ch.headingDepth || (titleNumber ? titleNumber.split('.').length : 0);
                     chapterLevelMap[ch.title] = {
                         level1: ch.level1 || '',
-                        level2: ch.level2 || '',
-                        level3: ch.level3 || ''
+                        level2: titleDepth >= 2 ? (ch.level2 || '') : '',
+                        level3: titleDepth >= 3 ? (ch.level3 || '') : ''
                     };
                 }
             });
@@ -2925,45 +2785,67 @@ function App({ user, token, onLogout }) {
             return bestScore >= 2 ? bestMatch : null;
         };
 
-        functions.forEach(f => {
-            const originalHeading = matchFunctionToOriginalHeading(f, documentHeadingOutline);
-            if (originalHeading) {
-                f.level1 = originalHeading.levels.level1 || '';
-                f.level2 = originalHeading.levels.level2 || '';
-                f.level3 = originalHeading.levels.level3 || '';
-                f.sourceChapter = originalHeading.title || f.sourceChapter || '';
-                return;
-            }
+        const getModulesForSourceChapter = (func, modules) => {
+            if (!Array.isArray(modules) || modules.length === 0) return [];
+            const source = String(func.sourceChapter || '').trim();
+            if (!source) return modules;
 
+            const sourceNorm = normalizeHeadingMatchText(source);
+            const sourceNumber = source.match(/^(\d+(?:\.\d+)*)/)?.[1] || '';
+            const sourceTopNumber = sourceNumber.split('.')[0] || '';
+            const scoped = modules.filter(m => {
+                const fields = [m.level3, m.level2, m.level1];
+                if (fields.some(value => normalizeHeadingMatchText(value) === sourceNorm)) return true;
+                if (!sourceTopNumber) return false;
+                const level1Number = String(m.level1 || '').match(/^(\d+)/)?.[1] || '';
+                return sourceNumber.split('.').length === 1 && level1Number === sourceTopNumber;
+            });
+            return scoped.length > 0 ? scoped : modules;
+        };
+
+        functions.forEach(f => {
             if (moduleStructure && moduleStructure.modules) {
-                let matched = null;
-                // 1. 有 sourceChapter 时先精确匹配
-                if (f.sourceChapter) {
-                    matched = moduleStructure.modules.find(m =>
-                        m.level3 === f.sourceChapter || m.level2 === f.sourceChapter || m.level1 === f.sourceChapter
-                    );
-                }
-                // 2. 精确匹配失败时，用 businessObjects/模块名 模糊匹配（无论有无 sourceChapter 都尝试）
-                if (!matched) {
-                    matched = fuzzyMatchModule(f, moduleStructure.modules);
-                }
+                const candidates = getModulesForSourceChapter(f, moduleStructure.modules);
+                let matched = fuzzyMatchModule(f, candidates);
                 if (matched) {
                     f.level1 = matched.level1 || '';
                     f.level2 = matched.level2 || '';
                     f.level3 = matched.level3 || '';
-                } else if (f.sourceChapter) {
-                    // 未匹配时将章节标题放到 level3
-                    f.level3 = f.sourceChapter;
+                    return;
                 }
-            } else if (f.sourceChapter) {
-                f.level3 = f.sourceChapter;
+
+                // The source chapter is still authoritative for the top-level
+                // scope. Do not borrow an unrelated child module just because a
+                // short keyword also appears elsewhere in the document.
+                if (f.sourceChapter && candidates.length > 0) {
+                    const level1Values = [...new Set(candidates.map(m => m.level1).filter(Boolean))];
+                    if (level1Values.length === 1) f.level1 = level1Values[0];
+                    if (candidates.length === 1) {
+                        f.level2 = candidates[0].level2 || '';
+                        f.level3 = candidates[0].level3 || '';
+                    }
+                    return;
+                }
             }
+
+            const originalHeading = matchFunctionToOriginalHeading(f, documentHeadingOutline);
+            if (!originalHeading) return;
+            f.level1 = originalHeading.levels.level1 || '';
+            f.level2 = originalHeading.levels.level2 || '';
+            f.level3 = originalHeading.levels.level3 || '';
+            f.sourceChapter = originalHeading.title || f.sourceChapter || '';
         });
         return inheritMissingFunctionLevels(functions);
     };
 
     // 根据功能过程的 sourceChapter 获取三级模块信息
     const getModuleLevels = (func) => {
+        // Prefer the reviewed/function-scoped hierarchy. A fuzzy document-wide
+        // match must never overwrite a precise module assignment.
+        if (func.level1 || func.level2 || func.level3) {
+            return { level1: func.level1 || '', level2: func.level2 || '', level3: func.level3 || '' };
+        }
+
         const originalHeading = matchFunctionToOriginalHeading(func, documentHeadingOutline);
         if (originalHeading) {
             return {
@@ -2971,11 +2853,6 @@ function App({ user, token, onLogout }) {
                 level2: originalHeading.levels.level2 || '',
                 level3: originalHeading.levels.level3 || ''
             };
-        }
-
-        // 优先使用功能过程对象上已有的层级（由 parseFunctionListText 模糊匹配设定）
-        if (func.level1 || func.level2 || func.level3) {
-            return { level1: func.level1 || '', level2: func.level2 || '', level3: func.level3 || '' };
         }
         const ch = func.sourceChapter || '';
         if (moduleStructure && moduleStructure.modules) {
