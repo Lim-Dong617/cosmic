@@ -320,6 +320,7 @@ function App({ user, token, onLogout }) {
     const [showSequenceDiagram, setShowSequenceDiagram] = useState(false);
     const [exportWithDiagrams, setExportWithDiagrams] = useState(false);
     const [excelExportTemplate, setExcelExportTemplate] = useState('standard');
+    const [wordExportTemplate, setWordExportTemplate] = useState('hierarchy');
     const [generateDescription, setGenerateDescription] = useState(true); // 是否在拆分时生成功能描述
     const [useEnhancedCosmicExperience, setUseEnhancedCosmicExperience] = useState(() => {
         if (typeof window !== 'undefined') {
@@ -2559,6 +2560,7 @@ function App({ user, token, onLogout }) {
                     tableData: exportTableData,
                     filename: `COSMIC功能规格说明书_${documentName || '结果'}`,
                     documentName: documentName || '',
+                    exportTemplate: wordExportTemplate,
                     sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
                 },
                 { responseType: 'blob', timeout: 120000 }
@@ -2566,7 +2568,7 @@ function App({ user, token, onLogout }) {
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.download = `COSMIC功能规格说明书_${documentName || '结果'}${sequenceDiagrams ? '_含时序图' : ''}.docx`;
+            link.download = `COSMIC功能规格说明书_${documentName || '结果'}${wordExportTemplate === 'business-spec' ? '_完整说明书' : '_模块层级版'}${sequenceDiagrams ? '_含时序图' : ''}.docx`;
             link.click();
             window.URL.revokeObjectURL(url);
             showToast(sequenceDiagrams ? `Word导出成功（含 ${sequenceDiagrams.length} 张时序图）` : 'Word文档导出成功');
@@ -2591,6 +2593,16 @@ function App({ user, token, onLogout }) {
             <select value={excelExportTemplate} onChange={e => setExcelExportTemplate(e.target.value)}>
                 <option value="standard">标准结果</option>
                 <option value="assessment">COSMIC评估模板</option>
+            </select>
+        </label>
+    );
+
+    const renderWordTemplateSelect = () => (
+        <label className="excel-template-select" title="选择Word导出模板">
+            <span>Word模板</span>
+            <select value={wordExportTemplate} onChange={e => setWordExportTemplate(e.target.value)}>
+                <option value="hierarchy">模块层级文档</option>
+                <option value="business-spec">完整说明书（原模板）</option>
             </select>
         </label>
     );
@@ -3639,6 +3651,7 @@ function App({ user, token, onLogout }) {
                                                             <input type="checkbox" checked={exportWithDiagrams} onChange={e => setExportWithDiagrams(e.target.checked)} />
                                                             <GitBranch size={12} /> 附带时序图
                                                         </label>
+                                                        {renderWordTemplateSelect()}
                                                         <button className="btn btn-sm" onClick={exportWord} disabled={isGeneratingDiagrams} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为带时序图的Word需求文档">
                                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Word'}
                                                         </button>
@@ -3985,6 +3998,7 @@ function App({ user, token, onLogout }) {
                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <Download size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Excel'}
                                         </button>
                                         {renderExcelTemplateSelect()}
+                                        {renderWordTemplateSelect()}
                                         <button className="btn btn-sm" onClick={exportWord} disabled={isGeneratingDiagrams} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为Word功能规格说明书">
                                             {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Word'}
                                         </button>

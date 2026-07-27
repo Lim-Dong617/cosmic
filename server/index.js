@@ -628,9 +628,12 @@ function normalizeFunctionDescription(text, processName = '') {
         .replace(/\s+/g, ' ')
         .trim();
     if (!desc) return '';
+    if (cleanProcess) {
+        const escapedProcess = cleanProcess.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        desc = desc.replace(new RegExp(`^${escapedProcess}\\s*[-—–：:]\\s*`), '').trim();
+    }
     desc = desc.replace(/[。；;]+$/g, '');
-    const hasProcessPrefix = cleanProcess && desc.startsWith(`${cleanProcess} -`);
-    return `${hasProcessPrefix || !cleanProcess ? '' : `${cleanProcess} - `}${desc}。`;
+    return `${desc}。`;
 }
 
 function isUsefulFunctionDescription(text) {
@@ -652,37 +655,46 @@ function buildFunctionDescription(processName, rows = [], seedDescription = '', 
     const wRows = rows.filter(r => r.dataMovementType === 'W');
     const xRows = rows.filter(r => r.dataMovementType === 'X');
 
-    const eItems = compactUniqueItems(eRows.map(r => r.dataGroup || r.subProcessDesc), 2);
-    const rItems = compactUniqueItems(rRows.map(r => r.dataGroup || r.subProcessDesc), 3);
-    const wItems = compactUniqueItems(wRows.map(r => r.dataGroup || r.subProcessDesc), 2);
-    const xItems = compactUniqueItems(xRows.map(r => r.dataGroup || r.subProcessDesc), 2);
+    const describeRows = (moveRows, fallback) => {
+        const items = compactUniqueItems(
+            moveRows.map(row => row.subProcessDesc || row.dataGroup),
+            Math.max(1, moveRows.length)
+        );
+        return items.length ? items.join('，并') : fallback;
+    };
+    const appendKeyDetails = (text, moveRows) => {
+        const details = compactUniqueItems(
+            moveRows.map(row => row.dataAttributes),
+            Math.min(2, Math.max(1, moveRows.length))
+        );
+        return details.length ? `${text}，涉及${details.join('；')}` : text;
+    };
 
-    const eText = eItems.length ? eItems.join('、') : `${cleanProcess}请求`;
-    const rText = rItems.length ? rItems.join('、') : '相关业务数据';
-    const wText = wItems.length ? wItems.join('、') : '处理记录或操作日志';
-    const xText = xItems.length ? xItems.join('、') : `${cleanProcess}结果`;
-
-    let actorText = '用户';
-    let startText = `该功能允许用户完成${cleanProcess}操作`;
-    if ((triggerEvent || '').includes('时钟')) {
-        actorText = '定时任务';
-        startText = `该功能由定时任务触发，用于按预设规则执行${cleanProcess}流程`;
-    } else if ((triggerEvent || '').includes('接口')) {
-        actorText = '外部系统';
-        startText = `该功能支持外部系统通过接口触发${cleanProcess}流程`;
-    } else if ((functionalUser || '').includes('定时触发器')) {
-        actorText = '定时触发器';
-        startText = `该功能由定时触发器发起，用于自动执行${cleanProcess}流程`;
+    const cleanTrigger = sanitizeText(triggerEvent).replace(/[。；;]+$/g, '');
+    let triggerSentence = cleanTrigger || `用户发起${cleanProcess}`;
+    if (!cleanTrigger && (triggerEvent || '').includes('时钟')) {
+        triggerSentence = `定时任务按预设规则触发${cleanProcess}`;
+    } else if (!cleanTrigger && (functionalUser || '').includes('定时触发器')) {
+        triggerSentence = `定时触发器自动发起${cleanProcess}`;
+    } else if (!cleanTrigger && (triggerEvent || '').includes('接口')) {
+        triggerSentence = `外部系统通过接口触发${cleanProcess}`;
     }
 
-    const writeClause = wRows.length > 0
-        ? `在处理过程中保存${wText}`
-        : `完成处理过程中的状态整理`;
-    const resultClause = (triggerEvent || '').includes('时钟')
-        ? `并输出${xText}，便于系统持续跟踪处理状态和后续结果`
-        : `最终向${actorText === '外部系统' ? '调用方系统' : '用户'}返回${xText}，帮助完成业务查看、判断或后续处理`;
+    const systemClauses = [];
+    if (eRows.length) {
+        systemClauses.push(`系统${describeRows(eRows, `接收${cleanProcess}请求`)}`);
+    }
+    if (rRows.length) {
+        systemClauses.push(`${systemClauses.length ? '随后' : '系统'}${appendKeyDetails(describeRows(rRows, '读取相关业务数据'), rRows)}`);
+    }
+    if (wRows.length) {
+        systemClauses.push(`${systemClauses.length ? '同时' : '系统'}${describeRows(wRows, '保存处理记录或操作日志')}`);
+    }
+    if (xRows.length) {
+        systemClauses.push(`${systemClauses.length ? '并' : '系统'}${appendKeyDetails(describeRows(xRows, `返回${cleanProcess}结果`), xRows)}`);
+    }
 
-    return `${cleanProcess} - ${startText}。${actorText}发起后，系统会接收${eText}，结合${rText}进行业务处理，${writeClause}，${resultClause}。`;
+    return `${triggerSentence}。${systemClauses.join('，')}。`;
 }
 
 function ensureFunctionDescriptions(tableData, refFunctions = []) {
@@ -804,6 +816,60 @@ function getExcelCellText(cell) {
     return sanitizeText(excelCellValueToText(cell?.value));
 }
 
+async function loadExcelWorkbook(filePath) {
+    const workbook = new ExcelJS.Workbook();
+    try {
+        await workbook.xlsx.readFile(filePath);
+        return workbook;
+    } catch (initialError) {
+        // 部分标准 OOXML/第三方导出的工作簿会显式使用 x:workbook、
+        // x:worksheet 等 SpreadsheetML 前缀。ExcelJS 4.x 的模型解析器
+        // 无法识别这些合法前缀。仅在首次读取失败时于内存副本中去掉 x:
+        // 标签前缀，再交给 ExcelJS；用户上传的原文件不会被改写。
+        const source = await fs.promises.readFile(filePath);
+        const zip = await JSZip.loadAsync(source);
+        const xmlPaths = Object.keys(zip.files).filter(name => (
+            (
+                /^xl\/.*\.xml$/i.test(name)
+                || /^xl\/worksheets\/_rels\/.*\.rels$/i.test(name)
+            )
+            && !zip.files[name].dir
+        ));
+        let normalizedCount = 0;
+        await Promise.all(xmlPaths.map(async (name) => {
+            const file = zip.file(name);
+            if (!file) return;
+            let xml = await file.async('string');
+            let changed = false;
+            if (/<\/?x:/.test(xml)) {
+                xml = xml.replace(/(<\/?)x:/g, '$1');
+                changed = true;
+            }
+            if (/^xl\/worksheets\/_rels\/.*\.rels$/i.test(name)) {
+                const cleaned = xml.replace(
+                    /<Relationship\b(?=[^>]*\bType="[^"]*\/(?:comments|vmlDrawing)")[^>]*\/>/gi,
+                    ''
+                );
+                changed ||= cleaned !== xml;
+                xml = cleaned;
+            }
+            if (!changed) return;
+            zip.file(name, xml);
+            normalizedCount++;
+        }));
+        if (normalizedCount === 0) throw initialError;
+
+        const normalizedBuffer = await zip.generateAsync({
+            type: 'nodebuffer',
+            compression: 'DEFLATE'
+        });
+        const compatibleWorkbook = new ExcelJS.Workbook();
+        await compatibleWorkbook.xlsx.load(normalizedBuffer);
+        console.log(`📗 Excel兼容读取：已规范化 ${normalizedCount} 个带 x: 前缀的 OOXML 部件`);
+        return compatibleWorkbook;
+    }
+}
+
 function normalizeExcelHeader(value) {
     return String(value || '')
         .replace(/\s+/g, '')
@@ -822,6 +888,7 @@ function buildCosmicExcelColumnMap(headers) {
         level1: findCol(h => h.includes('一级标题') || h.includes('一级模块') || h.includes('一级业务功能')),
         level2: findCol(h => h.includes('二级标题') || h.includes('二级模块') || h.includes('二级业务功能')),
         level3: findCol(h => h.includes('三级标题') || h.includes('三级模块') || h.includes('三级业务功能')),
+        level4: findCol(h => h.includes('四级标题') || h.includes('四级模块') || h.includes('四级业务功能')),
         functionalUser: findCol(h => h === '功能用户' || (h.includes('功能用户') && !h.includes('需求'))),
         triggerEvent: findCol(h => h.includes('触发事件')),
         functionalProcess: findCol(h => h === '功能过程' || (h.includes('功能过程') && !h.includes('描述'))),
@@ -841,7 +908,7 @@ function scoreCosmicExcelHeader(headers, columnMap, sheetName = '') {
     for (const key of ['functionalUser', 'triggerEvent', 'subProcessDesc', 'dataGroup', 'dataAttributes']) {
         if (columnMap[key]) score += 5;
     }
-    for (const key of ['level1', 'level2', 'level3', 'functionDescription']) {
+    for (const key of ['level1', 'level2', 'level3', 'level4', 'functionDescription']) {
         if (columnMap[key]) score += 3;
     }
 
@@ -859,15 +926,35 @@ function detectCosmicExcelLayout(workbook) {
         const colLimit = Math.min(80, Math.max(worksheet.actualColumnCount || 0, worksheet.columnCount || 0, 18));
 
         for (let rowNumber = 1; rowNumber <= rowLimit; rowNumber++) {
-            const row = worksheet.getRow(rowNumber);
-            const headers = [];
-            for (let col = 1; col <= colLimit; col++) {
-                headers.push(getExcelCellText(row.getCell(col)));
-            }
-            const columnMap = buildCosmicExcelColumnMap(headers);
-            const score = scoreCosmicExcelHeader(headers, columnMap, worksheet.name);
-            if (score > (best?.score || 0)) {
-                best = { worksheet, headerRowNumber: rowNumber, columnMap, headers, score };
+            // 评估模板常把“功能过程/数据移动”等主表头放在第一行，
+            // 把“一级模块/二级模块/三级模块/四级模块”放在其下一行。
+            // 同时尝试 1~3 行表头窗口，按列合并后再做名称匹配。
+            for (let headerRowSpan = 1; headerRowSpan <= 3; headerRowSpan++) {
+                const headers = [];
+                for (let col = 1; col <= colLimit; col++) {
+                    const parts = [];
+                    for (
+                        let offset = 0;
+                        offset < headerRowSpan && rowNumber + offset <= rowLimit;
+                        offset++
+                    ) {
+                        const text = getExcelCellText(worksheet.getRow(rowNumber + offset).getCell(col));
+                        if (text && !parts.includes(text)) parts.push(text);
+                    }
+                    headers.push(parts.join(' '));
+                }
+                const columnMap = buildCosmicExcelColumnMap(headers);
+                const score = scoreCosmicExcelHeader(headers, columnMap, worksheet.name);
+                if (score > (best?.score || 0)) {
+                    best = {
+                        worksheet,
+                        headerRowNumber: rowNumber,
+                        headerRowSpan,
+                        columnMap,
+                        headers,
+                        score
+                    };
+                }
             }
         }
     }
@@ -893,6 +980,7 @@ function parseCosmicExcelRows(worksheet, headerRowNumber, columnMap) {
     let currentL1 = '';
     let currentL2 = '';
     let currentL3 = '';
+    let currentL4 = '';
 
     const getByKey = (row, key) => {
         const col = columnMap[key];
@@ -905,6 +993,7 @@ function parseCosmicExcelRows(worksheet, headerRowNumber, columnMap) {
             getByKey(row, 'level1'),
             getByKey(row, 'level2'),
             getByKey(row, 'level3'),
+            getByKey(row, 'level4'),
             getByKey(row, 'functionalUser'),
             getByKey(row, 'triggerEvent'),
             getByKey(row, 'functionalProcess'),
@@ -922,6 +1011,7 @@ function parseCosmicExcelRows(worksheet, headerRowNumber, columnMap) {
         const rawLevel1 = getByKey(row, 'level1');
         const rawLevel2 = getByKey(row, 'level2');
         const rawLevel3 = getByKey(row, 'level3');
+        const rawLevel4 = getByKey(row, 'level4');
         const rawFuncUser = getByKey(row, 'functionalUser');
         const rawTrigger = getByKey(row, 'triggerEvent');
         const rawProcess = getByKey(row, 'functionalProcess');
@@ -929,6 +1019,7 @@ function parseCosmicExcelRows(worksheet, headerRowNumber, columnMap) {
         if (rawLevel1) currentL1 = rawLevel1;
         if (rawLevel2) currentL2 = rawLevel2;
         if (rawLevel3) currentL3 = rawLevel3;
+        if (rawLevel4) currentL4 = rawLevel4;
         if (rawFuncUser) currentFunctionalUser = rawFuncUser;
         if (rawTrigger) currentTriggerEvent = rawTrigger;
         if (rawProcess) currentFunctionalProcess = rawProcess;
@@ -952,7 +1043,8 @@ function parseCosmicExcelRows(worksheet, headerRowNumber, columnMap) {
             functionDescription: dmt === 'E' ? getByKey(row, 'functionDescription') : '',
             level1: currentL1,
             level2: currentL2,
-            level3: currentL3
+            level3: currentL3,
+            level4: currentL4
         });
     }
 
@@ -969,10 +1061,11 @@ function buildParsedFunctionsFromTableData(tableData) {
             functionName: row.functionalProcess || '',
             description: row.functionDescription || '',
             selected: true,
-            sourceChapter: row.level3 || row.level2 || row.level1 || '',
+            sourceChapter: row.level4 || row.level3 || row.level2 || row.level1 || '',
             level1: row.level1 || '',
             level2: row.level2 || '',
-            level3: row.level3 || ''
+            level3: row.level3 || '',
+            level4: row.level4 || ''
         }));
 }
 
@@ -995,14 +1088,16 @@ function buildModuleStructureFromTableData(tableData) {
         const level1 = row.level1 || '';
         const level2 = row.level2 || '';
         const level3 = row.level3 || '';
-        if (!level1 && !level2 && !level3) continue;
-        const key = [level1, level2, level3].join('\u0001');
+        const level4 = row.level4 || '';
+        if (!level1 && !level2 && !level3 && !level4) continue;
+        const key = [level1, level2, level3, level4].join('\u0001');
         if (seen.has(key)) continue;
         seen.add(key);
         modules.push({
             level1,
             level2,
             level3,
+            level4,
             businessObjects: [],
             triggerTypes: row.triggerEvent ? [row.triggerEvent] : [],
             estimatedFunctions: tableData.filter(r => (
@@ -1010,6 +1105,7 @@ function buildModuleStructureFromTableData(tableData) {
                 && (r.level1 || '') === level1
                 && (r.level2 || '') === level2
                 && (r.level3 || '') === level3
+                && (r.level4 || '') === level4
             )).length || 1
         });
     }
@@ -1042,11 +1138,13 @@ function buildFunctionGroupsFromTableData(tableData = []) {
     let currentL1 = '';
     let currentL2 = '';
     let currentL3 = '';
+    let currentL4 = '';
 
     for (const row of tableData || []) {
         if (row.level1) currentL1 = row.level1;
         if (row.level2) currentL2 = row.level2;
         if (row.level3) currentL3 = row.level3;
+        if (row.level4) currentL4 = row.level4;
 
         if (row.dataMovementType === 'E' && row.functionalProcess) {
             if (row.functionalUser) currentFuncUser = row.functionalUser;
@@ -1059,6 +1157,7 @@ function buildFunctionGroupsFromTableData(tableData = []) {
                 level1: row.level1 || currentL1 || '',
                 level2: row.level2 || currentL2 || '',
                 level3: row.level3 || currentL3 || '',
+                level4: row.level4 || currentL4 || '',
                 rows: [row],
                 eRow: row
             };
@@ -1115,23 +1214,27 @@ async function generateFunctionDescriptionsWithAI(tableData, userConfig = null, 
     const batchSize = Number.isFinite(configuredBatchSize)
         ? Math.max(5, Math.min(25, configuredBatchSize))
         : 20;
+    const disableAI = Boolean(options.disableAI) || process.env.NODE_ENV === 'test';
     let aiError = null;
 
     const systemPrompt = `你是资深软件需求分析师，负责把COSMIC功能点拆分结果改写为业务需求说明书中的“功能描述”。
 要求：
 1. 只输出JSON数组，不要Markdown，不要解释。
 2. 每项包含 processName 和 functionDescription 两个字段。
-3. functionDescription 用中文自然段，80~160字，面向需求文档读者，说明发起者、触发场景、系统处理逻辑、读取/写入数据和输出结果。
-4. 不要只罗列数据组；不要改变功能过程名称；不要编造与输入步骤无关的业务能力。`;
+3. functionDescription 用一个完整的中文自然段，100~220字，面向需求文档读者，按业务发生顺序概括该功能过程的全部子过程：谁在什么场景触发、系统接收什么参数、读取哪些数据、是否写入日志或业务数据、最后输出或呈现什么结果。
+4. 必须覆盖 dataMoves 中每条非重复的 subProcess 所表达的业务动作，并可结合 dataGroup、dataAttributes 把指标、字段和输出形式概括清楚；不要机械罗列字段。
+5. 不要在段首重复功能过程名称或添加“功能描述：”前缀；不要改变功能过程名称；不要编造与输入步骤无关的业务能力。
+写作示例：用户通过设置统计日期、城市、站型等筛选条件触发查询。系统接收参数后读取符合条件的基站价值统计指标，包括各类基站数量、等效用户数、日业务量及价值分类，同时记录操作日志，并将指标卡片、饼图、趋势图和TOP基站榜单等可视化内容渲染至首页，为用户呈现基站运营态势总览。`;
 
-    for (let start = 0; start < targetGroups.length; start += batchSize) {
+    for (let start = 0; !disableAI && start < targetGroups.length; start += batchSize) {
         const batch = targetGroups.slice(start, start + batchSize);
         const payload = batch.map(group => ({
             processName: group.functionalProcess,
             module: {
                 level1: group.level1 || '',
                 level2: group.level2 || '',
-                level3: group.level3 || ''
+                level3: group.level3 || '',
+                level4: group.level4 || ''
             },
             functionalUser: group.functionalUser || '',
             triggerEvent: group.triggerEvent || '',
@@ -2172,8 +2275,7 @@ app.post('/api/parse-cosmic-excel', upload.single('file'), handleMulterError, as
 
         console.log(`📊 解析COSMIC Excel: ${req.file.originalname}, 大小: ${req.file.size} bytes`);
 
-        const workbook = new ExcelJS.Workbook();
-        await workbook.xlsx.readFile(uploadedPath);
+        const workbook = await loadExcelWorkbook(uploadedPath);
 
         const layout = detectCosmicExcelLayout(workbook);
         if (!layout) {
@@ -2260,7 +2362,12 @@ app.post('/api/parse-cosmic-excel', upload.single('file'), handleMulterError, as
                 name: formatName,
                 sheetName: layout.worksheet.name,
                 headerRow: layout.headerRowNumber,
-                hasLevels: Boolean(layout.columnMap.level1 || layout.columnMap.level2 || layout.columnMap.level3),
+                hasLevels: Boolean(
+                    layout.columnMap.level1
+                    || layout.columnMap.level2
+                    || layout.columnMap.level3
+                    || layout.columnMap.level4
+                ),
                 hasDescription: Boolean(layout.columnMap.functionDescription)
             }
         });
@@ -4785,7 +4892,13 @@ app.post('/api/export-excel', async (req, res) => {
 
 app.post('/api/export-word', async (req, res) => {
     try {
-        const { tableData, filename = 'COSMIC功能规格说明书', sequenceDiagrams, documentName } = req.body;
+        const {
+            tableData,
+            filename = 'COSMIC功能规格说明书',
+            sequenceDiagrams,
+            documentName,
+            exportTemplate = 'hierarchy'
+        } = req.body;
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
@@ -4795,6 +4908,8 @@ app.post('/api/export-word', async (req, res) => {
         const hasDescription = tableData.some(r => r.functionDescription);
         const exportTableData = hasDescription ? ensureFunctionDescriptions(orderCosmicTableData(tableData)) : orderCosmicTableData(tableData);
         const orderedSequenceDiagrams = orderSequenceDiagrams(sequenceDiagrams, exportTableData);
+        const hasSequenceDiagrams = Boolean(orderedSequenceDiagrams?.some(diagram => diagram?.imageBase64));
+        const isHierarchyTemplate = exportTemplate !== 'business-spec';
 
         console.log(`📝 开始生成Word文档，共 ${exportTableData.length} 行数据...`);
 
@@ -4823,11 +4938,13 @@ app.post('/api/export-word', async (req, res) => {
         let currentL1 = '';
         let currentL2 = '';
         let currentL3 = '';
+        let currentL4 = '';
 
         for (const row of exportTableData) {
             if (row.level1) currentL1 = row.level1;
             if (row.level2) currentL2 = row.level2;
             if (row.level3) currentL3 = row.level3;
+            if (row.level4) currentL4 = row.level4;
 
             if (row.dataMovementType === 'E' && row.functionalProcess) {
                 if (row.functionalUser) currentFuncUser = row.functionalUser;
@@ -4841,6 +4958,7 @@ app.post('/api/export-word', async (req, res) => {
                     level1: row.level1 || currentL1 || '',
                     level2: row.level2 || currentL2 || '',
                     level3: row.level3 || currentL3 || '',
+                    level4: row.level4 || currentL4 || '',
                     rows: [row]
                 };
                 functionGroups.push(currentGroup);
@@ -4860,7 +4978,10 @@ app.post('/api/export-word', async (req, res) => {
         const diagramMap = new Map();
         if (orderedSequenceDiagrams && orderedSequenceDiagrams.length > 0) {
             for (const diag of orderedSequenceDiagrams) {
-                if (diag.processName) diagramMap.set(diag.processName, diag);
+                if (diag.processName) {
+                    diagramMap.set(diag.processName, diag);
+                    diagramMap.set(normalizeProcessName(diag.processName), diag);
+                }
             }
         }
 
@@ -4882,10 +5003,16 @@ app.post('/api/export-word', async (req, res) => {
 
         const heading = (text, level, color = '1A1A2E') => paragraph(stripManualHeadingNumber(text), {
             bold: true,
-            size: level === 1 ? 32 : level === 2 ? 27 : 23,
+            size: level === 1 ? 32 : level === 2 ? 27 : level === 3 ? 23 : 21,
             color,
-            heading: level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3,
-            spacing: { before: level === 1 ? 560 : 320, after: 180 }
+            heading: level === 1
+                ? HeadingLevel.HEADING_1
+                : level === 2
+                    ? HeadingLevel.HEADING_2
+                    : level === 3
+                        ? HeadingLevel.HEADING_3
+                        : HeadingLevel.HEADING_4,
+            spacing: { before: level === 1 ? 560 : level === 4 ? 260 : 320, after: 180 }
         });
 
         const tableCell = (text, options = {}) => new TableCell({
@@ -4926,12 +5053,13 @@ app.post('/api/export-word', async (req, res) => {
 
         const moduleSummaryMap = new Map();
         for (const group of functionGroups) {
-            const key = [group.level1 || '', group.level2 || '', group.level3 || ''].join('\u0001');
+            const key = [group.level1 || '', group.level2 || '', group.level3 || '', group.level4 || ''].join('\u0001');
             if (!moduleSummaryMap.has(key)) {
                 moduleSummaryMap.set(key, {
                     level1: group.level1 || '未指定',
                     level2: group.level2 || '未指定',
                     level3: group.level3 || '未指定',
+                    level4: group.level4 || '',
                     funcCount: 0,
                     cfp: 0
                 });
@@ -4944,12 +5072,59 @@ app.post('/api/export-word', async (req, res) => {
             String(index + 1),
             item.level1,
             item.level2,
-            item.level3,
+            item.level4 || item.level3,
             String(item.funcCount),
             String(item.cfp)
         ]);
 
         const docChildren = [];
+        const appendSequenceDiagram = (group, { includeSteps = false } = {}) => {
+            const diagram = diagramMap.get(group.functionalProcess)
+                || diagramMap.get(normalizeProcessName(group.functionalProcess));
+            if (!diagram?.imageBase64) return false;
+
+            docChildren.push(paragraph('关键时序图/业务逻辑图', {
+                bold: true,
+                size: 20,
+                color: '1F4E78',
+                spacing: { before: 180, after: 120 }
+            }));
+            try {
+                const imgBuffer = Buffer.from(diagram.imageBase64, 'base64');
+                const imgWidth = diagram.width || 800;
+                const imgHeight = diagram.height || 400;
+                const maxWidth = 550;
+                const scale = Math.min(1, maxWidth / imgWidth);
+                const displayWidth = Math.round(imgWidth * scale);
+                const displayHeight = Math.round(imgHeight * scale);
+
+                docChildren.push(new Paragraph({
+                    children: [new ImageRun({
+                        data: imgBuffer,
+                        transformation: { width: displayWidth, height: displayHeight },
+                        type: 'png'
+                    })],
+                    alignment: AlignmentType.CENTER,
+                    spacing: { after: 200 }
+                }));
+            } catch (imgErr) {
+                console.warn(`  ⚠️ 时序图嵌入失败 (${group.cleanName}):`, imgErr.message);
+                docChildren.push(paragraph(`[时序图嵌入失败: ${imgErr.message}]`, { color: 'E74C3C' }));
+            }
+
+            if (includeSteps) {
+                docChildren.push(paragraph('本时序图步骤如下：', { bold: true }));
+                group.rows.forEach((row, index) => {
+                    const dmtLabels = { E: '进入', R: '读取', W: '写入', X: '退出' };
+                    const dmtLabel = dmtLabels[row.dataMovementType] || row.dataMovementType;
+                    docChildren.push(paragraph(`${index + 1}）${row.subProcessDesc || ''}（${dmtLabel}${row.dataGroup ? ` - ${row.dataGroup}` : ''}）`, {
+                        indent: { left: 480 },
+                        spacing: { after: 60, line: 280 }
+                    }));
+                });
+            }
+            return true;
+        };
 
         // 封面：参考“XX项目需求 / 业务需求说明书 / 公司 / 年月”模板。
         docChildren.push(
@@ -4991,16 +5166,60 @@ app.post('/api/export-word', async (req, res) => {
                 spacing: { after: 360 }
             }),
             paragraph('目录', { bold: true, size: 28, color: '1F4E78', spacing: { before: 300, after: 120 } }),
-            new TableOfContents('目录', { hyperlink: true, headingStyleRange: '1-3' })
+            new TableOfContents('目录', { hyperlink: true, headingStyleRange: isHierarchyTemplate ? '1-4' : '1-3' })
         );
 
+        if (isHierarchyTemplate) {
+            let lastLevel1 = '';
+            let lastLevel2Key = '';
+            let lastLevel3Key = '';
+
+            for (const group of functionGroups) {
+                const level1 = sanitizeText(group.level1) || '未指定一级模块';
+                const level2 = sanitizeText(group.level2) || '未指定二级模块';
+                // 用户指定第三级目录取“四级模块”。兼容目前附件中仍命名为
+                // “三级模块”的旧模板：没有 level4 时回退到 level3。
+                const level3 = sanitizeText(group.level4 || group.level3) || '未指定四级模块';
+                const level2Key = `${level1}\u0001${level2}`;
+                const level3Key = `${level2Key}\u0001${level3}`;
+
+                if (level1 !== lastLevel1) {
+                    docChildren.push(heading(level1, 1));
+                    lastLevel1 = level1;
+                    lastLevel2Key = '';
+                    lastLevel3Key = '';
+                }
+                if (level2Key !== lastLevel2Key) {
+                    docChildren.push(heading(level2, 2));
+                    lastLevel2Key = level2Key;
+                    lastLevel3Key = '';
+                }
+                if (level3Key !== lastLevel3Key) {
+                    docChildren.push(heading(level3, 3));
+                    lastLevel3Key = level3Key;
+                }
+
+                docChildren.push(heading(group.cleanName || group.functionalProcess, 4, '1F4E78'));
+                const functionDescription = group.functionDescription || buildFunctionDescription(
+                    group.functionalProcess,
+                    group.rows,
+                    '',
+                    group.functionalUser,
+                    group.triggerEvent
+                );
+                docChildren.push(paragraph(normalizeFunctionDescription(functionDescription, group.functionalProcess)));
+                appendSequenceDiagram(group);
+            }
+        } else {
         docChildren.push(heading('1. 需求说明', 1));
         docChildren.push(heading('1.1. 总体描述', 2));
-        docChildren.push(paragraph(`本文档参考《附件1XX项目需求说明书V1.0.0》模板生成，基于已导入的 COSMIC 功能点拆分结果形成业务需求说明书。文档覆盖 ${uniqueFuncs.length} 个功能需求，合计 ${totalCfp} CFP，并为每个功能需求保留关键时序图/业务逻辑图、功能描述和数据移动步骤。`));
+        docChildren.push(paragraph(`本文档参考《附件1XX项目需求说明书V1.0.0》模板生成，基于已导入的 COSMIC 功能点拆分结果形成业务需求说明书。文档覆盖 ${uniqueFuncs.length} 个功能需求，合计 ${totalCfp} CFP，并为每个功能需求保留${hasSequenceDiagrams ? '关键时序图/业务逻辑图、' : ''}功能描述和数据移动步骤。`));
         docChildren.push(heading('1.2. 建设目标', 2));
         docChildren.push(paragraph('1）形成与功能模块层级一致的业务需求说明，便于评审、开发、测试和规模度量引用。'));
         docChildren.push(paragraph('2）将 COSMIC 拆分中的功能过程、功能用户、触发事件、数据移动类型和数据组转化为可交付的需求描述。'));
-        docChildren.push(paragraph('3）在导出时嵌入关键时序图/业务逻辑图，直观说明用户、系统和数据库之间的交互过程。'));
+        if (hasSequenceDiagrams) {
+            docChildren.push(paragraph('3）嵌入关键时序图/业务逻辑图，直观说明用户、系统和数据库之间的交互过程。'));
+        }
         docChildren.push(heading('1.3. 建设必要性', 2));
         docChildren.push(paragraph('通过统一的需求说明书模板承载拆分结果，可以减少人工整理表格和文档的重复工作，提高需求材料、规模评估材料和后续研发材料之间的一致性。'));
         docChildren.push(heading('1.4. 系统现状', 2));
@@ -5009,7 +5228,7 @@ app.post('/api/export-word', async (req, res) => {
         docChildren.push(heading('1.4.2. 系统已实现功能', 3));
         docChildren.push(paragraph('已实现或待建设功能以“需求功能清单”为准，清单中保留一级模块、二级模块、三级模块和对应功能需求名称。'));
         docChildren.push(heading('1.4.3. 存在问题', 3));
-        docChildren.push(paragraph('现有拆分表偏向规模评估口径，缺少面向阅读和评审的业务需求说明结构，因此需要转换为带时序图和功能描述的需求说明书。'));
+        docChildren.push(paragraph(`现有拆分表偏向规模评估口径，缺少面向阅读和评审的业务需求说明结构，因此需要转换为${hasSequenceDiagrams ? '带时序图和' : '带'}功能描述的需求说明书。`));
 
         docChildren.push(heading('2. 功能架构图', 1));
         docChildren.push(paragraph('功能架构图应分层分域展示一级、二级、三级模块。当前版本根据 COSMIC 拆分表中的模块字段自动生成模块清单，可在定稿时替换或补充正式架构图。'));
@@ -5029,46 +5248,9 @@ app.post('/api/export-word', async (req, res) => {
             docChildren.push(paragraph(`一级模块：${group.level1 || '未指定'}    二级模块：${group.level2 || '未指定'}    三级模块：${group.level3 || '未指定'}`, { color: '666666', size: 19 }));
             docChildren.push(paragraph(`功能用户：${group.functionalUser || '未指定'}    触发事件：${group.triggerEvent || '未指定'}`, { color: '666666', size: 19 }));
 
-            docChildren.push(heading(`${funcNumber}.1. 关键时序图/业务逻辑图`, 3, '1F4E78'));
-            const diagram = diagramMap.get(group.functionalProcess);
-            if (diagram && diagram.imageBase64) {
-                try {
-                    const imgBuffer = Buffer.from(diagram.imageBase64, 'base64');
-                    const imgWidth = diagram.width || 800;
-                    const imgHeight = diagram.height || 400;
-                    const maxWidth = 550;
-                    const scale = Math.min(1, maxWidth / imgWidth);
-                    const displayWidth = Math.round(imgWidth * scale);
-                    const displayHeight = Math.round(imgHeight * scale);
+            appendSequenceDiagram(group, { includeSteps: true });
 
-                    docChildren.push(new Paragraph({
-                        children: [new ImageRun({
-                            data: imgBuffer,
-                            transformation: { width: displayWidth, height: displayHeight },
-                            type: 'png'
-                        })],
-                        alignment: AlignmentType.CENTER,
-                        spacing: { after: 200 }
-                    }));
-                } catch (imgErr) {
-                    console.warn(`  ⚠️ 时序图嵌入失败 (${group.cleanName}):`, imgErr.message);
-                    docChildren.push(paragraph(`[时序图嵌入失败: ${imgErr.message}]`, { color: 'E74C3C' }));
-                }
-            } else {
-                docChildren.push(paragraph('（时序图未生成，可在导出时勾选“附带时序图”重新导出）', { color: '999999', italics: true }));
-            }
-
-            docChildren.push(paragraph('本时序图步骤如下：', { bold: true }));
-            group.rows.forEach((row, index) => {
-                const dmtLabels = { E: '进入', R: '读取', W: '写入', X: '退出' };
-                const dmtLabel = dmtLabels[row.dataMovementType] || row.dataMovementType;
-                docChildren.push(paragraph(`${index + 1}）${row.subProcessDesc || ''}（${dmtLabel}${row.dataGroup ? ` - ${row.dataGroup}` : ''}）`, {
-                    indent: { left: 480 },
-                    spacing: { after: 60, line: 280 }
-                }));
-            });
-
-            docChildren.push(heading(`${funcNumber}.2. 功能描述`, 3, '1F4E78'));
+            docChildren.push(heading(`${funcNumber}.${hasSequenceDiagrams ? 2 : 1}. 功能描述`, 3, '1F4E78'));
             const functionDescription = group.functionDescription || buildFunctionDescription(
                 group.functionalProcess,
                 group.rows,
@@ -5126,6 +5308,7 @@ app.post('/api/export-word', async (req, res) => {
             ],
             [1800, 5600, 1200]
         ));
+        }
 
         // ── 6. 生成并发送文档 ──
         const doc = new Document({
