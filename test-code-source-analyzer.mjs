@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -115,5 +116,14 @@ const mockedAnalysis = await analyzeCodeSource({
 assert.equal(mockedAnalysis.functions.length, 1);
 assert.equal(mockedAnalysis.functions[0].functionName, '创建工单');
 assert.ok(mockedAnalysis.functionList.includes('创建工单'));
+
+const serverSource = await readFile(new URL('./server/index.js', import.meta.url), 'utf8');
+const codeSourceRoute = serverSource.slice(
+    serverSource.indexOf("app.post(\n    '/api/analyze-code-source'"),
+    serverSource.indexOf("app.post('/api/parse-word'")
+);
+assert.ok(codeSourceRoute.includes("model: 'deepseek-v4-pro'"));
+assert.ok(codeSourceRoute.includes('VOLCENGINE_API_KEY'));
+assert.ok(codeSourceRoute.includes('modelName: codeAnalysisModel'));
 
 console.log('code source analyzer tests passed');

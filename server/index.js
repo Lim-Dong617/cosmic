@@ -2150,9 +2150,14 @@ function buildFunctionListText(functions) {
 
 // 健康检查
 app.get('/api/health', (req, res) => {
+    const hasSenseNovaApiKey = Boolean(process.env.SENSENOVA_API_KEY);
+    const hasVolcengineApiKey = Boolean(process.env.VOLCENGINE_API_KEY);
     res.json({
         status: 'ok',
-        hasApiKey: !!process.env.SENSENOVA_API_KEY,
+        hasApiKey: hasSenseNovaApiKey || hasVolcengineApiKey,
+        hasSenseNovaApiKey,
+        hasVolcengineApiKey,
+        codeAnalysisModel: MODEL_MAP['deepseek-v4-pro'] || 'deepseek-v4-pro-260425',
         currentModel: currentModel,
         model: currentModel,
         platform: currentModel === SENSENOVA_MODEL_NAME ? 'SenseNova' : 'OpenAI-compatible',
@@ -2291,6 +2296,18 @@ app.post(
                     return res.status(400).json({ error: 'AI配置格式不正确' });
                 }
             }
+            const codeAnalysisConfig = {
+                model: 'deepseek-v4-pro',
+                provider: 'volcengine',
+                apiKey: userConfig?.provider === 'volcengine' ? (userConfig.apiKey || null) : null,
+                baseUrl: userConfig?.provider === 'volcengine' ? (userConfig.baseUrl || null) : null
+            };
+            const codeAnalysisModel = getModelName(codeAnalysisConfig);
+            if (!codeAnalysisConfig.apiKey && !process.env.VOLCENGINE_API_KEY) {
+                return res.status(503).json({
+                    error: '代码反向分析固定使用 DeepSeek V4 Pro，但服务器未配置 VOLCENGINE_API_KEY'
+                });
+            }
 
             let sourceArtifact = null;
             if (sourceFile) {
@@ -2303,14 +2320,15 @@ app.post(
             console.log(
                 `🧩 开始代码反向分析: ${sourceFile?.originalname || '仅截图'}`
                 + `, 截图 ${screenshotFiles.length} 张, 模式 ${analysisMode}`
+                + `, 模型 ${codeAnalysisModel}`
             );
             const result = await analyzeCodeSource({
                 sourceArtifact,
                 screenshotFiles,
                 analysisMode,
                 userGuidelines,
-                userConfig,
-                modelName: getModelName(userConfig),
+                userConfig: codeAnalysisConfig,
+                modelName: codeAnalysisModel,
                 callAIWithRetry
             });
 
@@ -2326,6 +2344,7 @@ app.post(
             res.json({
                 success: true,
                 analysisMode,
+                analysisModel: codeAnalysisModel,
                 documentName,
                 sourceSummary: sourceArtifact ? {
                     sourceName: sourceArtifact.sourceName,

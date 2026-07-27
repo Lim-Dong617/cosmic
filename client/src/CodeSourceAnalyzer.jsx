@@ -113,7 +113,7 @@ function CodeSourceAnalyzer({ isOpen, onClose, onComplete, userConfig }) {
                 <div className="table-view-header code-source-header">
                     <div>
                         <h2><Code2 size={19} /> 代码 / 页面智能拆分</h2>
-                        <p>从代码包、HTML页面和系统截图反向生成需求与COSMIC功能清单</p>
+                        <p>使用 DeepSeek V4 Pro 从代码包、HTML页面和系统截图反向生成需求与COSMIC功能清单</p>
                     </div>
                     <button className="btn btn-ghost btn-icon" onClick={onClose} disabled={isAnalyzing}>
                         <X size={18} />
@@ -268,7 +268,7 @@ function CodeSourceAnalyzer({ isOpen, onClose, onComplete, userConfig }) {
                 <div className="code-source-footer">
                     <div className="code-source-hint">
                         <Upload size={14} />
-                        代码文本会发送至已配置的AI服务分析，但不会执行压缩包中的程序
+                        代码文本会发送至 DeepSeek V4 Pro 分析，但不会执行压缩包中的程序
                     </div>
                     <div>
                         <button className="btn btn-secondary" onClick={onClose} disabled={isAnalyzing}>取消</button>
