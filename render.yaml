@@ -24,6 +24,12 @@ services:
         value: https://token.sensenova.cn/v1
       - key: SENSENOVA_MODEL
         value: deepseek-v4-flash
+      - key: VISION_API_KEY
+        sync: false
+      - key: VISION_BASE_URL
+        sync: false
+      - key: VISION_MODEL
+        value: gpt-4o-mini
       - key: DEFAULT_MODEL
         value: deepseek-v4-flash-free
       - key: JWT_SECRET

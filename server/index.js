@@ -39,6 +39,15 @@ const {
     keepLastDuplicateHeadingPositions,
     orderCosmicTableData
 } = require('./cosmic-quality');
+const {
+    MAX_SCREENSHOTS,
+    analyzeCodeSource,
+    extractSourceArtifact
+} = require('./code-source-analyzer');
+const {
+    applyConversationPlan,
+    createConversationPlan
+} = require('./conversation-orchestrator');
 
 
 const app = express();
@@ -278,6 +287,38 @@ const upload = multer({
             cb(null, true);
         } else {
             cb(new Error(`不支持的文件格式: ${ext}，请上传 .docx, .txt, .md 或 .xlsx/.xlsm 文件`));
+        }
+    }
+});
+
+const codeSourceUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, uploadDir),
+        filename: (req, file, cb) => {
+            const safeName = `code-${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname || '')}`;
+            cb(null, safeName);
+        }
+    }),
+    limits: {
+        fileSize: Math.min(MAX_UPLOAD_BYTES, 80 * 1024 * 1024),
+        files: MAX_SCREENSHOTS + 1
+    },
+    fileFilter: (req, file, cb) => {
+        file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
+        const ext = path.extname(file.originalname).toLowerCase();
+        const sourceExts = ['.zip', '.html', '.htm'];
+        const imageExts = ['.png', '.jpg', '.jpeg', '.webp'];
+        const allowed = file.fieldname === 'source'
+            ? sourceExts.includes(ext)
+            : file.fieldname === 'screenshots' && imageExts.includes(ext);
+        if (allowed) {
+            cb(null, true);
+        } else {
+            cb(new Error(
+                file.fieldname === 'source'
+                    ? `不支持的代码源格式: ${ext}，请上传 .zip、.html 或 .htm`
+                    : `不支持的截图格式: ${ext}，请上传 .png、.jpg、.jpeg 或 .webp`
+            ));
         }
     }
 });
@@ -2209,6 +2250,113 @@ function restoreWordHeadingNumbers(markdown) {
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 }
+
+// ═══════════════════════ 代码 / HTML / 系统截图反向分析 ═══════════════════════
+app.post(
+    '/api/analyze-code-source',
+    codeSourceUpload.fields([
+        { name: 'source', maxCount: 1 },
+        { name: 'screenshots', maxCount: MAX_SCREENSHOTS }
+    ]),
+    handleMulterError,
+    async (req, res) => {
+        const uploadedFiles = [
+            ...(req.files?.source || []),
+            ...(req.files?.screenshots || [])
+        ];
+        try {
+            const sourceFile = req.files?.source?.[0] || null;
+            const rawScreenshotFiles = req.files?.screenshots || [];
+            const oversizedScreenshot = rawScreenshotFiles.find(file => file.size > 10 * 1024 * 1024);
+            if (oversizedScreenshot) {
+                return res.status(400).json({ error: `截图 ${oversizedScreenshot.originalname} 超过10MB限制` });
+            }
+            const screenshotFiles = await Promise.all(rawScreenshotFiles.map(async file => ({
+                ...file,
+                buffer: await fs.promises.readFile(file.path)
+            })));
+            if (!sourceFile && screenshotFiles.length === 0) {
+                return res.status(400).json({ error: '请至少上传一个ZIP/HTML代码源或一张系统截图' });
+            }
+
+            const analysisMode = req.body.analysisMode === 'direct' ? 'direct' : 'requirement';
+            const userGuidelines = String(req.body.userGuidelines || '').trim();
+            let userConfig = null;
+            if (req.body.userConfig) {
+                try {
+                    userConfig = typeof req.body.userConfig === 'string'
+                        ? JSON.parse(req.body.userConfig)
+                        : req.body.userConfig;
+                } catch (error) {
+                    return res.status(400).json({ error: 'AI配置格式不正确' });
+                }
+            }
+
+            let sourceArtifact = null;
+            if (sourceFile) {
+                sourceArtifact = await extractSourceArtifact(
+                    await fs.promises.readFile(sourceFile.path),
+                    sourceFile.originalname
+                );
+            }
+
+            console.log(
+                `🧩 开始代码反向分析: ${sourceFile?.originalname || '仅截图'}`
+                + `, 截图 ${screenshotFiles.length} 张, 模式 ${analysisMode}`
+            );
+            const result = await analyzeCodeSource({
+                sourceArtifact,
+                screenshotFiles,
+                analysisMode,
+                userGuidelines,
+                userConfig,
+                modelName: getModelName(userConfig),
+                callAIWithRetry
+            });
+
+            const baseName = path.basename(
+                sourceFile?.originalname || result.systemName || '系统截图',
+                path.extname(sourceFile?.originalname || '')
+            );
+            const documentName = `${baseName || result.systemName || '系统'}_代码反向需求.md`;
+            console.log(
+                `✅ 代码反向分析完成: ${result.modules.length} 个模块,`
+                + ` ${result.functions.length} 个功能过程`
+            );
+            res.json({
+                success: true,
+                analysisMode,
+                documentName,
+                sourceSummary: sourceArtifact ? {
+                    sourceName: sourceArtifact.sourceName,
+                    sourceType: sourceArtifact.sourceType,
+                    fileCount: sourceArtifact.fileCount,
+                    candidateCount: sourceArtifact.candidateCount,
+                    includedFiles: sourceArtifact.includedFiles,
+                    ignoredCount: sourceArtifact.ignoredCount,
+                    truncated: sourceArtifact.truncated
+                } : null,
+                moduleStructure: {
+                    modules: result.modules,
+                    totalEstimated: result.modules.reduce(
+                        (sum, module) => sum + (Number(module.estimatedFunctions) || 0),
+                        0
+                    ),
+                    summary: result.summary
+                },
+                ...result
+            });
+        } catch (error) {
+            console.error('代码反向分析失败:', error);
+            res.status(500).json({ error: '代码反向分析失败: ' + error.message });
+        } finally {
+            await Promise.all(uploadedFiles
+                .map(file => file?.path)
+                .filter(Boolean)
+                .map(filePath => fs.promises.unlink(filePath).catch(() => {})));
+        }
+    }
+);
 
 app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req, res) => {
     const uploadedPath = req.file?.path;
@@ -4374,89 +4522,105 @@ app.post('/api/parse-table', (req, res) => {
 
 app.post('/api/chat/stream', async (req, res) => {
     try {
-        const { messages, documentContent, userGuidelines = '', userConfig = null, tableData = [], functionListText = '', useEnhancedExperience = false } = req.body;
+        const {
+            messages = [],
+            conversationHistory = [],
+            documentContent = '',
+            userGuidelines = '',
+            userConfig = null,
+            tableData = [],
+            functionListText = '',
+            parsedFunctions = []
+        } = req.body;
         const modelName = getModelName(userConfig);
-        const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null, { useEnhancedExperience });
+        const instruction = [...messages]
+            .reverse()
+            .find(message => message?.role === 'user' && message?.content)?.content;
+        if (!instruction) {
+            return res.status(400).json({ error: '缺少用户对话指令' });
+        }
+
+        const functionsForConversation = Array.isArray(parsedFunctions) && parsedFunctions.length > 0
+            ? parsedFunctions
+            : extractFunctionsFromText(functionListText);
+        const plan = await createConversationPlan({
+            instruction,
+            conversationHistory,
+            documentContent,
+            parsedFunctions: functionsForConversation,
+            tableData,
+            userGuidelines,
+            userConfig,
+            modelName,
+            callAIWithRetry
+        });
+        const mutation = plan.needsClarification
+            ? {
+                documentContent,
+                functions: functionsForConversation,
+                functionListText,
+                cosmicTargets: [],
+                changeSummary: {
+                    documentApplied: 0,
+                    documentSkipped: 0,
+                    functionsApplied: 0,
+                    functionsSkipped: 0,
+                    cosmicRequested: 0
+                },
+                warnings: []
+            }
+            : applyConversationPlan({
+                documentContent,
+                parsedFunctions: functionsForConversation,
+                plan
+            });
+
+        const appliedCount = mutation.changeSummary.documentApplied
+            + mutation.changeSummary.functionsApplied;
+        const requestedCosmic = mutation.changeSummary.cosmicRequested;
+        const statusLines = [];
+        if (mutation.changeSummary.documentApplied > 0) {
+            statusLines.push(`需求文档已应用 ${mutation.changeSummary.documentApplied} 处修改`);
+        }
+        if (mutation.changeSummary.functionsApplied > 0) {
+            statusLines.push(`功能清单已应用 ${mutation.changeSummary.functionsApplied} 项修改`);
+        }
+        if (requestedCosmic > 0) {
+            statusLines.push(`将使用原COSMIC拆分流程更新 ${requestedCosmic} 个功能过程`);
+        }
+        if (mutation.warnings.length > 0) {
+            statusLines.push(`有 ${mutation.warnings.length} 项未自动应用，已保留原内容`);
+        }
+        const answer = statusLines.length > 0
+            ? `${plan.answer}\n\n${statusLines.map(line => `- ${line}`).join('\n')}`
+            : plan.answer;
 
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no');
-
-        const chatMessages = [
-            { role: 'system', content: activeSplitPrompt + `\n\n你现在处于对话模式。用户会对当前的COSMIC拆分结果提出整改意见和修改要求。请认真分析用户的反馈，基于当前拆分结果进行针对性的修改和优化。\n如果用户要求修改某些功能过程的拆分，请输出修改后的完整Markdown表格（只包含被修改的功能过程即可）。\n如果用户的问题不涉及具体修改，请给出专业的分析和建议。` }
-        ];
-
-        // 构建当前分析上下文
-        let contextContent = '';
-        if (documentContent) {
-            contextContent += `## 原始需求文档（摘要）\n${documentContent.substring(0, 4000)}\n\n`;
+        res.write(`data: ${JSON.stringify({ content: answer })}\n\n`);
+        if (appliedCount > 0 || requestedCosmic > 0 || mutation.warnings.length > 0) {
+            res.write(`data: ${JSON.stringify({
+                action: {
+                    type: 'state_update',
+                    intent: plan.intent,
+                    documentContent: mutation.documentContent,
+                    functions: mutation.functions,
+                    functionListText: mutation.functionListText,
+                    cosmicTargets: mutation.cosmicTargets,
+                    changeSummary: mutation.changeSummary,
+                    warnings: mutation.warnings
+                }
+            })}\n\n`);
         }
-        if (functionListText) {
-            contextContent += `## 当前功能过程列表\n${functionListText.substring(0, 3000)}\n\n`;
-        }
-        if (tableData && tableData.length > 0) {
-            // 将现有的拆分结果构建成摘要，让AI能看到
-            const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
-            const funcSummary = uniqueFuncs.map(func => {
-                const rows = tableData.filter(r => r.functionalProcess === func || (!r.functionalProcess && r.dataMovementType !== 'E'));
-                const funcRows = tableData.filter(r => {
-                    // 找到属于这个功能过程的所有行
-                    let currentFunc = '';
-                    for (const row of tableData) {
-                        if (row.dataMovementType === 'E' && row.functionalProcess) currentFunc = row.functionalProcess;
-                        if (row === r) return currentFunc === func;
-                    }
-                    return false;
-                });
-                const types = funcRows.map(r => `${r.dataMovementType}:${r.subProcessDesc}`).join(', ');
-                return `- ${func}: ${funcRows.length}个子过程 [${types}]`;
-            }).join('\n');
-
-            contextContent += `## 当前COSMIC拆分结果（共${uniqueFuncs.length}个功能过程，${tableData.length}个子过程/CFP）\n${funcSummary}\n\n`;
-            contextContent += `### 拆分结果明细表\n|功能用户|触发事件|功能过程|子过程描述|数据移动类型|数据组|数据属性|功能描述|\n|:---|:---|:---|:---|:---|:---|:---|:---|\n`;
-            // 限制表格行数避免超长
-            const maxRows = Math.min(tableData.length, 100);
-            for (let i = 0; i < maxRows; i++) {
-                const r = tableData[i];
-                contextContent += `|${r.functionalUser || ''}|${r.triggerEvent || ''}|${r.functionalProcess || ''}|${r.subProcessDesc || ''}|${r.dataMovementType || ''}|${r.dataGroup || ''}|${r.dataAttributes || ''}|${r.functionDescription || ''}|\n`;
-            }
-            if (tableData.length > maxRows) {
-                contextContent += `\n...（共${tableData.length}行，此处仅展示前${maxRows}行）\n`;
-            }
-        }
-
-        if (contextContent) {
-            let guidelinesText = userGuidelines ? `\n用户特殊要求：${userGuidelines}\n` : '';
-            chatMessages.push({
-                role: 'assistant',
-                content: `我已完成COSMIC拆分分析，以下是当前结果：\n\n${contextContent}${guidelinesText}\n\n请问您对以上拆分结果有什么修改意见？`
-            });
-        } else if (documentContent) {
-            let guidelinesText = userGuidelines ? `\n用户要求：${userGuidelines}\n` : '';
-            chatMessages.push({
-                role: 'user',
-                content: `以下是需要进行Cosmic拆分的文档：${guidelinesText}\n\n${documentContent}\n\n请根据内容进行Cosmic拆分，生成Markdown表格。`
-            });
-        }
-
-        if (messages && messages.length > 0) {
-            chatMessages.push(...messages);
-        }
-
-        await callAI({
-            messages: chatMessages,
-            model: modelName,
-            stream: true,
-            res
-        });
 
         res.write('data: [DONE]\n\n');
         res.end();
     } catch (error) {
         console.error('流式对话失败:', error.message);
         if (!res.headersSent) {
-            res.setHeader('Content-Type', 'text/event-stream');
+            return res.status(500).json({ error: '调用AI失败: ' + error.message });
         }
         res.write(`data: ${JSON.stringify({ error: '调用AI失败: ' + error.message })}\n\n`);
         res.end();

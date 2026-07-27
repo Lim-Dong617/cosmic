@@ -7,12 +7,14 @@ import {
     CheckCircle, AlertCircle, X, Trash2, Copy, Check, Eye, Table,
     Zap, Sparkles, Brain, ChevronDown, Plus, BarChart3, RefreshCw,
     FileSpreadsheet, Target, Info, Edit3, Scissors, GripVertical, Save,
-    History, LogOut, BookOpen, GitBranch, Layers
+    History, LogOut, BookOpen, GitBranch, Layers, Code2
 } from 'lucide-react';
 import NesmaApp from './NesmaApp';
 import HistoryPanel from './HistoryPanel';
+import CodeSourceAnalyzer from './CodeSourceAnalyzer';
 import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
 import {
+    canonicalFunctionKey,
     deduplicateFunctionObjects,
     inheritMissingFunctionLevels,
     isReferenceOnlyChapterTitle,
@@ -318,6 +320,7 @@ function App({ user, token, onLogout }) {
     const [coverageResult, setCoverageResult] = useState(null);
     const [isVerifying, setIsVerifying] = useState(false);
     const [showSequenceDiagram, setShowSequenceDiagram] = useState(false);
+    const [showCodeSourceAnalyzer, setShowCodeSourceAnalyzer] = useState(false);
     const [exportWithDiagrams, setExportWithDiagrams] = useState(false);
     const [excelExportTemplate, setExcelExportTemplate] = useState('standard');
     const [wordExportTemplate, setWordExportTemplate] = useState('hierarchy');
@@ -2409,9 +2412,168 @@ function App({ user, token, onLogout }) {
     };
 
     // ═══════════ 对话功能 ═══════════
+    const groupCosmicRowsForConversation = (rows = []) => {
+        const groups = [];
+        let current = null;
+        rows.forEach(row => {
+            if (row.dataMovementType === 'E' && row.functionalProcess) {
+                if (current) groups.push(current);
+                current = {
+                    functionName: row.functionalProcess,
+                    rows: [row]
+                };
+            } else if (current) {
+                current.rows.push(row);
+            }
+        });
+        if (current) groups.push(current);
+        return groups;
+    };
+
+    const conversationFunctionKey = (name) => (
+        canonicalFunctionKey(name || '') || normalizeProcName(name || '')
+    );
+
+    const resolveConversationFunction = (target, functions, existingGroups) => {
+        const targetKey = conversationFunctionKey(target.functionName);
+        const explicit = target.function?.functionName ? target.function : null;
+        const matched = functions.find(func => conversationFunctionKey(func.functionName) === targetKey);
+        const existingGroup = existingGroups.find(group => (
+            conversationFunctionKey(group.functionName) === targetKey
+        ));
+        const existingERow = existingGroup?.rows?.[0] || {};
+        return {
+            triggerEvent: explicit?.triggerEvent || matched?.triggerEvent || existingERow.triggerEvent || '用户触发',
+            functionalUser: explicit?.functionalUser || matched?.functionalUser || existingERow.functionalUser || '发起者：用户 接收者：用户',
+            functionName: explicit?.functionName || matched?.functionName || target.functionName,
+            description: explicit?.description || matched?.description || existingERow.functionDescription || '',
+            level1: explicit?.level1 || matched?.level1 || existingERow.level1 || '',
+            level2: explicit?.level2 || matched?.level2 || existingERow.level2 || '',
+            level3: explicit?.level3 || matched?.level3 || existingERow.level3 || '',
+            existingRows: existingGroup?.rows || []
+        };
+    };
+
+    const applyConversationCosmicTargets = async ({
+        targets,
+        nextFunctions,
+        nextDocumentContent,
+        baseTableData
+    }) => {
+        const allTargets = Array.isArray(targets) ? targets : [];
+        if (allTargets.length === 0) return baseTableData;
+
+        const originalGroups = groupCosmicRowsForConversation(baseTableData);
+        const targetKeys = new Set(allTargets.map(target => conversationFunctionKey(target.functionName)));
+        let workingRows = originalGroups
+            .filter(group => !targetKeys.has(conversationFunctionKey(group.functionName)))
+            .flatMap(group => group.rows);
+        const regenerationTargets = allTargets.filter(target => target.type !== 'delete');
+        const batchSize = 2;
+
+        for (let start = 0; start < regenerationTargets.length; start += batchSize) {
+            const batchTargets = regenerationTargets.slice(start, start + batchSize);
+            const batchFunctions = batchTargets.map(target => (
+                resolveConversationFunction(target, nextFunctions, originalGroups)
+            ));
+            const batchTexts = batchFunctions.map((func, index) => {
+                const target = batchTargets[index];
+                const existingSummary = func.existingRows.length
+                    ? func.existingRows.map(row => (
+                        `${row.dataMovementType}:${row.subProcessDesc || ''}`
+                        + `；数据组=${row.dataGroup || ''}`
+                        + `；属性=${row.dataAttributes || ''}`
+                    )).join('\n')
+                    : '无现有拆分，本次为新增功能过程。';
+                return `##触发事件：${func.triggerEvent}\n`
+                    + `##功能用户：${func.functionalUser}\n`
+                    + `##功能过程：${func.functionName}\n`
+                    + `##功能过程描述：${func.description}\n`
+                    + `##本次对话修改要求：${target.instruction || '根据用户要求重新生成完整且合规的COSMIC拆分'}\n`
+                    + `##现有拆分参考：\n${existingSummary}`;
+            });
+            const functionLevelMap = {};
+            batchFunctions.forEach(func => {
+                functionLevelMap[func.functionName] = {
+                    level1: func.level1 || '',
+                    level2: func.level2 || '',
+                    level3: func.level3 || ''
+                };
+            });
+            const firstLevels = functionLevelMap[batchFunctions[0]?.functionName] || null;
+            const response = await axios.post('/api/cosmic-split-batch', {
+                batchFunctions: batchTexts,
+                batchIndex: Math.floor(start / batchSize),
+                totalBatches: Math.ceil(regenerationTargets.length / batchSize),
+                documentContent: String(nextDocumentContent || '').slice(0, 6000),
+                userGuidelines,
+                previousResults: workingRows,
+                userConfig: getUserConfig(),
+                headingContext: firstLevels,
+                functionLevelMap,
+                generateDescription,
+                useEnhancedExperience: useEnhancedCosmicExperience
+            });
+            const generatedRows = response.data?.tableData || [];
+            if (!response.data?.success || generatedRows.length === 0) {
+                throw new Error(`功能过程“${batchFunctions.map(func => func.functionName).join('、')}”未返回有效拆分结果`);
+            }
+            const expectedNames = new Set([
+                ...batchFunctions.map(func => func.functionName.toLowerCase().trim()),
+                ...batchFunctions.map(func => normalizeProcName(func.functionName))
+            ]);
+            const deduped = deduplicateData(workingRows, generatedRows, expectedNames);
+            workingRows = [...workingRows, ...deduped];
+        }
+
+        return orderCosmicTableData(workingRows, nextFunctions, moduleStructure);
+    };
+
+    const applyConversationStateUpdate = async (action) => {
+        const nextDocumentContent = typeof action.documentContent === 'string'
+            ? action.documentContent
+            : documentContent;
+        const nextFunctions = inheritMissingFunctionLevels(
+            (Array.isArray(action.functions) ? action.functions : parsedFunctions).map(func => ({
+                ...func,
+                id: func.id || generateId(),
+                selected: func.selected !== false
+            }))
+        );
+
+        setDocumentContent(nextDocumentContent);
+        setParsedFunctions(nextFunctions);
+        setFunctionListText(action.functionListText || functionsToText(nextFunctions));
+
+        let nextTableData = tableData;
+        if (Array.isArray(action.cosmicTargets) && action.cosmicTargets.length > 0) {
+            setStreamingContent('正在调用原COSMIC拆分流程同步更新表格…');
+            nextTableData = await applyConversationCosmicTargets({
+                targets: action.cosmicTargets,
+                nextFunctions,
+                nextDocumentContent,
+                baseTableData: tableData
+            });
+            setTableData(nextTableData);
+        }
+
+        if (nextFunctions.length > 0 && nextTableData.length === 0) {
+            setCurrentStep(3);
+        }
+        return {
+            functions: nextFunctions.length,
+            cfp: nextTableData.length,
+            cosmicUpdated: action.cosmicTargets?.length || 0
+        };
+    };
+
     const sendMessage = async () => {
         if (!inputText.trim() || isLoading) return;
         const userMessage = inputText.trim();
+        const conversationHistory = messages
+            .filter(message => ['user', 'assistant'].includes(message.role))
+            .slice(-10)
+            .map(message => ({ role: message.role, content: message.content }));
         setInputText('');
         setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
         setIsLoading(true);
@@ -2423,50 +2585,76 @@ function App({ user, token, onLogout }) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     messages: [{ role: 'user', content: userMessage }],
+                    conversationHistory,
                     documentContent,
                     userGuidelines,
                     userConfig: getUserConfig(),
                     tableData,
                     functionListText,
-                    useEnhancedExperience: useEnhancedCosmicExperience
+                    parsedFunctions
                 })
             });
+            if (!response.ok) {
+                let errorMessage = `对话请求失败 (${response.status})`;
+                try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error || errorMessage;
+                } catch (error) { /* ignore non-JSON error */ }
+                throw new Error(errorMessage);
+            }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullContent = '';
+            let streamBuffer = '';
+            let pendingAction = null;
+            let streamError = '';
 
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
-                const text = decoder.decode(value);
-                const lines = text.split('\n').filter(l => l.startsWith('data: '));
+                streamBuffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+                const frames = streamBuffer.split(/\r?\n\r?\n/);
+                streamBuffer = frames.pop() || '';
 
-                for (const line of lines) {
-                    const data = line.slice(6);
-                    if (data === '[DONE]') continue;
+                for (const frame of frames) {
+                    const data = frame
+                        .split(/\r?\n/)
+                        .filter(line => line.startsWith('data: '))
+                        .map(line => line.slice(6))
+                        .join('\n');
+                    if (!data || data === '[DONE]') continue;
+                    let parsed = null;
                     try {
-                        const parsed = JSON.parse(data);
-                        if (parsed.content) {
-                            fullContent += parsed.content;
-                            setStreamingContent(fullContent);
-                        }
-                    } catch (e) { /* ignore */ }
-                }
-            }
-
-            if (fullContent) {
-                setMessages(prev => [...prev, { role: 'assistant', content: fullContent }]);
-                // 尝试解析表格数据
-                try {
-                    const tableRes = await axios.post('/api/parse-table', { markdown: fullContent });
-                    if (tableRes.data.success && tableRes.data.tableData.length > 0) {
-                        setTableData(prev => {
-                            const deduped = deduplicateData(prev, tableRes.data.tableData);
-                            return orderCosmicTableData([...prev, ...deduped], parsedFunctions, moduleStructure);
-                        });
+                        parsed = JSON.parse(data);
+                    } catch (error) {
+                        continue;
                     }
-                } catch (e) { /* ignore */ }
+                    if (parsed.content) {
+                        fullContent += parsed.content;
+                        setStreamingContent(fullContent);
+                    }
+                    if (parsed.action) pendingAction = parsed.action;
+                    if (parsed.error) streamError = parsed.error;
+                }
+                if (done) break;
+            }
+            if (streamError) throw new Error(streamError);
+
+            if (fullContent || pendingAction) {
+                let finalContent = fullContent || '已理解并准备应用本次修改。';
+                if (pendingAction?.type === 'state_update') {
+                    try {
+                        const updateStats = await applyConversationStateUpdate(pendingAction);
+                        if (pendingAction.cosmicTargets?.length > 0) {
+                            finalContent += `\n\n✅ 已通过原COSMIC拆分流程完成联动更新。当前共 **${updateStats.functions}** 个功能过程、**${updateStats.cfp}** CFP。`;
+                        } else {
+                            finalContent += '\n\n✅ 变更已写入当前系统状态，预览、表格和后续导出将使用更新后的内容。';
+                        }
+                    } catch (updateError) {
+                        finalContent += `\n\n⚠️ 文档/功能清单修改已处理，但COSMIC表格联动失败：${updateError.response?.data?.error || updateError.message}`;
+                    }
+                }
+                setMessages(prev => [...prev, { role: 'assistant', content: finalContent }]);
             }
             setStreamingContent('');
         } catch (error) {
@@ -2925,6 +3113,72 @@ function App({ user, token, onLogout }) {
             .join('\n\n');
     };
 
+    const handleCodeSourceAnalysisReady = (result) => {
+        const requirementDocument = result.requirementDocument || '';
+        const preparedFunctions = (result.functions || []).map(func => ({
+            ...func,
+            id: generateId(),
+            selected: true,
+            sourceChapter: func.sourceChapter || func.level3 || ''
+        }));
+        const sourceStats = result.sourceSummary
+            ? `${result.sourceSummary.fileCount || 0} 个文件，选取 ${result.sourceSummary.includedFiles?.length || 0} 个重点源码文件`
+            : `系统截图 ${result.screenshotObservation ? '已识别' : '已上传'}`;
+        const warningText = (result.warnings || []).length
+            ? `\n\n注意：${result.warnings.join('；')}`
+            : '';
+
+        setDocumentContent(requirementDocument);
+        setDocumentName(result.documentName || `${result.systemName || '系统'}_代码反向需求.md`);
+        setModuleStructure(result.moduleStructure?.modules?.length ? result.moduleStructure : null);
+        setQuantityPlan(null);
+        setChapters([]);
+        setTableData([]);
+        setCoverageResult(null);
+        setFailedBatchInfo([]);
+        setShowChapterView(false);
+        setShowFunctionListEditor(false);
+        setExtractionMode('precise');
+        setAnalysisProgress(initialAnalysisProgress);
+
+        if (result.analysisMode === 'direct' && preparedFunctions.length > 0) {
+            setParsedFunctions(preparedFunctions);
+            setFunctionListText(functionsToText(preparedFunctions));
+            setCurrentStep(3);
+            setIsWaitingForAnalysis(false);
+            setMessages([
+                {
+                    role: 'system',
+                    content: `已完成代码/页面反向分析：${sourceStats}。生成 ${result.moduleStructure?.modules?.length || 0} 个模块、${preparedFunctions.length} 个功能过程。${warningText}`
+                },
+                {
+                    role: 'assistant',
+                    content: `## 代码反向功能清单已就绪\n\n已跳过需求文档章节提取步骤，识别出 **${preparedFunctions.length}** 个可进入COSMIC拆分的功能过程。\n\n系统同时生成了一份反向需求文档用于追溯。请先查看/编辑功能列表，确认后点击 **「开始COSMIC拆分」**。`,
+                    showFunctionListActions: true
+                }
+            ]);
+        } else {
+            setParsedFunctions([]);
+            setFunctionListText('');
+            setCurrentStep(0);
+            setIsWaitingForAnalysis(true);
+            setMessages([
+                {
+                    role: 'system',
+                    content: `已完成代码/页面反向分析：${sourceStats}。需求文档包含 ${requirementDocument.length} 个字符。${warningText}`
+                },
+                {
+                    role: 'assistant',
+                    content: `## 反向需求文档已生成\n\n已根据代码、HTML页面和系统截图生成 **${result.systemName || '当前系统'}** 的需求文档，并识别出 **${result.moduleStructure?.modules?.length || 0}** 个模块候选。\n\n您可以点击顶部 **「预览」** 检查文档，然后点击下方 **「开始智能拆分」**，继续使用现有的模块识别、功能提取和COSMIC拆分流程。`
+                }
+            ]);
+        }
+
+        ensureConversation(result.documentName || result.systemName || '代码反向分析');
+        setShowCodeSourceAnalyzer(false);
+        showToast(result.analysisMode === 'direct' ? '功能清单已生成' : '反向需求文档已生成');
+    };
+
     // 更新某个功能的某个字段
     const updateFunction = (index, field, value) => {
         setParsedFunctions(prev => {
@@ -3304,6 +3558,12 @@ function App({ user, token, onLogout }) {
                 onLoadConversation={handleLoadConversation}
                 onNewConversation={handleNewConversation}
             />
+            <CodeSourceAnalyzer
+                isOpen={showCodeSourceAnalyzer}
+                onClose={() => setShowCodeSourceAnalyzer(false)}
+                onComplete={handleCodeSourceAnalysisReady}
+                userConfig={getUserConfig()}
+            />
 
             {/* ═══ Sidebar ═══ */}
             <div className="sidebar">
@@ -3586,8 +3846,8 @@ function App({ user, token, onLogout }) {
                                     <div className="welcome-features">
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon violet"><FileText size={18} /></div>
-                                            <h3>文档/Excel解析</h3>
-                                            <p>支持需求文档和已拆分COSMIC Excel，自动识别格式</p>
+                                            <h3>多源智能解析</h3>
+                                            <p>支持需求文档、COSMIC Excel、代码包、HTML和系统截图</p>
                                         </div>
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon blue"><Brain size={18} /></div>
@@ -3617,6 +3877,17 @@ function App({ user, token, onLogout }) {
                                         <p>拖拽文件到此处，或点击选择文件</p>
                                         <p style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>支持 .docx, .txt, .md, .xlsx, .xlsm 格式</p>
                                     </div>
+                                    <button
+                                        type="button"
+                                        className="code-source-entry"
+                                        onClick={() => setShowCodeSourceAnalyzer(true)}
+                                    >
+                                        <Code2 size={21} />
+                                        <div>
+                                            <strong>没有需求文档？从代码、HTML或系统截图开始</strong>
+                                            <span>可先反向生成需求文档，也可直接形成COSMIC功能清单</span>
+                                        </div>
+                                    </button>
                                     <input
                                         ref={fileInputRef}
                                         type="file"
@@ -3838,9 +4109,14 @@ function App({ user, token, onLogout }) {
                                             </button>
                                         )}
                                         {!documentContent && (
-                                            <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
-                                                <Upload size={14} /> 上传文档
-                                            </button>
+                                            <>
+                                                <button className="btn btn-secondary btn-sm" onClick={() => fileInputRef.current?.click()}>
+                                                    <Upload size={14} /> 上传文档
+                                                </button>
+                                                <button className="btn btn-secondary btn-sm" onClick={() => setShowCodeSourceAnalyzer(true)}>
+                                                    <Code2 size={14} /> 上传代码/截图
+                                                </button>
+                                            </>
                                         )}
                                     </div>
                                     <div style={{ display: 'flex', gap: 4 }}>
@@ -3855,9 +4131,14 @@ function App({ user, token, onLogout }) {
                                             </>
                                         )}
                                         {documentContent && !isLoading && currentStep === 0 && (
-                                            <button className="btn btn-ghost btn-sm" onClick={() => fileInputRef.current?.click()}>
-                                                <RefreshCw size={13} /> 重新上传
-                                            </button>
+                                            <>
+                                                <button className="btn btn-ghost btn-sm" onClick={() => fileInputRef.current?.click()}>
+                                                    <RefreshCw size={13} /> 重新上传
+                                                </button>
+                                                <button className="btn btn-ghost btn-sm" onClick={() => setShowCodeSourceAnalyzer(true)}>
+                                                    <Code2 size={13} /> 代码/截图分析
+                                                </button>
+                                            </>
                                         )}
                                     </div>
                                 </div>
@@ -3868,7 +4149,7 @@ function App({ user, token, onLogout }) {
                                 <div className="input-wrapper">
                                     <textarea
                                         className="input-textarea"
-                                        placeholder={documentContent ? '输入特殊要求或追问...' : '请先上传需求文档或COSMIC Excel...'}
+                                        placeholder={documentContent ? '直接输入修改或追问；明确的修改会同步到文档、功能清单和COSMIC表...' : '请先上传需求文档、COSMIC Excel、代码包或系统截图...'}
                                         value={inputText}
                                         onChange={e => setInputText(e.target.value)}
                                         onKeyDown={handleKeyDown}

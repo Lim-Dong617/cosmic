@@ -4,6 +4,7 @@
     "description": "COSMIC功能规模智能分析拆分系统 - 基于AI的软件功能规模度量工具",
     "main": "server/index.js",
     "scripts": {
+        "test": "node test-cosmic-quality.mjs && node test-code-source-analyzer.mjs && node test-conversation-orchestrator.mjs",
         "dev": "concurrently \"npm run server\" \"npm run client\"",
         "server": "node server/index.js",
         "client": "npm --prefix client run dev",
