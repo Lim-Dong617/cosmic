@@ -86,6 +86,7 @@ function getWordStyleBlocks(stylesXml) {
 function detectHeadingStyleIds(stylesXml) {
     const byName = {};
     const byOutline = {};
+    const maxWordHeadingLevel = 9;
 
     for (const block of getWordStyleBlocks(stylesXml)) {
         const styleId = block.match(/\bw:styleId="([^"]+)"/)?.[1];
@@ -93,20 +94,26 @@ function detectHeadingStyleIds(stylesXml) {
 
         const name = block.match(/<w:name\b[^>]*\bw:val="([^"]*)"/)?.[1] || '';
         const outline = block.match(/<w:outlineLvl\b[^>]*\bw:val="(\d+)"/)?.[1];
-        const headingName = name.toLowerCase().match(/^heading\s+([1-4])$/);
-        const chineseHeadingName = name.match(/^标题\s*([1-4])$/);
+        const headingName = name.toLowerCase().match(/^heading\s+([1-9])$/);
+        const chineseHeadingName = name.match(/^标题\s*([1-9])$/);
 
         if (headingName) byName[Number(headingName[1]) - 1] = styleId;
         if (chineseHeadingName) byName[Number(chineseHeadingName[1]) - 1] = styleId;
-        if (outline && Number(outline) >= 0 && Number(outline) <= 3) {
+        if (outline && Number(outline) >= 0 && Number(outline) < maxWordHeadingLevel) {
             byOutline[Number(outline)] ||= styleId;
         }
     }
 
-    return [0, 1, 2, 3].map(level => (
+    const detectedLevels = [
+        ...Object.keys(byName).map(Number),
+        ...Object.keys(byOutline).map(Number)
+    ];
+    const highestLevel = Math.max(3, ...detectedLevels);
+
+    return Array.from({ length: highestLevel + 1 }, (_, level) => (
         byName[level]
         || byOutline[level]
-        || ['Heading1', 'Heading2', 'Heading3', 'Heading4'][level]
+        || `Heading${level + 1}`
     ));
 }
 
@@ -179,24 +186,19 @@ function setHeadingStyleNumbering(stylesXml, headingStyleIds, numId) {
     return xml;
 }
 
-function setHeadingParagraphNumbering(documentXml, headingStyleIds, numId) {
-    const styleToLevel = new Map(headingStyleIds.map((styleId, level) => [styleId, level]));
+function clearHeadingParagraphNumberingOverrides(documentXml, headingStyleIds) {
+    const headingStyles = new Set(headingStyleIds);
     return documentXml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraphXml) => {
         const styleId = paragraphXml.match(/<w:pStyle\b[^>]*\bw:val="([^"]+)"/)?.[1];
-        if (!styleToLevel.has(styleId)) return paragraphXml;
+        if (!headingStyles.has(styleId)) return paragraphXml;
 
-        const level = styleToLevel.get(styleId);
-        const numPr = buildNumPr(level, numId);
         if (/<w:pPr\b[^>]*>[\s\S]*?<\/w:pPr>/.test(paragraphXml)) {
             return paragraphXml.replace(/<w:pPr\b([^>]*)>([\s\S]*?)<\/w:pPr>/, (_match, attrs, inner) => {
                 const cleaned = inner.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/g, '');
-                const pStyleMatch = cleaned.match(/<w:pStyle\b[^>]*\/>/);
-                if (!pStyleMatch) return `<w:pPr${attrs}>${numPr}${cleaned}</w:pPr>`;
-                const insertAt = pStyleMatch.index + pStyleMatch[0].length;
-                return `<w:pPr${attrs}>${cleaned.slice(0, insertAt)}${numPr}${cleaned.slice(insertAt)}</w:pPr>`;
+                return `<w:pPr${attrs}>${cleaned}</w:pPr>`;
             });
         }
-        return paragraphXml.replace(/(<w:p\b[^>]*>)/, `$1<w:pPr>${numPr}</w:pPr>`);
+        return paragraphXml;
     });
 }
 
@@ -226,7 +228,9 @@ async function applyAutoHeadingNumbering(docxBuffer) {
 
     numberingXml = patchedNumberingXml;
     stylesXml = setHeadingStyleNumbering(stylesXml, headingStyleIds, numId);
-    documentXml = setHeadingParagraphNumbering(documentXml, headingStyleIds, numId);
+    // 标题编号只由 Heading 样式控制。段落级 numPr 会把标题锁死在某个
+    // numId 上，用户后来插入一级标题或调整章节时，子标题就无法跟随更新。
+    documentXml = clearHeadingParagraphNumberingOverrides(documentXml, headingStyleIds);
 
     zip.file('word/numbering.xml', numberingXml);
     zip.file('word/styles.xml', stylesXml);

@@ -31,13 +31,21 @@ function detectHeadingStyleIds(stylesXml) {
         const styleId = block.match(/\bw:styleId="([^"]+)"/)?.[1];
         const name = block.match(/<w:name\b[^>]*\bw:val="([^"]*)"/)?.[1] || '';
         const outline = block.match(/<w:outlineLvl\b[^>]*\bw:val="(\d+)"/)?.[1];
-        const headingName = name.toLowerCase().match(/^heading\s+([1-4])$/);
+        const headingName = name.toLowerCase().match(/^heading\s+([1-9])$/);
         if (styleId && headingName) byName[Number(headingName[1]) - 1] = styleId;
-        if (styleId && outline && Number(outline) >= 0 && Number(outline) <= 3) {
+        if (styleId && outline && Number(outline) >= 0 && Number(outline) <= 8) {
             byOutline[Number(outline)] ||= styleId;
         }
     }
-    return [0, 1, 2, 3].map(level => byName[level] || byOutline[level]).filter(Boolean);
+    const detectedLevels = [
+        ...Object.keys(byName).map(Number),
+        ...Object.keys(byOutline).map(Number)
+    ];
+    const highestLevel = Math.max(3, ...detectedLevels);
+    return Array.from(
+        { length: highestLevel + 1 },
+        (_, level) => byName[level] || byOutline[level]
+    ).filter(Boolean);
 }
 
 async function postExportWord() {
@@ -106,20 +114,38 @@ async function verifyDocx(buffer) {
     const manualHeadings = headingParagraphs
         .map(paragraph => decodeXmlText([...paragraph.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map(match => match[1]).join('')).trim())
         .filter(text => /^\d+(?:\.\d+)*\.?\s+/.test(text));
-    const missingParagraphNumbering = headingParagraphs.filter(paragraph => !/<w:numPr>[\s\S]*?<\/w:numPr>/.test(paragraph));
-    const missingStyleNumbering = [...headingStyleIds].filter(styleId => {
+    const paragraphNumberingOverrides = headingParagraphs.filter(paragraph => /<w:numPr>[\s\S]*?<\/w:numPr>/.test(paragraph));
+    const styleNumbering = [...headingStyleIds].map((styleId, level) => {
         const escapedStyleId = styleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const styleBlock = stylesXml.match(new RegExp(`<w:style\\b(?=[^>]*w:styleId="${escapedStyleId}")[^>]*>[\\s\\S]*?<\\/w:style>`))?.[0] || '';
-        return !/<w:numPr>[\s\S]*?<\/w:numPr>/.test(styleBlock);
+        return {
+            styleId,
+            level,
+            numId: styleBlock.match(/<w:numId\b[^>]*\bw:val="(\d+)"/)?.[1],
+            ilvl: styleBlock.match(/<w:ilvl\b[^>]*\bw:val="(\d+)"/)?.[1]
+        };
     });
+    const missingStyleNumbering = styleNumbering.filter(item => !item.numId);
+    const styleNumIds = new Set(styleNumbering.map(item => item.numId).filter(Boolean));
+    const wrongStyleLevels = styleNumbering.filter(item => Number(item.ilvl) !== item.level);
 
-    const expectedLevelTexts = ['%1.', '%1.%2.', '%1.%2.%3.'];
+    const expectedLevelTexts = [...headingStyleIds].map((_, level) => (
+        Array.from({ length: level + 1 }, (_unused, index) => `%${index + 1}`).join('.') + '.'
+    ));
     const missingLevelTexts = expectedLevelTexts.filter(text => !numberingXml.includes(`w:val="${text}"`));
 
     if (headingParagraphs.length === 0) throw new Error('No heading paragraphs found in exported DOCX.');
     if (manualHeadings.length) throw new Error(`Manual heading numbers remain: ${manualHeadings.join(' | ')}`);
-    if (missingParagraphNumbering.length) throw new Error(`Heading paragraphs missing numPr: ${missingParagraphNumbering.length}`);
-    if (missingStyleNumbering.length) throw new Error(`Heading styles missing numPr: ${missingStyleNumbering.join(', ')}`);
+    if (paragraphNumberingOverrides.length) {
+        throw new Error(`Heading paragraphs must inherit numbering from styles, but ${paragraphNumberingOverrides.length} have direct numPr.`);
+    }
+    if (missingStyleNumbering.length) {
+        throw new Error(`Heading styles missing numPr: ${missingStyleNumbering.map(item => item.styleId).join(', ')}`);
+    }
+    if (styleNumIds.size !== 1) throw new Error(`Heading styles do not share one numId: ${[...styleNumIds].join(', ')}`);
+    if (wrongStyleLevels.length) {
+        throw new Error(`Heading styles have wrong ilvl: ${wrongStyleLevels.map(item => `${item.styleId}:${item.ilvl}`).join(', ')}`);
+    }
     if (missingLevelTexts.length) throw new Error(`Missing numbering level texts: ${missingLevelTexts.join(', ')}`);
 
     return {
