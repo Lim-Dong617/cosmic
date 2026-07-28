@@ -46,10 +46,24 @@ const initialAnalysisProgress = {
     stats: ''
 };
 
-const stripHeadingNumber = (title) => String(title || '')
+const parseMarkdownHeading = (line) => {
+    const match = String(line || '').match(/^\s{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/);
+    if (!match) return null;
+    const title = match[2].trim();
+    if (title.length < 2 || title.length > 120) return null;
+    return {
+        title,
+        depth: Math.min(match[1].length, 3)
+    };
+};
+
+const stripHeadingNumber = (title) => {
+    const markdownHeading = parseMarkdownHeading(title);
+    return String(markdownHeading?.title || title || '')
     .trim()
     .replace(/^\d+(?:\.\d+)*[.、\s]*/, '')
     .trim();
+};
 
 const normalizeHeadingMatchText = (text) => String(text || '')
     .replace(/^\d+(?:\.\d+)*[.、\s]*/, '')
@@ -60,7 +74,9 @@ const normalizeHeadingMatchText = (text) => String(text || '')
 
 const isLikelyDocumentHeading = (line) => {
     const trimmed = String(line || '').trim();
-    if (!trimmed || trimmed.length < 2 || trimmed.length > 80) return false;
+    if (!trimmed || trimmed.length < 2) return false;
+    if (parseMarkdownHeading(trimmed)) return true;
+    if (trimmed.length > 80) return false;
     if (!/^\d+(?:\.\d+)*[.、\s]\s*[^\d\s].+/.test(trimmed)) return false;
     if (/[\u3002\uff0c\u3001\uff1b\uff1a\u2026\uff01\uff1f,;:!?)\uff09\u300b\u300f\u201d\u2019]$/.test(trimmed)) return false;
     return !/应当|应该|需要|具体为|如下[\uff1a:]|以下[\uff1a:]|包括[\uff1a:]|说明[\uff1a:]|要求[\uff1a:]|其中[\uff0c,]/.test(trimmed);
@@ -83,13 +99,17 @@ const extractDocumentHeadingOutline = (text) => {
     const lines = text.split('\n');
     const rawHeadings = [];
     for (let i = 0; i < lines.length; i++) {
-        const title = lines[i].trim();
-        if (!isLikelyDocumentHeading(title)) continue;
+        const rawTitle = lines[i].trim();
+        if (!isLikelyDocumentHeading(rawTitle)) continue;
+        const markdownHeading = parseMarkdownHeading(rawTitle);
+        const title = markdownHeading?.title || rawTitle;
         const num = title.match(/^(\d+(?:\.\d+)*)/)?.[1] || '';
         rawHeadings.push({
             title,
             cleanTitle: stripHeadingNumber(title),
-            parts: num ? num.split('.').map(n => parseInt(n, 10)) : [],
+            parts: markdownHeading
+                ? Array.from({ length: markdownHeading.depth }, (_, index) => index + 1)
+                : (num ? num.split('.').map(n => parseInt(n, 10)) : []),
             lineIndex: i
         });
     }

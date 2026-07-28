@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { User, Lock, Eye, EyeOff, ArrowRight, UserPlus, LogIn } from 'lucide-react';
+import LoginOrb from './LoginOrb.jsx';
 
 export default function LoginPage({ onLoginSuccess }) {
     const [isRegister, setIsRegister] = useState(false);
@@ -73,133 +74,190 @@ export default function LoginPage({ onLoginSuccess }) {
             </div>
 
             <div className="login-container">
-                {/* 品牌区域 */}
-                <div className="login-brand">
-                    <img className="login-logo" src="/cosmic-logo.png" alt="COSMIC 拆分系统" />
-                </div>
+                <section className="login-visual">
+                    <LoginOrb />
+                    <div className="login-visual-heading">
+                        <span className="login-visual-kicker"><i /> COSMIC INTELLIGENCE</span>
+                        <h1>把需求，转化为可度量的功能规模</h1>
+                        <p>AI 驱动的功能过程识别、COSMIC 数据移动拆分与质量校验。</p>
+                    </div>
+                    <div className="login-visual-badges" aria-label="系统核心能力">
+                        <span>智能识别</span>
+                        <span>ERWX 拆分</span>
+                        <span>质量校验</span>
+                    </div>
+                </section>
 
-                {/* 登录卡片 */}
-                <div className="login-card">
-                    <div className="login-card-header">
-                        <h2>{isRegister ? '创建账号' : '欢迎回来'}</h2>
-                        <p>{isRegister ? '注册新账户开始使用' : '登录以访问您的分析历史'}</p>
+                <section className="login-panel">
+                    <div className="login-brand">
+                        <div className="login-brand-lockup" aria-label="COSMIC 功能规模智能分析系统">
+                            <div className="login-brand-mark" aria-hidden="true">
+                                <svg viewBox="0 0 64 64" focusable="false">
+                                    <defs>
+                                        <linearGradient id="brand-cube-top" x1="0" y1="0" x2="1" y2="1">
+                                            <stop offset="0" stopColor="#a7f3ff" />
+                                            <stop offset="1" stopColor="#25c7ea" />
+                                        </linearGradient>
+                                        <linearGradient id="brand-cube-left" x1="0" y1="0" x2="0.9" y2="1">
+                                            <stop offset="0" stopColor="#168ad8" />
+                                            <stop offset="1" stopColor="#07549a" />
+                                        </linearGradient>
+                                        <linearGradient id="brand-cube-right" x1="0" y1="0" x2="0.85" y2="1">
+                                            <stop offset="0" stopColor="#39d69f" />
+                                            <stop offset="1" stopColor="#0c8c7b" />
+                                        </linearGradient>
+                                    </defs>
+                                    <g className="login-brand-cube login-brand-cube-a">
+                                        <path d="M8 29 20 22l12 7-12 7z" fill="url(#brand-cube-top)" />
+                                        <path d="M8 29l12 7v14L8 43z" fill="url(#brand-cube-left)" />
+                                        <path d="m20 36 12-7v14l-12 7z" fill="url(#brand-cube-right)" />
+                                    </g>
+                                    <g className="login-brand-cube login-brand-cube-b">
+                                        <path d="m23 14 11-6 11 6-11 6z" fill="url(#brand-cube-top)" />
+                                        <path d="m23 14 11 6v13l-11-6z" fill="url(#brand-cube-left)" />
+                                        <path d="m34 20 11-6v13l-11 6z" fill="url(#brand-cube-right)" />
+                                    </g>
+                                    <g className="login-brand-cube login-brand-cube-c">
+                                        <path d="m35 35 11-6 11 6-11 6z" fill="url(#brand-cube-top)" />
+                                        <path d="m35 35 11 6v13l-11-6z" fill="url(#brand-cube-left)" />
+                                        <path d="m46 41 11-6v13l-11 6z" fill="url(#brand-cube-right)" />
+                                    </g>
+                                    <path className="login-brand-signal" d="m20 28 14-8 12 7M20 37l14-8 12 7" />
+                                </svg>
+                            </div>
+                            <span className="login-brand-divider" aria-hidden="true" />
+                            <span className="login-brand-copy">
+                                <strong>COSMIC</strong>
+                                <span>功能规模智能分析系统</span>
+                            </span>
+                        </div>
                     </div>
 
-                    <form onSubmit={handleSubmit} className="login-form">
-                        <div className="login-field">
-                            <label htmlFor="login-username">
-                                <User size={16} />
-                                用户名
-                            </label>
-                            <input
-                                id="login-username"
-                                type="text"
-                                value={username}
-                                onChange={e => setUsername(e.target.value)}
-                                placeholder="请输入用户名"
-                                autoComplete="username"
-                                autoFocus
-                            />
+                    {/* 登录卡片 */}
+                    <div className="login-card">
+                        <div className="login-card-header">
+                            <span className="login-card-eyebrow">COSMIC WORKSPACE</span>
+                            <h2>{isRegister ? '创建账号' : '欢迎回来'}</h2>
+                            <p>{isRegister ? '注册新账户开始使用' : '登录以访问您的分析历史'}</p>
                         </div>
 
-                        {isRegister && (
+                        <form onSubmit={handleSubmit} className="login-form">
                             <div className="login-field">
-                                <label htmlFor="login-display-name">
-                                    <UserPlus size={16} />
-                                    显示名称 <span className="login-optional">（选填）</span>
+                                <label htmlFor="login-username">
+                                    <User size={16} />
+                                    用户名
                                 </label>
                                 <input
-                                    id="login-display-name"
+                                    id="login-username"
                                     type="text"
-                                    value={displayName}
-                                    onChange={e => setDisplayName(e.target.value)}
-                                    placeholder="您希望显示的名称"
+                                    value={username}
+                                    onChange={e => setUsername(e.target.value)}
+                                    placeholder="请输入用户名"
+                                    autoComplete="username"
+                                    autoFocus
                                 />
                             </div>
-                        )}
 
-                        <div className="login-field">
-                            <label htmlFor="login-password">
-                                <Lock size={16} />
-                                密码
-                            </label>
-                            <div className="login-password-wrap">
-                                <input
-                                    id="login-password"
-                                    type={showPassword ? 'text' : 'password'}
-                                    value={password}
-                                    onChange={e => setPassword(e.target.value)}
-                                    placeholder={isRegister ? '至少6个字符' : '请输入密码'}
-                                    autoComplete={isRegister ? 'new-password' : 'current-password'}
-                                />
-                                <button
-                                    type="button"
-                                    className="login-password-toggle"
-                                    onClick={() => setShowPassword(!showPassword)}
-                                    tabIndex={-1}
-                                >
-                                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                                </button>
-                            </div>
-                        </div>
-
-                        {isRegister && (
-                            <div className="login-field">
-                                <label htmlFor="login-confirm-password">
-                                    <Lock size={16} />
-                                    确认密码
-                                </label>
-                                <input
-                                    id="login-confirm-password"
-                                    type="password"
-                                    value={confirmPassword}
-                                    onChange={e => setConfirmPassword(e.target.value)}
-                                    placeholder="再次输入密码"
-                                    autoComplete="new-password"
-                                />
-                            </div>
-                        )}
-
-                        {error && (
-                            <div className="login-error">
-                                <span>⚠️</span> {error}
-                            </div>
-                        )}
-
-                        <button
-                            type="submit"
-                            className="login-submit-btn"
-                            disabled={loading}
-                        >
-                            {loading ? (
-                                <span className="login-spinner" />
-                            ) : isRegister ? (
-                                <>
-                                    <UserPlus size={18} />
-                                    注册
-                                </>
-                            ) : (
-                                <>
-                                    <LogIn size={18} />
-                                    登录
-                                </>
+                            {isRegister && (
+                                <div className="login-field">
+                                    <label htmlFor="login-display-name">
+                                        <UserPlus size={16} />
+                                        显示名称 <span className="login-optional">（选填）</span>
+                                    </label>
+                                    <input
+                                        id="login-display-name"
+                                        type="text"
+                                        value={displayName}
+                                        onChange={e => setDisplayName(e.target.value)}
+                                        placeholder="您希望显示的名称"
+                                    />
+                                </div>
                             )}
-                            {!loading && <ArrowRight size={16} className="login-btn-arrow" />}
-                        </button>
-                    </form>
 
-                    <div className="login-switch">
-                        {isRegister ? (
-                            <span>已有账号？ <button onClick={switchMode}>立即登录</button></span>
-                        ) : (
-                            <span>没有账号？ <button onClick={switchMode}>立即注册</button></span>
-                        )}
+                            <div className="login-field">
+                                <label htmlFor="login-password">
+                                    <Lock size={16} />
+                                    密码
+                                </label>
+                                <div className="login-password-wrap">
+                                    <input
+                                        id="login-password"
+                                        type={showPassword ? 'text' : 'password'}
+                                        value={password}
+                                        onChange={e => setPassword(e.target.value)}
+                                        placeholder={isRegister ? '至少6个字符' : '请输入密码'}
+                                        autoComplete={isRegister ? 'new-password' : 'current-password'}
+                                    />
+                                    <button
+                                        type="button"
+                                        className="login-password-toggle"
+                                        onClick={() => setShowPassword(!showPassword)}
+                                        tabIndex={-1}
+                                        aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                                    >
+                                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {isRegister && (
+                                <div className="login-field">
+                                    <label htmlFor="login-confirm-password">
+                                        <Lock size={16} />
+                                        确认密码
+                                    </label>
+                                    <input
+                                        id="login-confirm-password"
+                                        type="password"
+                                        value={confirmPassword}
+                                        onChange={e => setConfirmPassword(e.target.value)}
+                                        placeholder="再次输入密码"
+                                        autoComplete="new-password"
+                                    />
+                                </div>
+                            )}
+
+                            {error && (
+                                <div className="login-error">
+                                    <span>⚠️</span> {error}
+                                </div>
+                            )}
+
+                            <button
+                                type="submit"
+                                className="login-submit-btn"
+                                disabled={loading}
+                            >
+                                {loading ? (
+                                    <span className="login-spinner" />
+                                ) : isRegister ? (
+                                    <>
+                                        <UserPlus size={18} />
+                                        注册
+                                    </>
+                                ) : (
+                                    <>
+                                        <LogIn size={18} />
+                                        登录
+                                    </>
+                                )}
+                                {!loading && <ArrowRight size={16} className="login-btn-arrow" />}
+                            </button>
+                        </form>
+
+                        <div className="login-switch">
+                            {isRegister ? (
+                                <span>已有账号？ <button type="button" onClick={switchMode}>立即登录</button></span>
+                            ) : (
+                                <span>没有账号？ <button type="button" onClick={switchMode}>立即注册</button></span>
+                            )}
+                        </div>
                     </div>
-                </div>
 
-                <div className="login-footer">
-                    <p>COSMIC Function Point · Powered by AI</p>
-                </div>
+                    <div className="login-footer">
+                        <p>COSMIC Function Point · Powered by AI</p>
+                    </div>
+                </section>
             </div>
         </div>
     );

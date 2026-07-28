@@ -2620,6 +2620,15 @@ app.post('/api/understand-document', async (req, res) => {
 function extractHeadingLevel(title) {
     if (!title) return { depth: 0, numStr: '' };
     const trimmed = title.trim();
+    const markdownMatch = trimmed.match(/^\s{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/);
+    if (markdownMatch) {
+        const markdownTitle = markdownMatch[2].trim();
+        const numMatch = markdownTitle.match(/^(\d+(?:\.\d+)*)(?:[\s.]|$)/);
+        return {
+            depth: Math.min(markdownMatch[1].length, 3),
+            numStr: numMatch?.[1] || ''
+        };
+    }
     // 匹配数字编号开头，如 "2.1"、"2.1.1"、"2.1.1.2"
     const numMatch = trimmed.match(/^(\d+(?:\.\d+)*)(?:[\s.]|$)/);
     if (!numMatch) return { depth: 0, numStr: '' };
@@ -3151,6 +3160,19 @@ function splitIntoChapters(text) {
 
     const lines = text.split('\n');
     const chapters = [];
+    const MAX_MARKDOWN_HEADING_LENGTH = 120;
+
+    const parseMarkdownHeading = (line) => {
+        const match = String(line || '').match(/^\s{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/);
+        if (!match) return null;
+        const title = match[2].trim();
+        if (title.length < 2 || title.length > MAX_MARKDOWN_HEADING_LENGTH) return null;
+        return {
+            title,
+            depth: Math.min(match[1].length, 3),
+            markdownLevel: match[1].length
+        };
+    };
 
     // 各类标题模式 + 对应最大长度
     const HEADING_RULES = [
@@ -3170,6 +3192,9 @@ function splitIntoChapters(text) {
     function isHeading(line) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.length < 2) return false;
+        // Markdown 的 # / ## / ### 是显式结构标记，优先级高于正文特征过滤。
+        // 代码反向需求直接生成 Markdown，不经过 Mammoth，必须原生识别。
+        if (parseMarkdownHeading(trimmed)) return true;
         // Requirement headings commonly carry a trailing workload/count marker,
         // e.g. "1.1 元数据采集（578）". A closing parenthesis normally looks
         // sentence-like, but must not disqualify this numbered-heading form.
@@ -3216,11 +3241,18 @@ function splitIntoChapters(text) {
         return [{ title: '全文', content: text, charCount: text.length, selected: true }];
     }
 
-    // 章节数过多时(>20)，只保留顶层标题
+    // 普通文本标题过多时(>20)，只保留顶层标题。
+    // 显式 Markdown 标题可靠性更高，60个以内保留原层级，避免把代码反向需求
+    // 中几十个 ### 功能条目重新合并成一个大章节。
     let finalPositions = headingPositions;
-    if (headingPositions.length > 20) {
+    const markdownHeadingCount = headingPositions.filter(pos => parseMarkdownHeading(lines[pos])).length;
+    const preserveMarkdownOutline = markdownHeadingCount === headingPositions.length
+        && markdownHeadingCount <= 60;
+    if (headingPositions.length > 20 && !preserveMarkdownOutline) {
         const topLevel = headingPositions.filter(pos => {
             const t = lines[pos].trim();
+            const markdownHeading = parseMarkdownHeading(t);
+            if (markdownHeading) return markdownHeading.markdownLevel <= 2;
             return /^第[一二三四五六七八九十百千\d]+[章节篇]/.test(t)
                 || /^[（(][一二三四五六七八九十\d]+[）)]/.test(t)
                 || /^[一二三四五六七八九十]+[、．.]/.test(t)
@@ -3244,11 +3276,13 @@ function splitIntoChapters(text) {
     for (let i = 0; i < finalPositions.length; i++) {
         const startLine = finalPositions[i];
         const endLine = (i < finalPositions.length - 1) ? finalPositions[i + 1] : lines.length;
-        const title = lines[startLine].trim();
+        const rawTitle = lines[startLine].trim();
+        const markdownHeading = parseMarkdownHeading(rawTitle);
+        const title = markdownHeading?.title || rawTitle;
         const content = lines.slice(startLine, endLine).join('\n').trim();
 
         // 根据编号层级更新滚动层级状态
-        const { depth } = extractHeadingLevel(title);
+        const depth = markdownHeading?.depth || extractHeadingLevel(title).depth;
         if (depth === 1) {
             currentL1 = title;
             currentL2 = '';
