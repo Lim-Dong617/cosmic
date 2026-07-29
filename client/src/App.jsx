@@ -43,7 +43,25 @@ const initialAnalysisProgress = {
     current: 0,
     total: 0,
     detail: '',
-    stats: ''
+    stats: '',
+    history: [],
+    startedAt: 0,
+    updatedAt: 0
+};
+
+const initialAiActivity = {
+    visible: false,
+    status: 'idle',
+    startedAt: 0,
+    endedAt: 0,
+    steps: []
+};
+
+const formatActivityDuration = (durationMs = 0) => {
+    const seconds = Math.max(0, durationMs) / 1000;
+    if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)} 秒`;
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes} 分 ${Math.round(seconds % 60)} 秒`;
 };
 
 const parseMarkdownHeading = (line) => {
@@ -328,6 +346,8 @@ function App({ user, token, onLogout }) {
     const [apiStatus, setApiStatus] = useState({ hasApiKey: false });
     const [tableData, setTableData] = useState([]);
     const [streamingContent, setStreamingContent] = useState('');
+    const [aiActivity, setAiActivity] = useState(initialAiActivity);
+    const [activityClock, setActivityClock] = useState(Date.now());
     const [copied, setCopied] = useState(false);
     const [isDragging, setIsDragging] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -425,6 +445,7 @@ function App({ user, token, onLogout }) {
     const dropZoneRef = useRef(null);
     const abortControllerRef = useRef(null);
     const excelProgressTimerRef = useRef(null);
+    const aiActivityRef = useRef(initialAiActivity);
     const documentHeadingOutline = useMemo(
         () => extractDocumentHeadingOutline(documentContent),
         [documentContent]
@@ -447,7 +468,14 @@ function App({ user, token, onLogout }) {
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, streamingContent]);
+    }, [messages, streamingContent, aiActivity.steps.length]);
+
+    useEffect(() => {
+        if (!aiActivity.visible || aiActivity.status !== 'running') return undefined;
+        setActivityClock(Date.now());
+        const timer = setInterval(() => setActivityClock(Date.now()), 1000);
+        return () => clearInterval(timer);
+    }, [aiActivity.visible, aiActivity.status]);
 
     useEffect(() => () => {
         if (excelProgressTimerRef.current) clearInterval(excelProgressTimerRef.current);
@@ -461,7 +489,11 @@ function App({ user, token, onLogout }) {
             const uniqueFuncs = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
             authAxios.put(`/api/auth/conversations/${currentConversationId}`, {
                 title: documentName || '未命名分析',
-                messages: messages.map(m => ({ role: m.role, content: m.content })),
+                messages: messages.map(m => ({
+                    role: m.role,
+                    content: m.content,
+                    ...(m.activity?.steps?.length ? { activity: m.activity } : {})
+                })),
                 tableData,
                 functionList: functionListText,
                 functionCount: uniqueFuncs.length,
@@ -535,13 +567,141 @@ function App({ user, token, onLogout }) {
         setTimeout(() => setToastMessage(''), 2500);
     };
 
-    const updateAnalysisProgress = useCallback((patch) => {
-        setAnalysisProgress(prev => ({
+    const commitAiActivity = useCallback((updater) => {
+        const next = typeof updater === 'function'
+            ? updater(aiActivityRef.current)
+            : updater;
+        aiActivityRef.current = next;
+        setAiActivity(next);
+        return next;
+    }, []);
+
+    const beginAiActivity = useCallback(() => {
+        const now = Date.now();
+        return commitAiActivity({
+            visible: true,
+            status: 'running',
+            startedAt: now,
+            endedAt: 0,
+            steps: [{
+                id: 'connection',
+                title: '连接 AI 服务',
+                detail: '正在建立实时连接，后续步骤和生成内容会显示在这里。',
+                status: 'running',
+                sequence: 0,
+                receivedAt: now
+            }]
+        });
+    }, [commitAiActivity]);
+
+    const upsertAiActivity = useCallback((incoming = {}) => commitAiActivity(prev => {
+        const now = Date.now();
+        const id = incoming.id || `activity-${incoming.sequence || now}`;
+        const existingIndex = prev.steps.findIndex(step => step.id === id);
+        const existing = existingIndex >= 0 ? prev.steps[existingIndex] : {};
+        const step = {
+            ...existing,
+            ...incoming,
+            id,
+            title: incoming.title || existing.title || '处理任务',
+            detail: incoming.detail || existing.detail || '',
+            status: incoming.status || existing.status || 'running',
+            receivedAt: now
+        };
+        let steps;
+        if (existingIndex >= 0) {
+            steps = prev.steps.map((item, index) => index === existingIndex ? step : item);
+        } else {
+            steps = [...prev.steps, step]
+                .sort((left, right) => (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER));
+        }
+        if (id !== 'connection') {
+            steps = steps.map(item => item.id === 'connection' && item.status === 'running'
+                ? { ...item, status: 'done', detail: '实时连接已建立。' }
+                : item);
+        }
+        return {
             ...prev,
             visible: true,
-            status: patch.status || prev.status || 'running',
-            ...patch
-        }));
+            status: incoming.status === 'error' ? 'error' : 'running',
+            startedAt: prev.startedAt || now,
+            steps
+        };
+    }), [commitAiActivity]);
+
+    const completeAiActivity = useCallback((status = 'done', errorDetail = '') => commitAiActivity(prev => {
+        const endedAt = Date.now();
+        let markedError = false;
+        const steps = prev.steps.map(step => {
+            if (step.status !== 'running') return step;
+            if (status === 'error' && !markedError) {
+                markedError = true;
+                return {
+                    ...step,
+                    status: 'error',
+                    detail: errorDetail || step.detail
+                };
+            }
+            return { ...step, status: 'done' };
+        });
+        if (status === 'error' && !markedError) {
+            steps.push({
+                id: 'request-error',
+                title: 'AI 处理失败',
+                detail: errorDetail || '请求未完成。',
+                status: 'error',
+                receivedAt: endedAt
+            });
+        }
+        return {
+            ...prev,
+            visible: true,
+            status,
+            endedAt,
+            steps
+        };
+    }), [commitAiActivity]);
+
+    const hideAiActivity = useCallback(() => {
+        commitAiActivity(prev => ({ ...prev, visible: false }));
+    }, [commitAiActivity]);
+
+    const resetAiActivity = useCallback(() => {
+        commitAiActivity(initialAiActivity);
+    }, [commitAiActivity]);
+
+    const updateAnalysisProgress = useCallback((patch) => {
+        setAnalysisProgress(prev => {
+            const now = Date.now();
+            const isNewTask = !prev.visible
+                || (patch.title && patch.title !== prev.title)
+                || (patch.status === 'running' && ['done', 'waiting', 'error'].includes(prev.status));
+            const previousHistory = isNewTask ? [] : (prev.history || []);
+            const nextStatus = patch.status || prev.status || 'running';
+            const nextPhase = patch.phase || prev.phase || '准备中';
+            const nextDetail = patch.detail || prev.detail || '正在准备分析任务...';
+            const last = previousHistory[previousHistory.length - 1];
+            const shouldRecord = !last
+                || last.phase !== nextPhase
+                || last.detail !== nextDetail
+                || last.status !== nextStatus;
+            return {
+                ...prev,
+                visible: true,
+                status: nextStatus,
+                ...patch,
+                startedAt: isNewTask ? now : (prev.startedAt || now),
+                updatedAt: now,
+                history: shouldRecord
+                    ? [...previousHistory, {
+                        phase: nextPhase,
+                        detail: nextDetail,
+                        status: nextStatus,
+                        at: now
+                    }].slice(-12)
+                    : previousHistory
+            };
+        });
     }, []);
 
     const resetAnalysisProgress = useCallback(() => {
@@ -617,6 +777,88 @@ function App({ user, token, onLogout }) {
                         </div>
                     )}
                 </div>
+                {(analysisProgress.history || []).length > 1 && (
+                    <div className="analysis-progress-trace">
+                        {(analysisProgress.history || []).slice(-6).map((event, index) => (
+                            <div className={`analysis-progress-trace-item ${event.status || ''}`} key={`${event.at}-${index}`}>
+                                <span>
+                                    {event.status === 'done'
+                                        ? <Check size={11} />
+                                        : event.status === 'error'
+                                            ? <X size={11} />
+                                            : <Loader2 size={11} className={event.status === 'running' ? 'spinner' : ''} />}
+                                </span>
+                                <div>
+                                    <b>{event.phase}</b>
+                                    <p>{event.detail}</p>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const AiActivityPanel = ({ activity, compact = false }) => {
+        if (!activity?.steps?.length) return null;
+        const isRunning = activity.status === 'running';
+        const isError = activity.status === 'error';
+        const durationMs = activity.durationMs ?? Math.max(
+            0,
+            (activity.endedAt || activityClock) - (activity.startedAt || activityClock)
+        );
+        const statusLabel = isRunning ? '实时进行中' : isError ? '执行失败' : '已完成';
+        const steps = activity.steps;
+
+        const timeline = (
+            <div className="ai-activity-timeline">
+                {steps.map((step, index) => (
+                    <div className={`ai-activity-step ${step.status || 'running'}`} key={`${step.id || index}-${index}`}>
+                        <span className="ai-activity-step-icon">
+                            {step.status === 'done'
+                                ? <Check size={12} />
+                                : step.status === 'error'
+                                    ? <X size={12} />
+                                    : step.status === 'warning'
+                                        ? <AlertCircle size={12} />
+                                        : <Loader2 size={12} className="spinner" />}
+                        </span>
+                        <div>
+                            <b>{step.title}</b>
+                            {step.detail && <p>{step.detail}</p>}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        );
+
+        if (compact) {
+            return (
+                <details className={`ai-activity-history ${isError ? 'error' : ''}`}>
+                    <summary>
+                        <span><Brain size={13} /> AI 工作过程</span>
+                        <small>{steps.length} 步 · {formatActivityDuration(durationMs)}</small>
+                        <ChevronDown size={13} />
+                    </summary>
+                    {timeline}
+                </details>
+            );
+        }
+
+        return (
+            <div className={`ai-activity-panel ${isRunning ? 'running' : ''} ${isError ? 'error' : ''}`}>
+                <div className="ai-activity-head">
+                    <div>
+                        <span className="ai-activity-orb"><Brain size={15} /></span>
+                        <div>
+                            <b>AI 工作过程</b>
+                            <small>实时展示可验证的执行步骤与产出</small>
+                        </div>
+                    </div>
+                    <em>{statusLabel} · {formatActivityDuration(durationMs)}</em>
+                </div>
+                {timeline}
             </div>
         );
     };
@@ -2598,6 +2840,7 @@ function App({ user, token, onLogout }) {
         setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
         setIsLoading(true);
         setStreamingContent('');
+        beginAiActivity();
 
         try {
             const response = await fetch('/api/chat/stream', {
@@ -2649,6 +2892,9 @@ function App({ user, token, onLogout }) {
                     } catch (error) {
                         continue;
                     }
+                    if (parsed.activity) {
+                        upsertAiActivity(parsed.activity);
+                    }
                     if (parsed.content) {
                         fullContent += parsed.content;
                         setStreamingContent(fullContent);
@@ -2663,25 +2909,68 @@ function App({ user, token, onLogout }) {
             if (fullContent || pendingAction) {
                 let finalContent = fullContent || '已理解并准备应用本次修改。';
                 if (pendingAction?.type === 'state_update') {
+                    upsertAiActivity({
+                        id: 'workspace-sync',
+                        sequence: Number.MAX_SAFE_INTEGER - 1,
+                        title: '同步更新当前工作区',
+                        detail: pendingAction.cosmicTargets?.length > 0
+                            ? `正在调用原 COSMIC 流程更新 ${pendingAction.cosmicTargets.length} 个功能过程。`
+                            : '正在更新需求文档和功能清单。',
+                        status: 'running'
+                    });
                     try {
                         const updateStats = await applyConversationStateUpdate(pendingAction);
+                        upsertAiActivity({
+                            id: 'workspace-sync',
+                            sequence: Number.MAX_SAFE_INTEGER - 1,
+                            title: '同步更新当前工作区',
+                            detail: `同步完成：${updateStats.functions} 个功能过程、${updateStats.cfp} CFP。`,
+                            status: 'done',
+                            meta: updateStats
+                        });
                         if (pendingAction.cosmicTargets?.length > 0) {
                             finalContent += `\n\n✅ 已通过原COSMIC拆分流程完成联动更新。当前共 **${updateStats.functions}** 个功能过程、**${updateStats.cfp}** CFP。`;
                         } else {
                             finalContent += '\n\n✅ 变更已写入当前系统状态，预览、表格和后续导出将使用更新后的内容。';
                         }
                     } catch (updateError) {
+                        upsertAiActivity({
+                            id: 'workspace-sync',
+                            sequence: Number.MAX_SAFE_INTEGER - 1,
+                            title: '同步更新当前工作区',
+                            detail: updateError.response?.data?.error || updateError.message,
+                            status: 'error'
+                        });
                         finalContent += `\n\n⚠️ 文档/功能清单修改已处理，但COSMIC表格联动失败：${updateError.response?.data?.error || updateError.message}`;
                     }
                 }
-                setMessages(prev => [...prev, { role: 'assistant', content: finalContent }]);
+                const completedActivity = completeAiActivity('done');
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: finalContent,
+                    activity: {
+                        ...completedActivity,
+                        visible: false,
+                        durationMs: completedActivity.endedAt - completedActivity.startedAt
+                    }
+                }]);
             }
             setStreamingContent('');
         } catch (error) {
-            setMessages(prev => [...prev, { role: 'assistant', content: `❌ 对话失败: ${error.message}` }]);
+            const failedActivity = completeAiActivity('error', error.message);
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `❌ 对话失败: ${error.message}`,
+                activity: {
+                    ...failedActivity,
+                    visible: false,
+                    durationMs: failedActivity.endedAt - failedActivity.startedAt
+                }
+            }]);
         } finally {
             setIsLoading(false);
             setStreamingContent('');
+            hideAiActivity();
         }
     };
 
@@ -2908,6 +3197,7 @@ function App({ user, token, onLogout }) {
         setQuantityPlan(null);
         setFailedBatchInfo([]);
         resetAnalysisProgress();
+        resetAiActivity();
     };
 
     const stopAnalysis = () => {
@@ -3507,6 +3797,7 @@ function App({ user, token, onLogout }) {
         setCoverageResult(null);
         setCurrentConversationId(null);
         setIsWaitingForAnalysis(false);
+        resetAiActivity();
     };
 
     const handleLoadConversation = (conv) => {
@@ -3519,6 +3810,7 @@ function App({ user, token, onLogout }) {
         setModuleStructure(null);
         setCurrentStep(0);
         setIsWaitingForAnalysis(false);
+        resetAiActivity();
         if (conv.analysis_mode) setAnalysisMode(conv.analysis_mode);
         showToast('已加载历史分析记录');
     };
@@ -3534,7 +3826,11 @@ function App({ user, token, onLogout }) {
             const uniqueFuncs = [...new Set(tableDataForSave.map(r => r.functionalProcess).filter(Boolean))];
             await authAxios.put(`/api/auth/conversations/${convId}`, {
                 title: documentName || '未命名分析',
-                messages: messages.map(m => ({ role: m.role, content: m.content })),
+                messages: messages.map(m => ({
+                    role: m.role,
+                    content: m.content,
+                    ...(m.activity?.steps?.length ? { activity: m.activity } : {})
+                })),
                 tableData: tableDataForSave,
                 functionList: functionListText,
                 functionCount: uniqueFuncs.length,
@@ -3928,6 +4224,9 @@ function App({ user, token, onLogout }) {
                                                         <Info size={16} />}
                                             </div>
                                             <div className="message-content">
+                                                {msg.activity?.steps?.length > 0 && (
+                                                    <AiActivityPanel activity={msg.activity} compact />
+                                                )}
                                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                                                 {msg.showActions && tableData.length > 0 && (
                                                     <div className="result-actions">
@@ -4001,15 +4300,25 @@ function App({ user, token, onLogout }) {
                                             </div>
                                         </div>
                                     ))}
-                                    {streamingContent && (
+                                    {(aiActivity.visible || streamingContent) && (
                                         <div className="message assistant">
                                             <div className="message-avatar"><Bot size={16} /></div>
-                                            <div className="message-content">
-                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
+                                            <div className="message-content ai-live-message">
+                                                {aiActivity.visible && <AiActivityPanel activity={aiActivity} />}
+                                                {streamingContent && (
+                                                    <div className="ai-streaming-output">
+                                                        <div className="ai-streaming-output-label">
+                                                            <Sparkles size={12} />
+                                                            <span>生成内容</span>
+                                                        </div>
+                                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
+                                                        {isLoading && <span className="ai-stream-caret" aria-hidden="true" />}
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     )}
-                                    {isLoading && !streamingContent && (
+                                    {isLoading && !streamingContent && !aiActivity.visible && (
                                         <div className="message assistant">
                                             <div className="message-avatar"><Bot size={16} /></div>
                                             <div className="message-content" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

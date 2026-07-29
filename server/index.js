@@ -4578,6 +4578,8 @@ app.post('/api/parse-table', (req, res) => {
 // ═══════════════════════ 流式对话 ═══════════════════════
 
 app.post('/api/chat/stream', async (req, res) => {
+    let heartbeatTimer = null;
+    let streamStarted = false;
     try {
         const {
             messages = [],
@@ -4597,9 +4599,74 @@ app.post('/api/chat/stream', async (req, res) => {
             return res.status(400).json({ error: '缺少用户对话指令' });
         }
 
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders?.();
+        streamStarted = true;
+
+        const streamStartedAt = Date.now();
+        let activitySequence = 0;
+        const sendEvent = (payload) => {
+            if (res.writableEnded || res.destroyed) return;
+            res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        };
+        const sendActivity = ({ id, title, detail, status = 'running', meta = null }) => {
+            sendEvent({
+                type: 'activity',
+                activity: {
+                    id,
+                    sequence: ++activitySequence,
+                    title,
+                    detail,
+                    status,
+                    meta,
+                    elapsedMs: Date.now() - streamStartedAt
+                }
+            });
+        };
+        const streamText = async (text) => {
+            const characters = Array.from(String(text || ''));
+            const chunkSize = Math.max(24, Math.ceil(characters.length / 60));
+            for (let index = 0; index < characters.length; index += chunkSize) {
+                sendEvent({
+                    type: 'content',
+                    content: characters.slice(index, index + chunkSize).join('')
+                });
+                // Let the browser paint incremental output instead of receiving
+                // one large buffered write after planning has completed.
+                await new Promise(resolve => setTimeout(resolve, 18));
+            }
+        };
+
+        heartbeatTimer = setInterval(() => {
+            if (!res.writableEnded && !res.destroyed) {
+                res.write(`: keep-alive ${Date.now() - streamStartedAt}\n\n`);
+            }
+        }, 12000);
+        heartbeatTimer.unref?.();
+
         const functionsForConversation = Array.isArray(parsedFunctions) && parsedFunctions.length > 0
             ? parsedFunctions
             : extractFunctionsFromText(functionListText);
+        sendActivity({
+            id: 'context',
+            title: '读取当前任务上下文',
+            detail: `已载入需求文档、${functionsForConversation.length} 个功能过程和 ${tableData.length} 条 COSMIC 数据移动。`,
+            status: 'done',
+            meta: {
+                hasDocument: Boolean(documentContent),
+                functionCount: functionsForConversation.length,
+                cosmicRowCount: tableData.length
+            }
+        });
+        sendActivity({
+            id: 'planning',
+            title: '理解指令并生成执行方案',
+            detail: 'AI 正在结合当前文档、功能清单和最近对话判断用户意图。',
+            status: 'running'
+        });
         const plan = await createConversationPlan({
             instruction,
             conversationHistory,
@@ -4610,6 +4677,30 @@ app.post('/api/chat/stream', async (req, res) => {
             userConfig,
             modelName,
             callAIWithRetry
+        });
+        const plannedChangeCount = plan.documentPatches.length
+            + plan.functionChanges.length
+            + plan.cosmicTargets.length;
+        sendActivity({
+            id: 'planning',
+            title: '理解指令并生成执行方案',
+            detail: plan.needsClarification
+                ? '发现需要用户确认的信息，已生成澄清答复，暂不修改数据。'
+                : `已识别意图“${plan.intent}”，生成 ${plannedChangeCount} 项可执行变更。`,
+            status: plan.needsClarification ? 'warning' : 'done',
+            meta: {
+                intent: plan.intent,
+                needsClarification: plan.needsClarification,
+                documentChanges: plan.documentPatches.length,
+                functionChanges: plan.functionChanges.length,
+                cosmicChanges: plan.cosmicTargets.length
+            }
+        });
+        sendActivity({
+            id: 'validation',
+            title: '校验并整理变更',
+            detail: '正在检查修改目标、原文匹配和 COSMIC 联动范围。',
+            status: 'running'
         });
         const mutation = plan.needsClarification
             ? {
@@ -4652,13 +4743,40 @@ app.post('/api/chat/stream', async (req, res) => {
             ? `${plan.answer}\n\n${statusLines.map(line => `- ${line}`).join('\n')}`
             : plan.answer;
 
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.setHeader('X-Accel-Buffering', 'no');
-        res.write(`data: ${JSON.stringify({ content: answer })}\n\n`);
+        sendActivity({
+            id: 'validation',
+            title: '校验并整理变更',
+            detail: mutation.warnings.length > 0
+                ? `已完成校验；${mutation.warnings.length} 项未通过精确匹配，将保持原内容。`
+                : '变更目标和联动范围校验完成。',
+            status: mutation.warnings.length > 0 ? 'warning' : 'done',
+            meta: mutation.changeSummary
+        });
+        sendActivity({
+            id: 'answer',
+            title: '生成前台答复',
+            detail: '正在把处理结论增量输出到页面。',
+            status: 'running'
+        });
+        await streamText(answer);
+        sendActivity({
+            id: 'answer',
+            title: '生成前台答复',
+            detail: `答复已输出，共 ${Array.from(answer).length} 个字符。`,
+            status: 'done'
+        });
         if (appliedCount > 0 || requestedCosmic > 0 || mutation.warnings.length > 0) {
-            res.write(`data: ${JSON.stringify({
+            sendActivity({
+                id: 'handoff',
+                title: '准备同步到当前工作区',
+                detail: requestedCosmic > 0
+                    ? `已打包状态变更，前端将继续调用原 COSMIC 流程更新 ${requestedCosmic} 个功能过程。`
+                    : '已打包状态变更，前端将同步更新文档和功能清单。',
+                status: 'done',
+                meta: mutation.changeSummary
+            });
+            sendEvent({
+                type: 'action',
                 action: {
                     type: 'state_update',
                     intent: plan.intent,
@@ -4669,18 +4787,31 @@ app.post('/api/chat/stream', async (req, res) => {
                     changeSummary: mutation.changeSummary,
                     warnings: mutation.warnings
                 }
-            })}\n\n`);
+            });
         }
 
         res.write('data: [DONE]\n\n');
         res.end();
     } catch (error) {
         console.error('流式对话失败:', error.message);
-        if (!res.headersSent) {
+        if (!streamStarted && !res.headersSent) {
             return res.status(500).json({ error: '调用AI失败: ' + error.message });
         }
-        res.write(`data: ${JSON.stringify({ error: '调用AI失败: ' + error.message })}\n\n`);
-        res.end();
+        if (!res.writableEnded && !res.destroyed) {
+            res.write(`data: ${JSON.stringify({
+                type: 'error',
+                activity: {
+                    id: 'request',
+                    title: 'AI 处理失败',
+                    detail: error.message,
+                    status: 'error'
+                },
+                error: '调用AI失败: ' + error.message
+            })}\n\n`);
+            res.end();
+        }
+    } finally {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
     }
 });
 

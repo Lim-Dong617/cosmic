@@ -139,6 +139,14 @@ const cosmicBatchRoute = serverSource.slice(
 );
 assert.ok(chatRoute.includes('createConversationPlan'));
 assert.ok(!chatRoute.includes('getCosmicSplitPrompt('));
+assert.ok(chatRoute.includes("type: 'activity'"));
+assert.ok(chatRoute.includes("id: 'planning'"));
+assert.ok(chatRoute.includes("id: 'answer'"));
+assert.ok(
+    chatRoute.indexOf("res.setHeader('Content-Type'") < chatRoute.indexOf('createConversationPlan'),
+    'SSE headers must be flushed before the long-running AI planning call'
+);
+assert.ok(chatRoute.includes('await streamText(answer)'));
 assert.ok(cosmicBatchRoute.includes('buildCosmicSplitPrompt'));
 assert.ok(cosmicBatchRoute.includes('applyEnhancedExperienceTemplatePruning'));
 
