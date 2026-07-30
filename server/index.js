@@ -48,6 +48,7 @@ const {
     applyConversationPlan,
     createConversationPlan
 } = require('./conversation-orchestrator');
+const { registerOfficeDocumentRoutes } = require('./office-document-service');
 
 
 const app = express();
@@ -249,7 +250,8 @@ async function applyAutoHeadingNumbering(docxBuffer) {
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Disposition', 'X-Office-Summary', 'X-Office-Format', 'X-Office-Stats']
 }));
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
@@ -286,11 +288,11 @@ const upload = multer({
     fileFilter: (req, file, cb) => {
         file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
         const ext = path.extname(file.originalname).toLowerCase();
-        const allowedExts = ['.docx', '.doc', '.txt', '.md', '.xlsx', '.xlsm', '.xls'];
+        const allowedExts = ['.docx', '.doc', '.txt', '.md', '.xlsx', '.xlsm', '.xls', '.csv'];
         if (allowedExts.includes(ext)) {
             cb(null, true);
         } else {
-            cb(new Error(`不支持的文件格式: ${ext}，请上传 .docx, .txt, .md 或 .xlsx/.xlsm 文件`));
+            cb(new Error(`不支持的文件格式: ${ext}，请上传 .docx, .txt, .md, .xlsx, .xlsm 或 .csv 文件`));
         }
     }
 });
@@ -355,6 +357,13 @@ function getModelName(userConfig) {
     }
     return currentModel;
 }
+
+registerOfficeDocumentRoutes(app, {
+    upload,
+    handleMulterError,
+    callAIWithRetry,
+    getModelName
+});
 
 const SENSENOVA_V4_MODEL_ALIASES = new Set([
     'deepseek-v4-flash-free',
@@ -6735,7 +6744,7 @@ if (process.env.NODE_ENV === 'production') {
     app.listen(PORT, () => {
         console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║         COSMIC 功能规模智能分析拆分系统 v2.0             ║
+║         AI 智能分析与办公文档处理系统 v2.1              ║
 ╠══════════════════════════════════════════════════════════╣
 ║  🌐 服务地址: http://localhost:${PORT}                    ║
 ║  🤖 当前模型: ${currentModel.padEnd(40)}║

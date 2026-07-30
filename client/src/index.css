@@ -62,6 +62,968 @@
     --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Intelligent Office Document Center
+   ═══════════════════════════════════════════════════════════ */
+
+.office-mode-btn .model-option-dot {
+    background: linear-gradient(135deg, #0ea5e9, #14b8a6);
+    box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
+}
+
+.office-mode-btn.active {
+    border-color: rgba(14, 165, 233, 0.5) !important;
+    background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(20, 184, 166, 0.08)) !important;
+}
+
+.office-logo-icon {
+    color: #fff;
+    background: linear-gradient(135deg, #0284c7, #0f766e);
+    box-shadow: 0 8px 24px rgba(2, 132, 199, 0.28);
+}
+
+.office-main {
+    min-width: 0;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 12% -8%, rgba(14, 165, 233, 0.08), transparent 29%),
+        radial-gradient(circle at 90% 12%, rgba(20, 184, 166, 0.07), transparent 26%),
+        var(--bg-primary);
+}
+
+.office-top-bar {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    background: color-mix(in srgb, var(--bg-primary) 90%, transparent);
+    backdrop-filter: blur(18px);
+}
+
+.office-top-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 9px;
+    border: 1px solid rgba(14, 165, 233, 0.2);
+    border-radius: 999px;
+    color: #0284c7;
+    background: rgba(14, 165, 233, 0.08);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.office-top-capabilities {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.office-top-capabilities span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.office-top-capabilities svg {
+    color: #0f9f6e;
+}
+
+.office-upload-progress {
+    position: absolute;
+    top: 58px;
+    right: 0;
+    left: 0;
+    z-index: 10;
+    height: 2px;
+    overflow: hidden;
+    background: rgba(14, 165, 233, 0.08);
+}
+
+.office-upload-progress > div {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #0284c7, #14b8a6);
+    transition: width 180ms ease;
+}
+
+.office-workspace {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 34px clamp(24px, 4vw, 58px) 48px;
+}
+
+.office-hero {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    width: min(1180px, 100%);
+    margin: 0 auto 26px;
+    padding: 6px 2px;
+    gap: 24px;
+}
+
+.office-hero-copy {
+    max-width: 760px;
+}
+
+.office-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 12px;
+    color: #0284c7;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.office-hero h1 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: clamp(28px, 3vw, 42px);
+    line-height: 1.15;
+    letter-spacing: -0.035em;
+}
+
+.office-hero p {
+    max-width: 700px;
+    margin: 12px 0 0;
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.75;
+}
+
+.office-format-pills {
+    display: flex;
+    gap: 9px;
+    flex: 0 0 auto;
+}
+
+.office-format-pills span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 13px;
+    border: 1px solid;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+}
+
+.office-format-pills .word {
+    color: #2563eb;
+    border-color: rgba(37, 99, 235, 0.18);
+    background: rgba(37, 99, 235, 0.07);
+}
+
+.office-format-pills .excel {
+    color: #0f8a5f;
+    border-color: rgba(15, 138, 95, 0.18);
+    background: rgba(15, 138, 95, 0.07);
+}
+
+.office-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
+    align-items: start;
+    gap: 22px;
+    width: min(1180px, 100%);
+    margin: 0 auto;
+}
+
+.office-source-column,
+.office-task-column {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.office-panel,
+.office-preview-card,
+.office-empty-workspace {
+    border: 1px solid rgba(148, 163, 184, 0.17);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--bg-secondary) 91%, transparent);
+    box-shadow: 0 14px 42px rgba(15, 23, 42, 0.055);
+}
+
+.office-panel {
+    padding: 20px;
+}
+
+.office-panel-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    gap: 12px;
+}
+
+.office-panel-heading > div:first-child {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.office-panel-heading h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.office-step {
+    display: inline-grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border-radius: 9px;
+    color: #0369a1;
+    background: rgba(14, 165, 233, 0.11);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+}
+
+.office-required {
+    color: #e11d48;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.office-link-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 8px;
+    border: 0;
+    color: var(--text-secondary);
+    background: transparent;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.office-link-button:hover {
+    color: #e11d48;
+}
+
+.office-drop-zone {
+    display: flex;
+    min-height: 190px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    padding: 26px;
+    border: 1.5px dashed rgba(14, 165, 233, 0.32);
+    border-radius: 15px;
+    background:
+        linear-gradient(135deg, rgba(14, 165, 233, 0.055), rgba(20, 184, 166, 0.025)),
+        var(--bg-primary);
+    text-align: center;
+    cursor: pointer;
+    transition: 180ms ease;
+}
+
+.office-drop-zone:hover,
+.office-drop-zone.dragging {
+    transform: translateY(-1px);
+    border-color: #0ea5e9;
+    background:
+        linear-gradient(135deg, rgba(14, 165, 233, 0.11), rgba(20, 184, 166, 0.06)),
+        var(--bg-primary);
+    box-shadow: inset 0 0 0 3px rgba(14, 165, 233, 0.05);
+}
+
+.office-drop-icon {
+    display: grid;
+    width: 52px;
+    height: 52px;
+    margin-bottom: 13px;
+    place-items: center;
+    border-radius: 16px;
+    color: #fff;
+    background: linear-gradient(135deg, #0284c7, #14b8a6);
+    box-shadow: 0 10px 24px rgba(2, 132, 199, 0.22);
+}
+
+.office-drop-zone strong {
+    color: var(--text-primary);
+    font-size: 15px;
+}
+
+.office-drop-zone p {
+    margin: 7px 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.office-drop-zone small {
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+.office-file-card {
+    display: flex;
+    min-height: 78px;
+    align-items: center;
+    gap: 13px;
+    padding: 14px;
+    border: 1px solid rgba(37, 99, 235, 0.16);
+    border-radius: 14px;
+    background: rgba(37, 99, 235, 0.055);
+}
+
+.office-file-card.excel {
+    border-color: rgba(15, 138, 95, 0.17);
+    background: rgba(15, 138, 95, 0.055);
+}
+
+.office-file-card .office-file-icon {
+    display: grid;
+    width: 46px;
+    height: 46px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 13px;
+    color: #2563eb;
+    background: rgba(37, 99, 235, 0.1);
+}
+
+.office-file-card.excel .office-file-icon {
+    color: #0f8a5f;
+    background: rgba(15, 138, 95, 0.1);
+}
+
+.office-file-card > div {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.office-file-card strong {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.office-file-card span {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.office-file-card > svg {
+    flex: 0 0 auto;
+    color: #0f9f6e;
+}
+
+.office-preview-card {
+    overflow: hidden;
+}
+
+.office-preview-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 18px 20px 14px;
+    gap: 16px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.office-preview-kicker {
+    display: block;
+    margin-bottom: 5px;
+    color: #0284c7;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+}
+
+.office-preview-head h3 {
+    max-width: 390px;
+    overflow: hidden;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.office-preview-stats {
+    display: flex;
+    align-items: flex-end;
+    flex-direction: column;
+    gap: 3px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.office-heading-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 12px 20px 0;
+}
+
+.office-heading-list span {
+    max-width: 180px;
+    overflow: hidden;
+    padding: 4px 7px;
+    border-radius: 6px;
+    color: #0369a1;
+    background: rgba(14, 165, 233, 0.07);
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.office-text-preview {
+    max-height: 260px;
+    overflow: auto;
+    padding: 16px 20px 20px;
+    color: var(--text-secondary);
+    font-family: "Microsoft YaHei", sans-serif;
+    font-size: 11px;
+    line-height: 1.75;
+    white-space: pre-wrap;
+}
+
+.office-sheet-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 11px 14px;
+    overflow-x: auto;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.office-sheet-tabs button {
+    display: flex;
+    align-items: flex-start;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 2px;
+    padding: 7px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--text-secondary);
+    background: transparent;
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.office-sheet-tabs button.active {
+    border-color: rgba(15, 138, 95, 0.18);
+    color: #0f8a5f;
+    background: rgba(15, 138, 95, 0.08);
+}
+
+.office-sheet-tabs small {
+    opacity: 0.65;
+    font-size: 8px;
+}
+
+.office-table-preview-wrap {
+    max-height: 300px;
+    overflow: auto;
+    padding: 14px;
+}
+
+.office-table-preview {
+    min-width: 100%;
+    border-spacing: 0;
+    border-collapse: separate;
+    color: var(--text-secondary);
+    font-size: 9px;
+}
+
+.office-table-preview td {
+    max-width: 180px;
+    padding: 7px 9px;
+    overflow: hidden;
+    border-right: 1px solid rgba(148, 163, 184, 0.14);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.office-table-preview tr:first-child td {
+    border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.office-table-preview td:first-child {
+    border-left: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.office-table-preview .header-cell {
+    color: var(--text-primary);
+    background: rgba(15, 138, 95, 0.07);
+    font-weight: 700;
+}
+
+.office-empty-workspace {
+    padding: 20px;
+}
+
+.office-empty-title {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.office-empty-title > svg {
+    margin-top: 1px;
+    color: #0284c7;
+}
+
+.office-empty-title h2 {
+    margin: 0 0 4px;
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.office-empty-title p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.office-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.office-action-grid button {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 4px 10px;
+    padding: 13px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    border-radius: 12px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    text-align: left;
+    cursor: pointer;
+    transition: 160ms ease;
+}
+
+.office-action-grid button:hover {
+    transform: translateY(-1px);
+    border-color: rgba(14, 165, 233, 0.36);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.office-action-icon {
+    display: grid;
+    grid-row: 1 / span 2;
+    width: 39px;
+    height: 39px;
+    place-items: center;
+    border-radius: 11px;
+}
+
+.office-action-icon.docx {
+    color: #2563eb;
+    background: rgba(37, 99, 235, 0.09);
+}
+
+.office-action-icon.xlsx {
+    color: #0f8a5f;
+    background: rgba(15, 138, 95, 0.09);
+}
+
+.office-action-grid strong {
+    font-size: 11px;
+}
+
+.office-action-grid small {
+    color: var(--text-secondary);
+    font-size: 9px;
+    line-height: 1.4;
+}
+
+.office-task-panel textarea {
+    width: 100%;
+    min-height: 164px;
+    resize: vertical;
+    padding: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.23);
+    border-radius: 13px;
+    outline: none;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1.7;
+    transition: 160ms ease;
+}
+
+.office-task-panel textarea:focus {
+    border-color: rgba(14, 165, 233, 0.68);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.08);
+}
+
+.office-task-panel textarea::placeholder {
+    color: var(--text-muted);
+}
+
+.office-action-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.office-action-chips button {
+    padding: 6px 9px;
+    border: 1px solid rgba(14, 165, 233, 0.14);
+    border-radius: 999px;
+    color: #0369a1;
+    background: rgba(14, 165, 233, 0.055);
+    font-size: 9px;
+    cursor: pointer;
+}
+
+.office-action-chips button:hover {
+    border-color: rgba(14, 165, 233, 0.38);
+    background: rgba(14, 165, 233, 0.1);
+}
+
+.office-instruction-footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 7px 2px 0;
+    color: var(--text-muted);
+    font-size: 9px;
+}
+
+.office-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 15px;
+}
+
+.office-options label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.office-options label > span {
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.office-options select {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 9px;
+    outline: none;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    font-size: 10px;
+}
+
+.office-process-button {
+    display: flex;
+    width: 100%;
+    min-height: 46px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 15px;
+    border: 0;
+    border-radius: 12px;
+    color: #fff;
+    background: linear-gradient(135deg, #0284c7, #0f766e);
+    box-shadow: 0 10px 24px rgba(2, 132, 199, 0.22);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: 170ms ease;
+}
+
+.office-process-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 28px rgba(2, 132, 199, 0.27);
+}
+
+.office-process-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.office-result-panel {
+    padding-bottom: 18px;
+}
+
+.office-complete-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 7px;
+    border-radius: 999px;
+    color: #047857;
+    background: rgba(16, 185, 129, 0.09);
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.office-activity-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.office-activity {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 9px 4px;
+}
+
+.office-activity > span {
+    display: grid;
+    width: 25px;
+    height: 25px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 8px;
+    color: #0f9f6e;
+    background: rgba(16, 185, 129, 0.08);
+}
+
+.office-activity.running > span {
+    color: #0284c7;
+    background: rgba(14, 165, 233, 0.08);
+}
+
+.office-activity.error > span {
+    color: #e11d48;
+    background: rgba(225, 29, 72, 0.08);
+}
+
+.office-activity > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.office-activity strong {
+    color: var(--text-primary);
+    font-size: 10px;
+}
+
+.office-activity small {
+    color: var(--text-secondary);
+    font-size: 9px;
+    line-height: 1.4;
+}
+
+.office-output-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+    padding: 13px;
+    border: 1px solid rgba(37, 99, 235, 0.16);
+    border-radius: 13px;
+    background: rgba(37, 99, 235, 0.05);
+}
+
+.office-output-card.xlsx {
+    border-color: rgba(15, 138, 95, 0.17);
+    background: rgba(15, 138, 95, 0.055);
+}
+
+.office-output-icon {
+    display: grid;
+    width: 46px;
+    height: 46px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 12px;
+    color: #2563eb;
+    background: rgba(37, 99, 235, 0.1);
+}
+
+.office-output-card.xlsx .office-output-icon {
+    color: #0f8a5f;
+    background: rgba(15, 138, 95, 0.1);
+}
+
+.office-output-info {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.office-output-info > strong {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.office-output-info p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 9px;
+    line-height: 1.4;
+}
+
+.office-output-info > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.office-output-info > div span {
+    padding: 3px 5px;
+    border-radius: 5px;
+    color: var(--text-secondary);
+    background: rgba(148, 163, 184, 0.09);
+    font-size: 8px;
+}
+
+.office-output-warning {
+    color: #b45309;
+    font-size: 8px;
+}
+
+.office-output-card > button {
+    display: inline-flex;
+    min-height: 36px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 9px;
+    color: #fff;
+    background: #2563eb;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.office-output-card.xlsx > button {
+    background: #0f8a5f;
+}
+
+.office-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 13px;
+    border: 1px solid rgba(225, 29, 72, 0.16);
+    border-radius: 12px;
+    color: #be123c;
+    background: rgba(225, 29, 72, 0.055);
+}
+
+.office-error > svg {
+    margin-top: 1px;
+    flex: 0 0 auto;
+}
+
+.office-error > div {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.office-error strong {
+    font-size: 10px;
+}
+
+.office-error span {
+    font-size: 9px;
+    line-height: 1.45;
+}
+
+.office-error button {
+    display: grid;
+    padding: 3px;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+}
+
+.office-retry-button {
+    display: inline-flex;
+    align-self: flex-start;
+    align-items: center;
+    gap: 5px;
+    padding: 7px 10px;
+    border: 1px solid rgba(14, 165, 233, 0.2);
+    border-radius: 8px;
+    color: #0284c7;
+    background: rgba(14, 165, 233, 0.06);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+@media (max-width: 1120px) {
+    .office-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .office-task-column {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        align-items: start;
+    }
+
+    .office-error,
+    .office-retry-button {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 820px) {
+    .office-workspace {
+        padding: 24px 16px 36px;
+    }
+
+    .office-hero {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .office-task-column {
+        display: flex;
+    }
+
+    .office-top-capabilities {
+        display: none;
+    }
+
+    .office-action-grid,
+    .office-options {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 /* ═══ Reset & Base ═══ */
 *,
 *::before,

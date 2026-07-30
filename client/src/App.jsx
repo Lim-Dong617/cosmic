@@ -10,6 +10,7 @@ import {
     History, LogOut, BookOpen, GitBranch, Layers, Code2
 } from 'lucide-react';
 import NesmaApp from './NesmaApp';
+import OfficeDocumentApp from './OfficeDocumentApp';
 import HistoryPanel from './HistoryPanel';
 import CodeSourceAnalyzer from './CodeSourceAnalyzer';
 import SequenceDiagram, { generateAllDiagramImages } from './SequenceDiagram';
@@ -392,7 +393,7 @@ function App({ user, token, onLogout }) {
         headers: { Authorization: `Bearer ${token}` }
     }), [token]);
 
-    // 分析模式：cosmic 或 nesma
+    // 工作模式：COSMIC、NESMA 或通用办公文档
     const [analysisMode, setAnalysisMode] = useState(() => {
         if (typeof window !== 'undefined') {
             return window.localStorage.getItem('analysisMode') || 'cosmic';
@@ -3885,16 +3886,36 @@ function App({ user, token, onLogout }) {
             <div className="sidebar">
                 <div className="sidebar-header">
                     <div className="sidebar-logo">
-                        <div className={`sidebar-logo-icon ${analysisMode === 'cosmic' ? 'cosmic-brand-logo-shell' : 'nesma-logo-icon'}`}>
+                        <div className={`sidebar-logo-icon ${
+                            analysisMode === 'cosmic'
+                                ? 'cosmic-brand-logo-shell'
+                                : analysisMode === 'office'
+                                    ? 'office-logo-icon'
+                                    : 'nesma-logo-icon'
+                        }`}>
                             {analysisMode === 'cosmic' ? (
                                 <img className="cosmic-brand-logo cosmic-brand-logo-sidebar" src="/cosmic-logo-mark.png" alt="COSMIC" />
+                            ) : analysisMode === 'office' ? (
+                                <FileSpreadsheet size={22} />
                             ) : (
                                 <BarChart3 size={22} />
                             )}
                         </div>
                         <div>
-                            <h1>{analysisMode === 'cosmic' ? 'COSMIC 拆分' : 'NESMA 拆分'}</h1>
-                            <p>{analysisMode === 'cosmic' ? '智能功能规模分析' : '功能点智能拆分'}</p>
+                            <h1>{
+                                analysisMode === 'cosmic'
+                                    ? 'COSMIC 拆分'
+                                    : analysisMode === 'office'
+                                        ? '智能办公'
+                                        : 'NESMA 拆分'
+                            }</h1>
+                            <p>{
+                                analysisMode === 'cosmic'
+                                    ? '智能功能规模分析'
+                                    : analysisMode === 'office'
+                                        ? 'Word · Excel 文档处理'
+                                        : '功能点智能拆分'
+                            }</p>
                         </div>
                     </div>
                     <div className="sidebar-header-actions">
@@ -3908,7 +3929,7 @@ function App({ user, token, onLogout }) {
                         <button
                             className="btn btn-ghost btn-icon sidebar-new-btn"
                             onClick={handleNewConversation}
-                            title="新建分析"
+                            title="新建任务"
                         >
                             <Plus size={18} />
                         </button>
@@ -3916,9 +3937,9 @@ function App({ user, token, onLogout }) {
                 </div>
 
                 <div className="sidebar-content">
-                    {/* 分析模式选择 */}
+                    {/* 工作模式选择 */}
                     <div className="section-group">
-                        <div className="section-label">分析模式</div>
+                        <div className="section-label">工作模式</div>
                         <div className="model-selector">
                             <button
                                 className={`model-option ${analysisMode === 'cosmic' ? 'active' : ''}`}
@@ -3938,6 +3959,16 @@ function App({ user, token, onLogout }) {
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: 13 }}>NESMA</div>
                                     <div style={{ fontSize: 11, opacity: 0.6 }}>ILF/EIF/EI/EO/EQ 功能点</div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option office-mode-btn ${analysisMode === 'office' ? 'active' : ''}`}
+                                onClick={() => setAnalysisMode('office')}
+                            >
+                                <span className="model-option-dot" />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>智能办公文档</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>Word / Excel 修改与生成</div>
                                 </div>
                             </button>
                         </div>
@@ -3992,6 +4023,7 @@ function App({ user, token, onLogout }) {
                     </div>
 
                     {/* 拆分设置 */}
+                    {analysisMode !== 'office' && (
                     <div className="section-group">
                         <div className="section-label">拆分设置</div>
                         {/* 模块脚手架信息 */}
@@ -4037,6 +4069,7 @@ function App({ user, token, onLogout }) {
                             />
                         </div>
                     </div>
+                    )}
                 </div>
 
                 {/* 状态栏 */}
@@ -4063,7 +4096,13 @@ function App({ user, token, onLogout }) {
             </div>
 
             {/* ═══ Main Content (conditionally rendered based on mode) ═══ */}
-            {analysisMode === 'nesma' ? (
+            {analysisMode === 'office' ? (
+                <OfficeDocumentApp
+                    selectedModel={selectedModel}
+                    getUserConfig={getUserConfig}
+                    showToast={showToast}
+                />
+            ) : analysisMode === 'nesma' ? (
                 <NesmaApp
                     selectedModel={selectedModel}
                     getUserConfig={getUserConfig}
