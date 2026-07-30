@@ -386,7 +386,9 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
                 {
                     status: 'done',
                     title: format === 'xlsx' ? '生成并校验 Excel 工作簿' : '生成并校验 Word 文档',
-                    detail: `处理耗时 ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))} 秒，文件已可下载`
+                    detail: stats.executionMode === 'groupedText'
+                        ? `已覆盖 ${stats.processedRows || 0} 行、生成 ${stats.generatedTextCount || 0} 条分组文本，文件已可下载`
+                        : `处理耗时 ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))} 秒，文件已可下载`
                 }
             ]);
             showToast?.('办公文档处理完成');
@@ -415,6 +417,15 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
     const outputStats = useMemo(() => {
         if (!output) return [];
         if (output.format === 'xlsx') {
+            if (output.stats?.executionMode === 'groupedText') {
+                return [
+                    `${output.stats?.groupCount || 0} 个逻辑分组`,
+                    `${output.stats?.generatedTextCount || 0} 条文本`,
+                    `${output.stats?.processedRows || 0} 行全部覆盖`,
+                    `${output.stats?.batchCount || 0} 个后台批次`,
+                    output.stats?.errorCount ? `${output.stats.errorCount} 个已有公式错误` : '未发现已有公式错误'
+                ];
+            }
             return [
                 `${output.stats?.sheetCount || 0} 个工作表`,
                 `${output.stats?.formulaCount || 0} 个公式`,
