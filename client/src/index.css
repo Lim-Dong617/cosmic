@@ -63,58 +63,69 @@
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Intelligent Office Document Center
+   Intelligent Office Document Center - Vintage Book Edition
+   复古书籍纸张质感主题
    ═══════════════════════════════════════════════════════════ */
 
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700;900&family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+
 .office-mode-btn .model-option-dot {
-    background: linear-gradient(135deg, #0ea5e9, #14b8a6);
-    box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
+    background: linear-gradient(135deg, #8b6914, #a67c52);
+    box-shadow: 0 0 0 4px rgba(139, 105, 20, 0.15);
 }
 
 .office-mode-btn.active {
-    border-color: rgba(14, 165, 233, 0.5) !important;
-    background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(20, 184, 166, 0.08)) !important;
+    border-color: rgba(139, 105, 20, 0.45) !important;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.1), rgba(166, 124, 82, 0.07)) !important;
 }
 
 .office-logo-icon {
-    color: #fff;
-    background: linear-gradient(135deg, #0284c7, #0f766e);
-    box-shadow: 0 8px 24px rgba(2, 132, 199, 0.28);
+    color: #fef3c7;
+    background: linear-gradient(135deg, #78350f, #92400e);
+    box-shadow: 0 8px 24px rgba(120, 53, 15, 0.35);
 }
 
 .office-main {
     min-width: 0;
     overflow: hidden;
     background:
-        radial-gradient(circle at 12% -8%, rgba(14, 165, 233, 0.08), transparent 29%),
-        radial-gradient(circle at 90% 12%, rgba(20, 184, 166, 0.07), transparent 26%),
-        var(--bg-primary);
+        repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 28px,
+            rgba(139, 105, 20, 0.03) 28px,
+            rgba(139, 105, 20, 0.03) 29px
+        ),
+        linear-gradient(180deg, #f5eed6 0%, #ede4c8 40%, #e8dcc0 100%);
 }
 
 .office-top-bar {
-    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
-    background: color-mix(in srgb, var(--bg-primary) 90%, transparent);
-    backdrop-filter: blur(18px);
+    border-bottom: 2px solid rgba(139, 105, 20, 0.15);
+    background: linear-gradient(135deg, rgba(245, 238, 214, 0.97), rgba(237, 228, 200, 0.95));
+    backdrop-filter: blur(20px);
+    box-shadow: 0 1px 0 rgba(255, 248, 230, 0.6) inset;
 }
 
 .office-top-badge {
     display: inline-flex;
     align-items: center;
-    padding: 4px 9px;
-    border: 1px solid rgba(14, 165, 233, 0.2);
-    border-radius: 999px;
-    color: #0284c7;
-    background: rgba(14, 165, 233, 0.08);
+    padding: 5px 11px;
+    border: 1px solid rgba(139, 105, 20, 0.25);
+    border-radius: 4px;
+    color: #78350f;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.08), rgba(120, 53, 15, 0.05));
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
+    font-weight: 600;
+    letter-spacing: 0.12em;
 }
 
 .office-top-capabilities {
     display: flex;
     align-items: center;
-    gap: 14px;
-    color: var(--text-secondary);
+    gap: 16px;
+    color: #8b7355;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 11px;
 }
 
@@ -125,7 +136,7 @@
 }
 
 .office-top-capabilities svg {
-    color: #0f9f6e;
+    color: #92400e;
 }
 
 .office-upload-progress {
@@ -134,15 +145,16 @@
     right: 0;
     left: 0;
     z-index: 10;
-    height: 2px;
+    height: 3px;
     overflow: hidden;
-    background: rgba(14, 165, 233, 0.08);
+    background: transparent;
 }
 
 .office-upload-progress > div {
     height: 100%;
     border-radius: 999px;
-    background: linear-gradient(90deg, #0284c7, #14b8a6);
+    background: linear-gradient(90deg, #92400e, #b45309, #d97706);
+    box-shadow: 0 0 12px rgba(146, 64, 14, 0.5);
     transition: width 180ms ease;
 }
 
@@ -150,86 +162,117 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 34px clamp(24px, 4vw, 58px) 48px;
+    padding: 40px clamp(24px, 4vw, 60px) 60px;
 }
 
 .office-hero {
     display: flex;
-    align-items: flex-end;
+    align-items: flex-start;
     justify-content: space-between;
-    width: min(1180px, 100%);
-    margin: 0 auto 26px;
-    padding: 6px 2px;
-    gap: 24px;
+    width: min(1240px, 100%);
+    margin: 0 auto 32px;
+    padding: 24px 28px;
+    gap: 28px;
+    border: 1px solid rgba(139, 105, 20, 0.12);
+    border-radius: 4px;
+    background:
+        linear-gradient(135deg, rgba(245, 238, 214, 0.7), rgba(237, 228, 200, 0.5));
+    box-shadow:
+        0 1px 0 rgba(255, 248, 230, 0.8) inset,
+        0 4px 16px rgba(120, 53, 15, 0.06);
+    position: relative;
+}
+
+.office-hero::before {
+    content: '✦';
+    position: absolute;
+    top: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #ede4c8;
+    padding: 0 12px;
+    color: rgba(139, 105, 20, 0.35);
+    font-size: 12px;
+    letter-spacing: 6px;
 }
 
 .office-hero-copy {
-    max-width: 760px;
+    max-width: 800px;
 }
 
 .office-eyebrow {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    margin-bottom: 12px;
-    color: #0284c7;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    margin-bottom: 14px;
+    padding: 6px 14px;
+    border-radius: 3px;
+    color: #92400e;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.1), rgba(120, 53, 15, 0.06));
+    border: 1px solid rgba(139, 105, 20, 0.15);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
 }
 
 .office-hero h1 {
     margin: 0;
-    color: var(--text-primary);
-    font-size: clamp(28px, 3vw, 42px);
-    line-height: 1.15;
-    letter-spacing: -0.035em;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Playfair Display', 'Georgia', serif;
+    font-size: clamp(28px, 3.2vw, 42px);
+    font-weight: 900;
+    line-height: 1.3;
+    letter-spacing: -0.02em;
 }
 
 .office-hero p {
-    max-width: 700px;
-    margin: 12px 0 0;
-    color: var(--text-secondary);
+    max-width: 720px;
+    margin: 14px 0 0;
+    color: #78716c;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 14px;
-    line-height: 1.75;
+    line-height: 1.8;
 }
 
 .office-format-pills {
     display: flex;
-    gap: 9px;
+    gap: 10px;
     flex: 0 0 auto;
 }
 
 .office-format-pills span {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    padding: 10px 13px;
+    gap: 8px;
+    padding: 12px 16px;
     border: 1px solid;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 800;
+    border-radius: 4px;
+    font-family: 'EB Garamond', 'Georgia', serif;
+    font-size: 13px;
+    font-weight: 600;
     letter-spacing: 0.06em;
+    box-shadow: 0 2px 8px rgba(120, 53, 15, 0.06);
 }
 
 .office-format-pills .word {
-    color: #2563eb;
-    border-color: rgba(37, 99, 235, 0.18);
-    background: rgba(37, 99, 235, 0.07);
+    color: #78350f;
+    border-color: rgba(120, 53, 15, 0.2);
+    background: linear-gradient(135deg, rgba(120, 53, 15, 0.08), rgba(139, 105, 20, 0.04));
 }
 
 .office-format-pills .excel {
-    color: #0f8a5f;
-    border-color: rgba(15, 138, 95, 0.18);
-    background: rgba(15, 138, 95, 0.07);
+    color: #365314;
+    border-color: rgba(54, 83, 20, 0.2);
+    background: linear-gradient(135deg, rgba(54, 83, 20, 0.08), rgba(77, 124, 15, 0.04));
 }
 
 .office-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
+    grid-template-columns: minmax(0, 1.1fr) minmax(380px, 0.9fr);
     align-items: start;
-    gap: 22px;
-    width: min(1180px, 100%);
+    gap: 24px;
+    width: min(1240px, 100%);
     margin: 0 auto;
 }
 
@@ -238,163 +281,215 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: 18px;
+    gap: 20px;
 }
 
 .office-panel,
 .office-preview-card,
 .office-empty-workspace {
-    border: 1px solid rgba(148, 163, 184, 0.17);
-    border-radius: 18px;
-    background: color-mix(in srgb, var(--bg-secondary) 91%, transparent);
-    box-shadow: 0 14px 42px rgba(15, 23, 42, 0.055);
+    border: 1px solid rgba(139, 105, 20, 0.15);
+    border-radius: 4px;
+    background:
+        linear-gradient(180deg, #faf6eb 0%, #f5eed6 100%);
+    box-shadow:
+        0 1px 0 rgba(255, 252, 240, 0.9) inset,
+        0 4px 16px rgba(120, 53, 15, 0.06),
+        3px 0 8px -2px rgba(120, 53, 15, 0.04),
+        -3px 0 8px -2px rgba(120, 53, 15, 0.04);
+    position: relative;
+}
+
+.office-panel::after,
+.office-preview-card::after {
+    content: '';
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: 28px;
+    width: 1px;
+    background: linear-gradient(180deg, transparent, rgba(139, 105, 20, 0.1), transparent);
+    pointer-events: none;
 }
 
 .office-panel {
-    padding: 20px;
+    padding: 24px 24px 24px 40px;
 }
 
 .office-panel-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 16px;
+    margin-bottom: 20px;
     gap: 12px;
 }
 
 .office-panel-heading > div:first-child {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
 }
 
 .office-panel-heading h2 {
     margin: 0;
-    color: var(--text-primary);
-    font-size: 15px;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 16px;
     font-weight: 700;
 }
 
 .office-step {
     display: inline-grid;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     place-items: center;
-    border-radius: 9px;
-    color: #0369a1;
-    background: rgba(14, 165, 233, 0.11);
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.05em;
+    border-radius: 4px;
+    color: #92400e;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.12), rgba(120, 53, 15, 0.08));
+    border: 1px solid rgba(139, 105, 20, 0.15);
+    font-family: 'Playfair Display', 'Georgia', serif;
+    font-size: 12px;
+    font-weight: 700;
+    font-style: italic;
+    box-shadow: 0 1px 3px rgba(120, 53, 15, 0.1);
 }
 
 .office-required {
-    color: #e11d48;
+    padding: 3px 8px;
+    border-radius: 3px;
+    color: #9a3412;
+    background: rgba(234, 88, 12, 0.1);
+    border: 1px solid rgba(234, 88, 12, 0.15);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 10px;
-    font-weight: 700;
+    font-weight: 600;
 }
 
 .office-link-button {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 5px 8px;
+    gap: 5px;
+    padding: 6px 10px;
     border: 0;
-    color: var(--text-secondary);
+    border-radius: 4px;
+    color: #8b7355;
     background: transparent;
-    font-size: 11px;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 12px;
     cursor: pointer;
+    transition: all 150ms ease;
 }
 
 .office-link-button:hover {
-    color: #e11d48;
+    color: #9a3412;
+    background: rgba(234, 88, 12, 0.08);
 }
 
 .office-drop-zone {
     display: flex;
-    min-height: 190px;
+    min-height: 200px;
     align-items: center;
     justify-content: center;
     flex-direction: column;
-    padding: 26px;
-    border: 1.5px dashed rgba(14, 165, 233, 0.32);
-    border-radius: 15px;
+    padding: 32px;
+    border: 2px dashed rgba(139, 105, 20, 0.3);
+    border-radius: 4px;
     background:
-        linear-gradient(135deg, rgba(14, 165, 233, 0.055), rgba(20, 184, 166, 0.025)),
-        var(--bg-primary);
+        repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 24px,
+            rgba(139, 105, 20, 0.02) 24px,
+            rgba(139, 105, 20, 0.02) 25px
+        ),
+        linear-gradient(135deg, rgba(250, 246, 235, 0.8), rgba(245, 238, 214, 0.6));
     text-align: center;
     cursor: pointer;
-    transition: 180ms ease;
+    transition: all 200ms ease;
 }
 
 .office-drop-zone:hover,
 .office-drop-zone.dragging {
-    transform: translateY(-1px);
-    border-color: #0ea5e9;
+    transform: translateY(-2px);
+    border-color: rgba(139, 105, 20, 0.5);
     background:
-        linear-gradient(135deg, rgba(14, 165, 233, 0.11), rgba(20, 184, 166, 0.06)),
-        var(--bg-primary);
-    box-shadow: inset 0 0 0 3px rgba(14, 165, 233, 0.05);
+        repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 24px,
+            rgba(139, 105, 20, 0.03) 24px,
+            rgba(139, 105, 20, 0.03) 25px
+        ),
+        linear-gradient(135deg, rgba(250, 246, 235, 1), rgba(245, 238, 214, 0.9));
+    box-shadow: 0 8px 24px rgba(120, 53, 15, 0.1), inset 0 0 0 1px rgba(139, 105, 20, 0.08);
 }
 
 .office-drop-icon {
     display: grid;
-    width: 52px;
-    height: 52px;
-    margin-bottom: 13px;
+    width: 56px;
+    height: 56px;
+    margin-bottom: 16px;
     place-items: center;
-    border-radius: 16px;
-    color: #fff;
-    background: linear-gradient(135deg, #0284c7, #14b8a6);
-    box-shadow: 0 10px 24px rgba(2, 132, 199, 0.22);
+    border-radius: 6px;
+    color: #fef3c7;
+    background: linear-gradient(135deg, #78350f, #92400e);
+    box-shadow: 0 8px 24px rgba(120, 53, 15, 0.25);
 }
 
 .office-drop-zone strong {
-    color: var(--text-primary);
-    font-size: 15px;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 16px;
+    font-weight: 700;
 }
 
 .office-drop-zone p {
-    margin: 7px 0;
-    color: var(--text-secondary);
-    font-size: 12px;
+    margin: 8px 0;
+    color: #78716c;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 13px;
 }
 
 .office-drop-zone small {
-    color: var(--text-muted);
-    font-size: 10px;
+    color: #a8a29e;
+    font-size: 11px;
 }
 
 .office-file-card {
     display: flex;
-    min-height: 78px;
+    min-height: 84px;
     align-items: center;
-    gap: 13px;
-    padding: 14px;
-    border: 1px solid rgba(37, 99, 235, 0.16);
-    border-radius: 14px;
-    background: rgba(37, 99, 235, 0.055);
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid rgba(120, 53, 15, 0.15);
+    border-radius: 4px;
+    background: linear-gradient(135deg, rgba(120, 53, 15, 0.04), rgba(139, 105, 20, 0.02));
+    box-shadow: 0 2px 8px rgba(120, 53, 15, 0.06);
 }
 
 .office-file-card.excel {
-    border-color: rgba(15, 138, 95, 0.17);
-    background: rgba(15, 138, 95, 0.055);
+    border-color: rgba(54, 83, 20, 0.2);
+    background: linear-gradient(135deg, rgba(54, 83, 20, 0.04), rgba(77, 124, 15, 0.02));
+    box-shadow: 0 2px 8px rgba(54, 83, 20, 0.06);
 }
 
 .office-file-card .office-file-icon {
     display: grid;
-    width: 46px;
-    height: 46px;
+    width: 50px;
+    height: 50px;
     flex: 0 0 auto;
     place-items: center;
-    border-radius: 13px;
-    color: #2563eb;
-    background: rgba(37, 99, 235, 0.1);
+    border-radius: 4px;
+    color: #78350f;
+    background: linear-gradient(135deg, rgba(120, 53, 15, 0.12), rgba(139, 105, 20, 0.08));
+    border: 1px solid rgba(120, 53, 15, 0.1);
+    box-shadow: 0 2px 6px rgba(120, 53, 15, 0.1);
 }
 
 .office-file-card.excel .office-file-icon {
-    color: #0f8a5f;
-    background: rgba(15, 138, 95, 0.1);
+    color: #365314;
+    background: linear-gradient(135deg, rgba(54, 83, 20, 0.12), rgba(77, 124, 15, 0.08));
+    border-color: rgba(54, 83, 20, 0.12);
+    box-shadow: 0 2px 6px rgba(54, 83, 20, 0.1);
 }
 
 .office-file-card > div {
@@ -402,25 +497,27 @@
     min-width: 0;
     flex: 1;
     flex-direction: column;
-    gap: 5px;
+    gap: 6px;
 }
 
 .office-file-card strong {
     overflow: hidden;
-    color: var(--text-primary);
-    font-size: 13px;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 14px;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .office-file-card span {
-    color: var(--text-secondary);
+    color: #8b7355;
     font-size: 11px;
 }
 
 .office-file-card > svg {
     flex: 0 0 auto;
-    color: #0f9f6e;
+    color: #92400e;
 }
 
 .office-preview-card {
@@ -431,26 +528,31 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    padding: 18px 20px 14px;
-    gap: 16px;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    padding: 20px 24px 16px 40px;
+    gap: 18px;
+    border-bottom: 1px solid rgba(139, 105, 20, 0.12);
+    background: linear-gradient(135deg, rgba(250, 246, 235, 0.5), transparent);
 }
 
 .office-preview-kicker {
     display: block;
-    margin-bottom: 5px;
-    color: #0284c7;
-    font-size: 9px;
-    font-weight: 800;
-    letter-spacing: 0.1em;
+    margin-bottom: 6px;
+    color: #92400e;
+    font-family: 'EB Garamond', 'Georgia', serif;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
 }
 
 .office-preview-head h3 {
-    max-width: 390px;
+    max-width: 420px;
     overflow: hidden;
     margin: 0;
-    color: var(--text-primary);
-    font-size: 13px;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 14px;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -459,48 +561,52 @@
     display: flex;
     align-items: flex-end;
     flex-direction: column;
-    gap: 3px;
-    color: var(--text-secondary);
-    font-size: 10px;
+    gap: 4px;
+    color: #8b7355;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 11px;
     white-space: nowrap;
 }
 
 .office-heading-list {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    padding: 12px 20px 0;
+    gap: 7px;
+    padding: 14px 24px 0 40px;
 }
 
 .office-heading-list span {
-    max-width: 180px;
+    max-width: 200px;
     overflow: hidden;
-    padding: 4px 7px;
-    border-radius: 6px;
-    color: #0369a1;
-    background: rgba(14, 165, 233, 0.07);
-    font-size: 9px;
+    padding: 5px 9px;
+    border-radius: 3px;
+    color: #92400e;
+    background: rgba(139, 105, 20, 0.08);
+    border: 1px solid rgba(139, 105, 20, 0.1);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 10px;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .office-text-preview {
-    max-height: 260px;
+    max-height: 280px;
     overflow: auto;
-    padding: 16px 20px 20px;
-    color: var(--text-secondary);
-    font-family: "Microsoft YaHei", sans-serif;
-    font-size: 11px;
-    line-height: 1.75;
+    padding: 18px 24px 24px 40px;
+    color: #57534e;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 13px;
+    line-height: 2;
     white-space: pre-wrap;
 }
 
 .office-sheet-tabs {
     display: flex;
     gap: 6px;
-    padding: 11px 14px;
+    padding: 11px 14px 11px 40px;
     overflow-x: auto;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    border-bottom: 1px solid rgba(139, 105, 20, 0.1);
 }
 
 .office-sheet-tabs button {
@@ -511,17 +617,18 @@
     gap: 2px;
     padding: 7px 10px;
     border: 1px solid transparent;
-    border-radius: 8px;
-    color: var(--text-secondary);
+    border-radius: 3px;
+    color: #8b7355;
     background: transparent;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 10px;
     cursor: pointer;
 }
 
 .office-sheet-tabs button.active {
-    border-color: rgba(15, 138, 95, 0.18);
-    color: #0f8a5f;
-    background: rgba(15, 138, 95, 0.08);
+    border-color: rgba(54, 83, 20, 0.18);
+    color: #365314;
+    background: rgba(54, 83, 20, 0.06);
 }
 
 .office-sheet-tabs small {
@@ -532,43 +639,44 @@
 .office-table-preview-wrap {
     max-height: 300px;
     overflow: auto;
-    padding: 14px;
+    padding: 14px 14px 14px 40px;
 }
 
 .office-table-preview {
     min-width: 100%;
     border-spacing: 0;
     border-collapse: separate;
-    color: var(--text-secondary);
-    font-size: 9px;
+    color: #57534e;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 10px;
 }
 
 .office-table-preview td {
     max-width: 180px;
     padding: 7px 9px;
     overflow: hidden;
-    border-right: 1px solid rgba(148, 163, 184, 0.14);
-    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    border-right: 1px solid rgba(139, 105, 20, 0.1);
+    border-bottom: 1px solid rgba(139, 105, 20, 0.1);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .office-table-preview tr:first-child td {
-    border-top: 1px solid rgba(148, 163, 184, 0.14);
+    border-top: 1px solid rgba(139, 105, 20, 0.1);
 }
 
 .office-table-preview td:first-child {
-    border-left: 1px solid rgba(148, 163, 184, 0.14);
+    border-left: 1px solid rgba(139, 105, 20, 0.1);
 }
 
 .office-table-preview .header-cell {
-    color: var(--text-primary);
-    background: rgba(15, 138, 95, 0.07);
+    color: #451a03;
+    background: rgba(139, 105, 20, 0.06);
     font-weight: 700;
 }
 
 .office-empty-workspace {
-    padding: 20px;
+    padding: 20px 20px 20px 40px;
 }
 
 .office-empty-title {
@@ -580,18 +688,20 @@
 
 .office-empty-title > svg {
     margin-top: 1px;
-    color: #0284c7;
+    color: #92400e;
 }
 
 .office-empty-title h2 {
     margin: 0 0 4px;
-    color: var(--text-primary);
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 14px;
 }
 
 .office-empty-title p {
     margin: 0;
-    color: var(--text-secondary);
+    color: #8b7355;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 11px;
 }
 
@@ -607,10 +717,10 @@
     align-items: center;
     gap: 4px 10px;
     padding: 13px;
-    border: 1px solid rgba(148, 163, 184, 0.16);
-    border-radius: 12px;
-    color: var(--text-primary);
-    background: var(--bg-primary);
+    border: 1px solid rgba(139, 105, 20, 0.12);
+    border-radius: 4px;
+    color: #451a03;
+    background: linear-gradient(180deg, #faf6eb, #f5eed6);
     text-align: left;
     cursor: pointer;
     transition: 160ms ease;
@@ -618,8 +728,8 @@
 
 .office-action-grid button:hover {
     transform: translateY(-1px);
-    border-color: rgba(14, 165, 233, 0.36);
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+    border-color: rgba(139, 105, 20, 0.3);
+    box-shadow: 0 6px 18px rgba(120, 53, 15, 0.08);
 }
 
 .office-action-icon {
@@ -628,25 +738,28 @@
     width: 39px;
     height: 39px;
     place-items: center;
-    border-radius: 11px;
+    border-radius: 4px;
 }
 
 .office-action-icon.docx {
-    color: #2563eb;
-    background: rgba(37, 99, 235, 0.09);
+    color: #78350f;
+    background: rgba(120, 53, 15, 0.08);
+    border: 1px solid rgba(120, 53, 15, 0.1);
 }
 
 .office-action-icon.xlsx {
-    color: #0f8a5f;
-    background: rgba(15, 138, 95, 0.09);
+    color: #365314;
+    background: rgba(54, 83, 20, 0.07);
+    border: 1px solid rgba(54, 83, 20, 0.1);
 }
 
 .office-action-grid strong {
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 11px;
 }
 
 .office-action-grid small {
-    color: var(--text-secondary);
+    color: #8b7355;
     font-size: 9px;
     line-height: 1.4;
 }
@@ -656,53 +769,68 @@
     min-height: 164px;
     resize: vertical;
     padding: 14px;
-    border: 1px solid rgba(148, 163, 184, 0.23);
-    border-radius: 13px;
+    border: 1px solid rgba(139, 105, 20, 0.18);
+    border-radius: 4px;
     outline: none;
-    color: var(--text-primary);
-    background: var(--bg-primary);
-    font-family: inherit;
-    font-size: 12px;
-    line-height: 1.7;
+    color: #451a03;
+    background:
+        repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 27px,
+            rgba(139, 105, 20, 0.04) 27px,
+            rgba(139, 105, 20, 0.04) 28px
+        ),
+        linear-gradient(180deg, #faf6eb, #f7f0da);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 13px;
+    line-height: 1.8;
     transition: 160ms ease;
 }
 
 .office-task-panel textarea:focus {
-    border-color: rgba(14, 165, 233, 0.68);
-    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.08);
+    border-color: rgba(139, 105, 20, 0.45);
+    box-shadow: 0 0 0 3px rgba(139, 105, 20, 0.06);
 }
 
 .office-task-panel textarea::placeholder {
-    color: var(--text-muted);
+    color: #a8a29e;
+    font-style: italic;
 }
 
 .office-action-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 10px;
+    gap: 8px;
+    margin-bottom: 14px;
 }
 
 .office-action-chips button {
-    padding: 6px 9px;
-    border: 1px solid rgba(14, 165, 233, 0.14);
-    border-radius: 999px;
-    color: #0369a1;
-    background: rgba(14, 165, 233, 0.055);
-    font-size: 9px;
+    padding: 8px 14px;
+    border: 1px solid rgba(139, 105, 20, 0.2);
+    border-radius: 3px;
+    color: #78350f;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.06), rgba(120, 53, 15, 0.03));
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 11px;
+    font-weight: 600;
     cursor: pointer;
+    transition: all 150ms ease;
 }
 
 .office-action-chips button:hover {
-    border-color: rgba(14, 165, 233, 0.38);
-    background: rgba(14, 165, 233, 0.1);
+    transform: translateY(-1px);
+    border-color: rgba(139, 105, 20, 0.4);
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.12), rgba(120, 53, 15, 0.07));
+    box-shadow: 0 4px 12px rgba(120, 53, 15, 0.1);
 }
 
 .office-instruction-footer {
     display: flex;
     justify-content: space-between;
     padding: 7px 2px 0;
-    color: var(--text-muted);
+    color: #a8a29e;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 9px;
 }
 
@@ -720,7 +848,8 @@
 }
 
 .office-options label > span {
-    color: var(--text-secondary);
+    color: #8b7355;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 10px;
     font-weight: 600;
 }
@@ -728,42 +857,54 @@
 .office-options select {
     width: 100%;
     padding: 9px 10px;
-    border: 1px solid rgba(148, 163, 184, 0.2);
-    border-radius: 9px;
+    border: 1px solid rgba(139, 105, 20, 0.15);
+    border-radius: 4px;
     outline: none;
-    color: var(--text-primary);
-    background: var(--bg-primary);
+    color: #451a03;
+    background: linear-gradient(180deg, #faf6eb, #f7f0da);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
     font-size: 10px;
 }
 
 .office-process-button {
     display: flex;
     width: 100%;
-    min-height: 46px;
+    min-height: 52px;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    margin-top: 15px;
-    border: 0;
-    border-radius: 12px;
-    color: #fff;
-    background: linear-gradient(135deg, #0284c7, #0f766e);
-    box-shadow: 0 10px 24px rgba(2, 132, 199, 0.22);
-    font-size: 12px;
+    gap: 10px;
+    margin-top: 18px;
+    border: 1px solid rgba(120, 53, 15, 0.15);
+    border-radius: 4px;
+    color: #fef3c7;
+    background: linear-gradient(180deg, #78350f 0%, #92400e 50%, #78350f 100%);
+    box-shadow:
+        0 1px 0 rgba(255, 248, 230, 0.15) inset,
+        0 8px 20px rgba(120, 53, 15, 0.3);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 15px;
     font-weight: 700;
+    letter-spacing: 0.05em;
     cursor: pointer;
-    transition: 170ms ease;
+    transition: all 200ms ease;
 }
 
 .office-process-button:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 14px 28px rgba(2, 132, 199, 0.27);
+    transform: translateY(-2px);
+    background: linear-gradient(180deg, #92400e 0%, #a3530d 50%, #92400e 100%);
+    box-shadow:
+        0 1px 0 rgba(255, 248, 230, 0.2) inset,
+        0 12px 32px rgba(120, 53, 15, 0.4);
+}
+
+.office-process-button:active:not(:disabled) {
+    transform: translateY(0);
 }
 
 .office-process-button:disabled {
-    opacity: 0.45;
+    opacity: 0.5;
     cursor: not-allowed;
-    box-shadow: none;
+    box-shadow: 0 4px 12px rgba(120, 53, 15, 0.15);
 }
 
 .office-result-panel {
@@ -773,97 +914,159 @@
 .office-complete-badge {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 7px;
-    border-radius: 999px;
-    color: #047857;
-    background: rgba(16, 185, 129, 0.09);
-    font-size: 9px;
+    gap: 5px;
+    padding: 6px 10px;
+    border-radius: 3px;
+    color: #92400e;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.1), rgba(120, 53, 15, 0.06));
+    border: 1px solid rgba(139, 105, 20, 0.15);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 11px;
     font-weight: 700;
 }
 
 .office-activity-list {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
 }
 
 .office-activity {
     display: flex;
     align-items: flex-start;
-    gap: 9px;
-    padding: 9px 4px;
+    gap: 12px;
+    padding: 12px 6px;
 }
 
 .office-activity > span {
     display: grid;
-    width: 25px;
-    height: 25px;
+    width: 28px;
+    height: 28px;
     flex: 0 0 auto;
     place-items: center;
-    border-radius: 8px;
-    color: #0f9f6e;
-    background: rgba(16, 185, 129, 0.08);
+    border-radius: 4px;
+    color: #92400e;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.1), rgba(120, 53, 15, 0.06));
+    border: 1px solid rgba(139, 105, 20, 0.12);
+    box-shadow: 0 1px 3px rgba(120, 53, 15, 0.08);
 }
 
 .office-activity.running > span {
-    color: #0284c7;
-    background: rgba(14, 165, 233, 0.08);
+    color: #b45309;
+    background: linear-gradient(135deg, rgba(180, 83, 9, 0.1), rgba(217, 119, 6, 0.06));
+    border-color: rgba(180, 83, 9, 0.15);
+    box-shadow: 0 1px 3px rgba(180, 83, 9, 0.1);
 }
 
 .office-activity.error > span {
-    color: #e11d48;
-    background: rgba(225, 29, 72, 0.08);
+    color: #9a3412;
+    background: linear-gradient(135deg, rgba(154, 52, 18, 0.1), rgba(234, 88, 12, 0.06));
+    border-color: rgba(154, 52, 18, 0.15);
+    box-shadow: 0 1px 3px rgba(154, 52, 18, 0.1);
 }
 
 .office-activity > div {
     display: flex;
     min-width: 0;
+    flex: 1;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
 }
 
 .office-activity strong {
-    color: var(--text-primary);
-    font-size: 10px;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 12px;
+    font-weight: 600;
 }
 
 .office-activity small {
-    color: var(--text-secondary);
-    font-size: 9px;
-    line-height: 1.4;
+    color: #8b7355;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.office-intent-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 14px;
+    border: 1px solid rgba(139, 105, 20, 0.18);
+    border-radius: 4px;
+    background: linear-gradient(135deg, rgba(250, 246, 235, 0.8), rgba(245, 238, 214, 0.5));
+}
+
+.office-intent-icon {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 4px;
+    color: #92400e;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.12), rgba(120, 53, 15, 0.08));
+    border: 1px solid rgba(139, 105, 20, 0.12);
+    box-shadow: 0 1px 3px rgba(120, 53, 15, 0.1);
+}
+
+.office-intent-card > div {
+    flex: 1;
+}
+
+.office-intent-card strong {
+    display: block;
+    margin-bottom: 4px;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.office-intent-card p {
+    margin: 0;
+    color: #57534e;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 12px;
+    line-height: 1.7;
 }
 
 .office-output-card {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-top: 12px;
-    padding: 13px;
-    border: 1px solid rgba(37, 99, 235, 0.16);
-    border-radius: 13px;
-    background: rgba(37, 99, 235, 0.05);
+    gap: 14px;
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid rgba(120, 53, 15, 0.18);
+    border-radius: 4px;
+    background: linear-gradient(135deg, rgba(120, 53, 15, 0.05), rgba(139, 105, 20, 0.03));
+    box-shadow: 0 4px 12px rgba(120, 53, 15, 0.06);
 }
 
 .office-output-card.xlsx {
-    border-color: rgba(15, 138, 95, 0.17);
-    background: rgba(15, 138, 95, 0.055);
+    border-color: rgba(54, 83, 20, 0.2);
+    background: linear-gradient(135deg, rgba(54, 83, 20, 0.05), rgba(77, 124, 15, 0.03));
+    box-shadow: 0 4px 12px rgba(54, 83, 20, 0.06);
 }
 
 .office-output-icon {
     display: grid;
-    width: 46px;
-    height: 46px;
+    width: 52px;
+    height: 52px;
     flex: 0 0 auto;
     place-items: center;
-    border-radius: 12px;
-    color: #2563eb;
-    background: rgba(37, 99, 235, 0.1);
+    border-radius: 4px;
+    color: #78350f;
+    background: linear-gradient(135deg, rgba(120, 53, 15, 0.12), rgba(139, 105, 20, 0.08));
+    border: 1px solid rgba(120, 53, 15, 0.12);
+    box-shadow: 0 2px 6px rgba(120, 53, 15, 0.1);
 }
 
 .office-output-card.xlsx .office-output-icon {
-    color: #0f8a5f;
-    background: rgba(15, 138, 95, 0.1);
+    color: #365314;
+    background: linear-gradient(135deg, rgba(54, 83, 20, 0.12), rgba(77, 124, 15, 0.08));
+    border-color: rgba(54, 83, 20, 0.12);
+    box-shadow: 0 2px 6px rgba(54, 83, 20, 0.1);
 }
 
 .office-output-info {
@@ -871,76 +1074,106 @@
     min-width: 0;
     flex: 1;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
 }
 
 .office-output-info > strong {
     overflow: hidden;
-    color: var(--text-primary);
-    font-size: 11px;
+    color: #451a03;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 14px;
+    font-weight: 700;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .office-output-info p {
     margin: 0;
-    color: var(--text-secondary);
-    font-size: 9px;
-    line-height: 1.4;
+    color: #57534e;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 12px;
+    line-height: 1.6;
 }
 
 .office-output-info > div {
     display: flex;
     flex-wrap: wrap;
-    gap: 5px;
+    gap: 8px;
 }
 
 .office-output-info > div span {
-    padding: 3px 5px;
-    border-radius: 5px;
-    color: var(--text-secondary);
-    background: rgba(148, 163, 184, 0.09);
-    font-size: 8px;
+    padding: 4px 8px;
+    border-radius: 3px;
+    color: #8b7355;
+    background: rgba(139, 105, 20, 0.08);
+    border: 1px solid rgba(139, 105, 20, 0.08);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 10px;
+    font-weight: 500;
 }
 
 .office-output-warning {
-    color: #b45309;
-    font-size: 8px;
+    color: #9a3412;
+    font-size: 10px;
 }
 
 .office-output-card > button {
     display: inline-flex;
-    min-height: 36px;
+    min-height: 40px;
     align-items: center;
     justify-content: center;
-    gap: 5px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 9px;
-    color: #fff;
-    background: #2563eb;
-    font-size: 10px;
+    gap: 6px;
+    padding: 0 18px;
+    border: 1px solid rgba(120, 53, 15, 0.15);
+    border-radius: 4px;
+    color: #fef3c7;
+    background: linear-gradient(180deg, #78350f, #92400e);
+    box-shadow:
+        0 1px 0 rgba(255, 248, 230, 0.15) inset,
+        0 4px 12px rgba(120, 53, 15, 0.25);
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 13px;
     font-weight: 700;
     cursor: pointer;
+    transition: all 150ms ease;
+}
+
+.office-output-card > button:hover {
+    transform: translateY(-1px);
+    background: linear-gradient(180deg, #92400e, #a3530d);
+    box-shadow:
+        0 1px 0 rgba(255, 248, 230, 0.2) inset,
+        0 6px 16px rgba(120, 53, 15, 0.35);
 }
 
 .office-output-card.xlsx > button {
-    background: #0f8a5f;
+    background: linear-gradient(180deg, #365314, #3f6212);
+    box-shadow:
+        0 1px 0 rgba(236, 252, 203, 0.1) inset,
+        0 4px 12px rgba(54, 83, 20, 0.25);
+}
+
+.office-output-card.xlsx > button:hover {
+    background: linear-gradient(180deg, #3f6212, #4d7c0f);
+    box-shadow:
+        0 1px 0 rgba(236, 252, 203, 0.15) inset,
+        0 6px 16px rgba(54, 83, 20, 0.35);
 }
 
 .office-error {
     display: flex;
     align-items: flex-start;
-    gap: 9px;
-    padding: 13px;
-    border: 1px solid rgba(225, 29, 72, 0.16);
-    border-radius: 12px;
-    color: #be123c;
-    background: rgba(225, 29, 72, 0.055);
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid rgba(154, 52, 18, 0.2);
+    border-radius: 4px;
+    color: #9a3412;
+    background: linear-gradient(135deg, rgba(154, 52, 18, 0.06), rgba(234, 88, 12, 0.03));
+    box-shadow: 0 2px 8px rgba(154, 52, 18, 0.06);
 }
 
 .office-error > svg {
-    margin-top: 1px;
+    margin-top: 2px;
     flex: 0 0 auto;
 }
 
@@ -948,39 +1181,60 @@
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: 3px;
+    gap: 5px;
 }
 
 .office-error strong {
-    font-size: 10px;
+    color: #7c2d12;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 13px;
+    font-weight: 700;
 }
 
 .office-error span {
-    font-size: 9px;
-    line-height: 1.45;
+    color: #9a3412;
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 12px;
+    line-height: 1.6;
 }
 
 .office-error button {
     display: grid;
-    padding: 3px;
+    padding: 4px;
     border: 0;
+    border-radius: 4px;
     color: inherit;
     background: transparent;
     cursor: pointer;
+    transition: all 150ms ease;
+}
+
+.office-error button:hover {
+    background: rgba(154, 52, 18, 0.1);
 }
 
 .office-retry-button {
     display: inline-flex;
     align-self: flex-start;
     align-items: center;
-    gap: 5px;
-    padding: 7px 10px;
-    border: 1px solid rgba(14, 165, 233, 0.2);
-    border-radius: 8px;
-    color: #0284c7;
-    background: rgba(14, 165, 233, 0.06);
-    font-size: 10px;
+    gap: 6px;
+    padding: 10px 16px;
+    border: 1px solid rgba(139, 105, 20, 0.25);
+    border-radius: 4px;
+    color: #78350f;
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.06), rgba(120, 53, 15, 0.03));
+    font-family: 'Noto Serif SC', 'Georgia', serif;
+    font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
+    transition: all 150ms ease;
+}
+
+.office-retry-button:hover {
+    transform: translateY(-1px);
+    border-color: rgba(139, 105, 20, 0.4);
+    background: linear-gradient(135deg, rgba(139, 105, 20, 0.12), rgba(120, 53, 15, 0.07));
+    box-shadow: 0 4px 12px rgba(120, 53, 15, 0.1);
 }
 
 @media (max-width: 1120px) {

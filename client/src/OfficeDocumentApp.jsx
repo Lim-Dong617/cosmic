@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import {
     AlertCircle,
+    BookOpen,
     CheckCircle,
     Download,
+    Feather,
     FileSpreadsheet,
     FileText,
     Loader2,
@@ -19,42 +21,54 @@ const ALLOWED_EXTENSIONS = ['.docx', '.txt', '.md', '.xlsx', '.xlsm', '.csv'];
 
 const WORD_ACTIONS = [
     {
-        title: '润色并优化结构',
-        description: '保留原意，改善表达、标题层级和段落组织',
-        prompt: '请在不改变事实和核心观点的前提下，润色全文，优化标题层级、段落结构和表达，使文档更专业、更易读。',
+        title: '文字润色',
+        description: '优化表达和结构，保留原始内容',
+        prompt: '请理解文档的核心内容和目的，在完全保留所有事实、数据和关键信息的前提下，优化文字表达、段落组织和标题层级。让文档读起来更流畅、专业、易懂。',
         format: 'docx'
     },
     {
-        title: '整理成正式报告',
-        description: '将素材重组为可直接交付的商务报告',
-        prompt: '请把现有内容整理成一份正式的商务报告，补齐清晰的标题层级、摘要、主要内容和行动建议。不要编造缺失事实。',
+        title: '转正式报告',
+        description: '重组为结构完整的商务报告',
+        prompt: '请将现有内容整理成一份正式商务报告。要求：1）添加清晰的标题层级；2）如有需要补充摘要或结论；3）保持专业商务语气；4）不编造任何不存在的内容。',
         format: 'docx'
     },
     {
-        title: '生成方案或制度',
-        description: '根据文字要求从零生成规范 Word 文档',
-        prompt: '请根据我的要求生成一份完整、专业、可执行的 Word 文档，包含清晰的目标、范围、具体内容、实施步骤和验收标准。',
+        title: '从零生成文档',
+        description: '根据描述生成完整 Word 文档',
+        prompt: '请根据我的具体要求生成一份专业、完整、可直接使用的 Word 文档。包含：清晰的标题结构、详实的内容、必要的说明。如有不明确的地方标注"待补充"。',
+        format: 'docx'
+    },
+    {
+        title: '提取关键信息',
+        description: '从长文档中提炼核心要点',
+        prompt: '请从文档中提取最关键的信息，生成一份精简版。包含：核心观点、重要数据、关键结论。去除冗余描述，保持信息完整性。',
         format: 'docx'
     }
 ];
 
 const EXCEL_ACTIONS = [
     {
-        title: '清洗并规范表格',
-        description: '统一表头、格式、列宽和数据可读性',
-        prompt: '请检查并整理这个工作簿：统一表头和格式，优化列宽与换行，保留现有数据和公式，并让表格更清晰、专业、易于维护。',
+        title: '表格清洗整理',
+        description: '统一格式、优化列宽、规范表头',
+        prompt: '请分析工作簿结构，执行以下操作：1）统一表头样式和命名规范；2）调整列宽让内容完整显示；3）优化单元格格式（日期、金额、百分比等）；4）添加冻结窗格和筛选；5）保留所有原始数据和公式。',
         format: 'xlsx'
     },
     {
-        title: '补充统计与公式',
-        description: '按需求增加可审计的计算、汇总和结果区域',
-        prompt: '请理解当前工作簿结构，根据数据增加必要的统计、汇总和公式。派生值必须使用可审计的 Excel 公式，并保留原始数据。',
+        title: '添加统计分析',
+        description: '增加汇总、计算和统计工作表',
+        prompt: '请理解现有数据的业务含义，添加必要的统计分析：1）创建汇总工作表；2）添加关键指标的统计公式（总计、平均、占比等）；3）所有公式必须引用原始数据，保持可追溯；4）不修改原始数据。',
         format: 'xlsx'
     },
     {
-        title: '生成台账或清单',
-        description: '从零生成结构化、可持续维护的工作簿',
-        prompt: '请根据我的要求生成一个专业的 Excel 台账，包含清晰字段、示例或待补充行、状态列、必要公式、筛选和冻结表头。',
+        title: '从零生成表格',
+        description: '根据业务需求创建结构化工作簿',
+        prompt: '请根据我的业务需求生成一个专业的 Excel 工作簿。要求：1）合理的字段设计；2）预置示例数据或"待填写"提示；3）必要的下拉列表和数据验证；4）汇总公式和图表（如需要）；5）冻结表头和筛选。',
+        format: 'xlsx'
+    },
+    {
+        title: '数据验证与补全',
+        description: '检查数据完整性并补充缺失项',
+        prompt: '请检查工作簿中的数据质量：1）找出空值、异常值、格式不一致的单元格；2）如果可以根据业务逻辑推断，用公式补全；3）无法确定的标注"待核实"；4）生成数据质量报告工作表。',
         format: 'xlsx'
     }
 ];
@@ -193,10 +207,10 @@ function EmptyWorkspace({ onAction }) {
     return (
         <div className="office-empty-workspace">
             <div className="office-empty-title">
-                <Sparkles size={20} />
+                <Feather size={20} />
                 <div>
-                    <h2>也可以不上传文件，直接生成</h2>
-                    <p>选择一个起点，再补充你的具体业务要求。</p>
+                    <h2>无需上传，亦可从零撰写</h2>
+                    <p>择一起点，再细述所需，即刻成文。</p>
                 </div>
             </div>
             <div className="office-action-grid">
@@ -228,6 +242,7 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
     const [activity, setActivity] = useState([]);
     const [error, setError] = useState('');
     const [output, setOutput] = useState(null);
+    const [intentConfirmation, setIntentConfirmation] = useState('');
 
     const actions = inspection?.kind === 'excel' ? EXCEL_ACTIONS : WORD_ACTIONS;
     const canProcess = instruction.trim().length > 0 && !isProcessing && !isInspecting;
@@ -331,6 +346,7 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
         if (!canProcess) return;
         setError('');
         clearOutput();
+        setIntentConfirmation('');
         setIsProcessing(true);
         setUploadProgress(0);
         const startedAt = Date.now();
@@ -342,8 +358,8 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
             },
             {
                 status: 'running',
-                title: '理解任务并制定处理方案',
-                detail: `正在使用 ${selectedModel || '当前 AI 模型'} 分析内容、格式和交付目标`
+                title: '理解任务意图',
+                detail: `正在使用 ${selectedModel || '当前 AI 模型'} 深度分析您的需求`
             }
         ]);
 
@@ -368,6 +384,7 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
             const fallbackName = `办公文档处理结果.${format}`;
             const filename = parseDownloadFilename(response.headers['content-disposition'], fallbackName);
             const summary = decodeHeader(response.headers['x-office-summary'], '办公文档已处理完成');
+            const intentUnderstanding = decodeHeader(response.headers['x-office-intent'], '');
             let stats = {};
             try {
                 stats = JSON.parse(decodeHeader(response.headers['x-office-stats'], '{}'));
@@ -376,22 +393,23 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
             }
             const url = URL.createObjectURL(response.data);
             setOutput({ url, filename, summary, format, stats, size: response.data.size });
+            setIntentConfirmation(intentUnderstanding);
             setActivity(previous => [
                 previous[0],
                 {
                     status: 'done',
-                    title: '理解任务并制定处理方案',
-                    detail: '已完成内容与结构规划'
+                    title: '理解任务意图',
+                    detail: intentUnderstanding || '已完成需求分析'
                 },
                 {
                     status: 'done',
-                    title: format === 'xlsx' ? '生成并校验 Excel 工作簿' : '生成并校验 Word 文档',
+                    title: format === 'xlsx' ? '生成 Excel 工作簿' : '生成 Word 文档',
                     detail: stats.executionMode === 'groupedText'
-                        ? `已覆盖 ${stats.processedRows || 0} 行、生成 ${stats.generatedTextCount || 0} 条分组文本，文件已可下载`
-                        : `处理耗时 ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))} 秒，文件已可下载`
+                        ? `已处理 ${stats.processedRows || 0} 行数据，生成 ${stats.generatedTextCount || 0} 条内容`
+                        : `耗时 ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))} 秒，文件已就绪`
                 }
             ]);
-            showToast?.('办公文档处理完成');
+            showToast?.('文档处理完成，可以下载查看');
         } catch (requestError) {
             const message = await getBinaryErrorMessage(requestError);
             setError(message || '办公文档处理失败');
@@ -447,9 +465,9 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
                     <span className="office-top-badge">Word · Excel</span>
                 </div>
                 <div className="office-top-capabilities">
-                    <span><CheckCircle size={13} />理解需求</span>
-                    <span><CheckCircle size={13} />修改优化</span>
-                    <span><CheckCircle size={13} />从零生成</span>
+                    <span><BookOpen size={13} />理解文意</span>
+                    <span><Feather size={13} />润色修改</span>
+                    <span><Sparkles size={13} />从零撰写</span>
                 </div>
             </div>
 
@@ -462,9 +480,9 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
             <div className="office-workspace">
                 <section className="office-hero">
                     <div className="office-hero-copy">
-                        <span className="office-eyebrow"><Wand2 size={15} /> 通用文档智能处理</span>
-                        <h1>把需求说清楚，剩下的交给系统</h1>
-                        <p>上传现有 Word 或 Excel 直接修改，也可以只描述目标，从零生成一份专业、可继续编辑的办公文档。</p>
+                        <span className="office-eyebrow"><Feather size={15} /> 笔墨之间 · 文档智造</span>
+                        <h1>落笔有章，文以载道</h1>
+                        <p>呈上旧稿，即刻润色修缮；或道明心意，自可挥毫成篇。一切文字工作，此处皆可托付。</p>
                     </div>
                     <div className="office-format-pills">
                         <span className="word"><FileText size={17} /> DOCX</span>
@@ -497,8 +515,8 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
                                     onDrop={handleDrop}
                                 >
                                     <span className="office-drop-icon"><Upload size={27} /></span>
-                                    <strong>拖入 Word 或 Excel</strong>
-                                    <p>或点击选择现有文件进行修改与优化</p>
+                                    <strong>呈上旧稿</strong>
+                                    <p>拖入或点选已有文档，即可润色修缮</p>
                                     <small>支持 .docx / .txt / .md / .xlsx / .xlsm / .csv，最大 {MAX_OFFICE_MB}MB</small>
                                 </div>
                             ) : (
@@ -605,6 +623,19 @@ function OfficeDocumentApp({ selectedModel, getUserConfig, showToast }) {
                                     </div>
                                     {output && <span className="office-complete-badge"><CheckCircle size={13} /> 已完成</span>}
                                 </div>
+
+                                {intentConfirmation && (
+                                    <div className="office-intent-card">
+                                        <div className="office-intent-icon">
+                                            <CheckCircle size={16} />
+                                        </div>
+                                        <div>
+                                            <strong>AI 理解确认</strong>
+                                            <p>{intentConfirmation}</p>
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="office-activity-list">
                                     {activity.map((item, index) => (
                                         <div key={`${item.title}-${index}`} className={`office-activity ${item.status}`}>
