@@ -18,29 +18,24 @@ services:
         fromDatabase:
           name: cosmic-db
           property: connectionString
-      - key: SENSENOVA_API_KEY
-        sync: false
-      - key: SENSENOVA_BASE_URL
-        value: https://token.sensenova.cn/v1
-      - key: SENSENOVA_MODEL
-        value: deepseek-v4-flash
-      - key: SENSENOVA_GLM_MODEL
-        value: glm-5.2
-      - key: SENSENOVA_FLASH_LITE_MODEL
-        value: sensenova-6.8-flash-lite
+      # 火山引擎（唯一 AI 平台）
       - key: VOLCENGINE_API_KEY
         sync: false
       - key: VOLCENGINE_BASE_URL
+        value: https://ark.cn-beijing.volces.com/api/v3
+      - key: VOLCENGINE_CODING_BASE_URL
         value: https://ark.cn-beijing.volces.com/api/coding
-      - key: VOLCENGINE_MODEL
+      # 四个模型 ID
+      - key: VOLCENGINE_V4_PRO_GA_MODEL
+        value: deepseek-v4-pro-0813
+      - key: VOLCENGINE_V4_FLASH_GA_MODEL
+        value: deepseek-v4-flash-ga-260731
+      - key: VOLCENGINE_V4_PRO_MODEL
         value: deepseek-v4-pro-260425
-      - key: VISION_API_KEY
-        sync: false
-      - key: VISION_BASE_URL
-        sync: false
-      - key: VISION_MODEL
-        value: gpt-4o-mini
+      - key: VOLCENGINE_V4_FLASH_MODEL
+        value: deepseek-v4-flash
+      # 默认模型
       - key: DEFAULT_MODEL
-        value: deepseek-v4-flash-free
+        value: deepseek-v4-pro-ga
       - key: JWT_SECRET
         generateValue: true

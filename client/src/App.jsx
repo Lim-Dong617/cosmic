@@ -20,7 +20,8 @@ import {
     inheritMissingFunctionLevels,
     isReferenceOnlyChapterTitle,
     normalizeProcessOrderKey,
-    orderCosmicTableData
+    orderCosmicTableData,
+    allocateQuantityPlanToChapters
 } from './cosmic-quality';
 
 const MAX_UPLOAD_MB = 300;
@@ -197,39 +198,6 @@ const matchFunctionToOriginalHeading = (func, outline = []) => {
     return bestScore >= 50 ? best : null;
 };
 
-const getQuantityTargetForChapter = (chapter, quantityPlan, fallbackIndex = -1) => {
-    if (!chapter || !Array.isArray(quantityPlan) || quantityPlan.length === 0) return null;
-
-    const targetAt = (index) => {
-        if (index < 0 || index >= quantityPlan.length) return null;
-        return Math.max(0, Number(quantityPlan[index]?.target) || 0);
-    };
-
-    if (Number.isInteger(chapter.moduleIndex)) {
-        const indexedTarget = targetAt(chapter.moduleIndex);
-        if (indexedTarget !== null) return indexedTarget;
-    }
-
-    const chapterKeys = [chapter.level3, chapter.title, chapter.level2]
-        .map(normalizeHeadingMatchText)
-        .filter(Boolean);
-    const matchedIndex = quantityPlan.findIndex(planItem => {
-        const planKeys = [planItem.level3, planItem.level2, planItem.level1]
-            .map(normalizeHeadingMatchText)
-            .filter(Boolean);
-        return chapterKeys.some(chKey => planKeys.some(planKey => (
-            chKey === planKey ||
-            (chKey.length >= 4 && planKey.length >= 4 && (chKey.includes(planKey) || planKey.includes(chKey)))
-        )));
-    });
-    if (matchedIndex >= 0) return targetAt(matchedIndex);
-
-    if (chapter.moduleAligned || chapter.syntheticFromModule) {
-        return targetAt(fallbackIndex);
-    }
-    return null;
-};
-
 const cleanProcessDisplayName = (name) => String(name || '')
     .replace(/\[.*?\]\s*/g, '')
     .replace(/^[\d]+[.、\s]+/, '')
@@ -401,13 +369,24 @@ function App({ user, token, onLogout }) {
         return 'cosmic';
     });
 
-    // 模型选择
+    // 模型选择（统一火山引擎四个模型）
     const [selectedModel, setSelectedModel] = useState(() => {
         if (typeof window !== 'undefined') {
             const savedModel = window.localStorage.getItem('selectedModel');
-            return savedModel === 'deepseek-v3' ? 'deepseek-v4-flash-free' : (savedModel || 'deepseek-v4-flash-free');
+            // 兼容旧选项，统一迁移到新模型
+            const migrationMap = {
+                'deepseek-v4-flash-free': 'deepseek-v4-pro-ga',
+                'deepseek-v3': 'deepseek-v4-pro-ga',
+                'deepseek-r1': 'deepseek-v4-pro-ga',
+                'glm-5.2': 'deepseek-v4-flash-ga',
+                'company-glm-5.2': 'deepseek-v4-flash-ga',
+                'sensenova-6.8-flash-lite': 'deepseek-v4-flash',
+                'qwen3-coder': 'deepseek-v4-flash',
+                'gpt-5.1-codex-mini': 'deepseek-v4-pro-ga'
+            };
+            return migrationMap[savedModel] || savedModel || 'deepseek-v4-pro-ga';
         }
-        return 'deepseek-v4-flash-free';
+        return 'deepseek-v4-pro-ga';
     });
 
     // 目标功能过程数量
@@ -519,13 +498,10 @@ function App({ user, token, onLogout }) {
         try {
             await axios.post('/api/switch-model', { model });
             const labels = {
-                'deepseek-v4-flash-free': 'DeepSeek V4 Flash (SenseNova)',
-                'deepseek-v3': 'DeepSeek V4 Flash (SenseNova)',
-                'glm-5.2': 'GLM 5.2 (SenseNova)',
-                'sensenova-6.8-flash-lite': 'SenseNova 6.8 Flash Lite',
-                'deepseek-r1': 'DeepSeek V4 Pro',
-                'qwen3-coder': 'Qwen3-Coder',
-                'gpt-5.1-codex-mini': '优先使用 V4 Pro'
+                'deepseek-v4-pro-ga': 'DeepSeek-V4-Pro正式版',
+                'deepseek-v4-flash-ga': 'DeepSeek-V4-Flash正式版',
+                'deepseek-v4-pro': 'DeepSeek-V4-pro',
+                'deepseek-v4-flash': 'DeepSeek-V4-flash'
             };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
@@ -534,36 +510,11 @@ function App({ user, token, onLogout }) {
     };
 
     const getUserConfig = () => {
-        const isVolcengineModel = selectedModel === 'gpt-5.1-codex-mini';
-        const isBaishanModel = selectedModel === 'qwen3-coder';
-        if (isVolcengineModel) {
-            return {
-                apiKey: null,
-                baseUrl: null,  // 由后端 .env 的 VOLCENGINE_BASE_URL 控制
-                model: 'gpt-5.1-codex-mini',  // 后端映射到火山引擎 DeepSeek V4 Pro
-                provider: 'volcengine'
-            };
-        }
-        if (isBaishanModel) {
-            return {
-                apiKey: null,
-                baseUrl: null,  // 由后端 .env 控制
-                model: 'qwen3-coder',
-                provider: 'baishan'
-            };
-        }
-        const modelMap = {
-            'deepseek-v4-flash-free': 'deepseek-v4-flash-free',
-            'deepseek-v3': 'deepseek-v4-flash-free',
-            'deepseek-r1': 'deepseek-r1',
-            'glm-5.2': 'glm-5.2',
-            'sensenova-6.8-flash-lite': 'sensenova-6.8-flash-lite'
-        };
         return {
             apiKey: null,
             baseUrl: null,
-            model: modelMap[selectedModel] || 'deepseek-v4-flash-free',
-            provider: selectedModel === 'deepseek-r1' ? 'volcengine' : 'sensenova'
+            model: selectedModel,
+            provider: 'volcengine'
         };
     };
 
@@ -1579,53 +1530,21 @@ function App({ user, token, onLogout }) {
         const quantityTotalTarget = extractionMode === 'quantity'
             ? (quantityPlan ? quantityPlan.reduce((s, p) => s + p.target, 0) : totalTargetCount)
             : 0;
-        const quantityChapterTargets = [];
+        const quantityChapterTargets = extractionMode === 'quantity'
+            ? allocateQuantityPlanToChapters(
+                selectedChapters,
+                quantityPlan,
+                quantityTotalTarget
+            )
+            : [];
         if (extractionMode === 'quantity' && quantityTotalTarget > 0) {
-            const planTargets = selectedChapters.map((chapter, idx) => (
-                getQuantityTargetForChapter(chapter, quantityPlan, idx)
-            ));
-            const matchedTargetTotal = planTargets.reduce((sum, target) => (
-                sum + (Number.isFinite(target) && target !== null ? target : 0)
-            ), 0);
-
-            if (quantityPlan?.length && planTargets.every(target => target !== null)) {
-                planTargets.forEach((target, idx) => {
-                    quantityChapterTargets[idx] = Math.max(0, Number(target) || 0);
+            const allocatedTotal = quantityChapterTargets.reduce((sum, value) => sum + value, 0);
+            if (allocatedTotal !== quantityTotalTarget) {
+                console.warn('[COSMIC quantity] chapter target allocation drift', {
+                    requested: quantityTotalTarget,
+                    allocated: allocatedTotal,
+                    chapterTargets: quantityChapterTargets
                 });
-            } else {
-                const unmatchedIndexes = [];
-                planTargets.forEach((target, idx) => {
-                    if (target === null) unmatchedIndexes.push(idx);
-                    else quantityChapterTargets[idx] = Math.max(0, Number(target) || 0);
-                });
-
-                const remainingTotal = Math.max(0, quantityTotalTarget - matchedTargetTotal);
-                const targetChapters = unmatchedIndexes.length > 0 ? unmatchedIndexes : selectedChapters.map((_, idx) => idx);
-                if (remainingTotal <= 0) {
-                    targetChapters.forEach(idx => {
-                        quantityChapterTargets[idx] = quantityChapterTargets[idx] || 0;
-                    });
-                } else {
-                    const totalChars = targetChapters.reduce((s, idx) => {
-                        const ch = selectedChapters[idx];
-                        return s + (ch.charCount || ch.content?.length || 1);
-                    }, 0) || targetChapters.length;
-                    let assigned = 0;
-                    targetChapters.forEach((idx, orderIdx) => {
-                        const chapter = selectedChapters[idx];
-                        const remainingChapters = targetChapters.length - orderIdx;
-                        const remainingTarget = remainingTotal - assigned;
-                        let target;
-                        if (orderIdx === targetChapters.length - 1) {
-                            target = Math.max(0, remainingTarget);
-                        } else {
-                            const weighted = Math.round(((chapter.charCount || chapter.content?.length || 1) / totalChars) * remainingTotal);
-                            target = Math.max(0, Math.min(weighted, remainingTarget - Math.max(0, remainingChapters - 1)));
-                        }
-                        quantityChapterTargets[idx] = (quantityChapterTargets[idx] || 0) + target;
-                        assigned += target;
-                    });
-                }
             }
         }
         const skippedQuantityModules = extractionMode === 'quantity' && quantityPlan
@@ -1822,7 +1741,8 @@ function App({ user, token, onLogout }) {
             setFunctionListText(allFunctions);
             // 自动解析为结构化数据
             const parsed = deduplicateFunctionObjects(
-                inheritMissingFunctionLevels(parseFunctionListText(allFunctions))
+                inheritMissingFunctionLevels(parseFunctionListText(allFunctions)),
+                { semantic: extractionMode !== 'quantity' }
             );
 
             // ── 将章节的 level1/level2/level3 注入到每个功能过程对象 ──
@@ -1901,7 +1821,8 @@ function App({ user, token, onLogout }) {
                 // 部分成功
                 setFunctionListText(allFunctions);
                 const parsed = deduplicateFunctionObjects(
-                    inheritMissingFunctionLevels(parseFunctionListText(allFunctions))
+                    inheritMissingFunctionLevels(parseFunctionListText(allFunctions)),
+                    { semantic: extractionMode !== 'quantity' }
                 );
                 setFunctionListText(functionsToText(parsed));
                 setParsedFunctions(parsed);
@@ -3978,71 +3899,52 @@ function App({ user, token, onLogout }) {
                         </div>
                     </div>
 
-                    {/* 模型选择 */}
+                    {/* 模型选择 - 统一火山引擎 */}
                     <div className="section-group">
-                        <div className="section-label">AI 模型</div>
+                        <div className="section-label">🌋 AI 模型（火山引擎）</div>
                         <div className="model-selector">
                             <button
-                                className={`model-option ${selectedModel === 'deepseek-v4-flash-free' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('deepseek-v4-flash-free')}
+                                className={`model-option ${selectedModel === 'deepseek-v4-pro-ga' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('deepseek-v4-pro-ga')}
+                                style={selectedModel === 'deepseek-v4-pro-ga' ? { borderColor: '#7c3aed', background: 'rgba(124,58,237,0.12)' } : {}}
                             >
-                                <span className="model-option-dot" />
+                                <span className="model-option-dot" style={{ background: '#7c3aed' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek V4 Flash</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}></div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-Pro正式版</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>最强质量 · 推荐</div>
                                 </div>
                             </button>
                             <button
-                                className={`model-option ${selectedModel === 'glm-5.2' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('glm-5.2')}
-                                style={selectedModel === 'glm-5.2' ? { borderColor: '#2563eb', background: 'rgba(37,99,235,0.12)' } : {}}
-                            >
-                                <span className="model-option-dot" style={{ background: '#2563eb' }} />
-                                <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>GLM 5.2</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>SenseNova · 通用模型</div>
-                                </div>
-                            </button>
-                            <button
-                                className={`model-option ${selectedModel === 'sensenova-6.8-flash-lite' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('sensenova-6.8-flash-lite')}
-                                style={selectedModel === 'sensenova-6.8-flash-lite' ? { borderColor: '#0ea5e9', background: 'rgba(14,165,233,0.12)' } : {}}
+                                className={`model-option ${selectedModel === 'deepseek-v4-flash-ga' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('deepseek-v4-flash-ga')}
+                                style={selectedModel === 'deepseek-v4-flash-ga' ? { borderColor: '#0ea5e9', background: 'rgba(14,165,233,0.12)' } : {}}
                             >
                                 <span className="model-option-dot" style={{ background: '#0ea5e9' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>SenseNova 6.8 Flash Lite</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>SenseNova · 快速低成本</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-Flash正式版</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>高速稳定 · 性价比高</div>
                                 </div>
                             </button>
                             <button
-                                className={`model-option ${selectedModel === 'deepseek-r1' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('deepseek-r1')}
-                                style={selectedModel === 'deepseek-r1' ? { borderColor: '#a855f7', background: 'rgba(168,85,247,0.12)' } : {}}
+                                className={`model-option ${selectedModel === 'deepseek-v4-pro' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('deepseek-v4-pro')}
+                                style={selectedModel === 'deepseek-v4-pro' ? { borderColor: '#a855f7', background: 'rgba(168,85,247,0.12)' } : {}}
                             >
                                 <span className="model-option-dot" style={{ background: '#a855f7' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek V4 Pro</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>火山引擎 · 高质量</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-pro</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>预览版 · 高质量</div>
                                 </div>
                             </button>
                             <button
-                                className={`model-option ${selectedModel === 'qwen3-coder' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('qwen3-coder')}
+                                className={`model-option ${selectedModel === 'deepseek-v4-flash' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('deepseek-v4-flash')}
+                                style={selectedModel === 'deepseek-v4-flash' ? { borderColor: '#06b6d4', background: 'rgba(6,182,212,0.12)' } : {}}
                             >
-                                <span className="model-option-dot" />
+                                <span className="model-option-dot" style={{ background: '#06b6d4' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>Qwen3-Coder</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>Plus · 代码逻辑</div>
-                                </div>
-                            </button>
-                            <button
-                                className={`model-option gpt-mode-btn ${selectedModel === 'gpt-5.1-codex-mini' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('gpt-5.1-codex-mini')}
-                            >
-                                <span className="model-option-dot" />
-                                <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>优先使用 🌋</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>DeepSeek V4 Pro · 最最推荐</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-flash</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>预览版 · 快速轻量</div>
                                 </div>
                             </button>
                         </div>

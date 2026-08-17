@@ -19,9 +19,16 @@ const {
     callAIWithRetry,
     MODEL_MAP,
     DEFAULT_MODEL_ALIAS,
-    SENSENOVA_MODEL_NAME,
-    SENSENOVA_MODELS
+    VOLCENGINE_MODELS,
+    VOLCENGINE_V4_PRO_GA,
+    VOLCENGINE_V4_FLASH_GA,
+    VOLCENGINE_V4_PRO,
+    VOLCENGINE_V4_FLASH
 } = require('./ai-client');
+// 兼容旧代码引用
+const SENSENOVA_MODEL_NAME = VOLCENGINE_V4_FLASH_GA;
+const SENSENOVA_MODELS = VOLCENGINE_MODELS;
+const COMPANY_GLM_MODEL_ALIAS = 'company-glm-5.2';
 const {
     FUNCTION_EXTRACTION_PROMPT,
     COSMIC_SPLIT_PROMPT,
@@ -376,14 +383,19 @@ const SENSENOVA_V4_MODEL_ALIASES = new Set([
     'deepseek-v4-flash-free',
     'deepseek-v4-flash',
     'deepseek-v4-flash:free',
-    'deepseek/deepseek-v4-flash:free'
+    'deepseek/deepseek-v4-flash:free',
+    'deepseek-v4-pro-ga',
+    'deepseek-v4-flash-ga',
+    'deepseek-v4-pro',
+    VOLCENGINE_V4_PRO_GA,
+    VOLCENGINE_V4_FLASH_GA,
+    VOLCENGINE_V4_PRO,
+    VOLCENGINE_V4_FLASH
 ]);
 
 function isSenseNovaV4Model(modelName, requestedModel = null) {
-    if (requestedModel) {
-        return SENSENOVA_V4_MODEL_ALIASES.has(requestedModel);
-    }
-    return modelName === SENSENOVA_MODEL_NAME || modelName === 'deepseek-v4-flash';
+    // 所有火山引擎模型都是 V4，统一返回 true
+    return true;
 }
 
 function getFunctionExtractionPrompt(modelName, extractionMode, requestedModel = null) {
@@ -568,11 +580,23 @@ function getCosmicCompletenessRule(useEnhancedExperience = false) {
     return '增强版开启：先按功能过程名称匹配经验模板，不要默认补齐E+R+W+X。查询/查看/列表/详情使用E+R+X且禁止强补W；新增/创建/删除使用E+W+X且禁止编造读取配置/原有数据作为R；修改/导入/流程使用E+R+W+X；导出使用E+R+X，只有明确服务端保存导出文件才补W；定时统计/汇总使用E+R+W，只有需要呈现或通知结果才补X。';
 }
 
-function dedupeFunctionsByName(functions = []) {
+function exactFunctionNameKey(name) {
+    return String(name || '')
+        .normalize('NFKC')
+        .replace(/\[.*?\]\s*/g, '')
+        .replace(/^\s*\d+(?:\.\d+)*[.、\s]*/, '')
+        .replace(/[\s_\-—–，,。；;：:（）()【】\[\]“”"'·]/g, '')
+        .toLowerCase()
+        .trim();
+}
+
+function dedupeFunctionsByName(functions = [], { semantic = true } = {}) {
     const seen = new Set();
     const deduped = [];
     for (const func of functions) {
-        const key = canonicalFunctionNameKey(func.functionName || '');
+        const key = semantic
+            ? canonicalFunctionNameKey(func.functionName || '')
+            : exactFunctionNameKey(func.functionName || '');
         if (!key || seen.has(key)) continue;
         seen.add(key);
         deduped.push(func);
@@ -1230,6 +1254,60 @@ function buildFunctionGroupsFromTableData(tableData = []) {
     return groups;
 }
 
+/**
+ * 将模型返回的COSMIC分组按输入功能过程清单做一次最终守恒校验。
+ * 这样相似名称、重复E行或模型额外臆造的功能不会在前端静默改变数量。
+ */
+function reconcileCosmicProcessGroups(tableData = [], referenceNames = []) {
+    const groups = buildFunctionGroupsFromTableData(tableData);
+    const groupsByKey = new Map();
+    for (const group of groups) {
+        const key = normalizeProcessName(group.functionalProcess);
+        if (!key) continue;
+        const list = groupsByKey.get(key) || [];
+        list.push(group);
+        groupsByKey.set(key, list);
+    }
+
+    const keptRows = [];
+    const missing = [];
+    let duplicateProcessCount = 0;
+    const seenReference = new Set();
+    for (const referenceName of Array.isArray(referenceNames) ? referenceNames : []) {
+        const key = normalizeProcessName(referenceName);
+        if (!key) continue;
+        const candidates = groupsByKey.get(key) || [];
+        if (seenReference.has(key)) {
+            duplicateProcessCount += candidates.length;
+            continue;
+        }
+        seenReference.add(key);
+        const group = candidates.shift();
+        if (!group) {
+            missing.push(referenceName);
+            continue;
+        }
+        keptRows.push(...group.rows);
+        duplicateProcessCount += candidates.length;
+    }
+
+    const expectedKeys = new Set((Array.isArray(referenceNames) ? referenceNames : [])
+        .map(normalizeProcessName)
+        .filter(Boolean));
+    const unexpectedProcessCount = groups.filter(group => (
+        !expectedKeys.has(normalizeProcessName(group.functionalProcess))
+    )).length;
+
+    return {
+        tableData: keptRows,
+        missing,
+        duplicateProcessCount,
+        unexpectedProcessCount,
+        expectedFunctionCount: expectedKeys.size,
+        actualFunctionCount: keptRows.filter(row => row.dataMovementType === 'E' && row.functionalProcess).length
+    };
+}
+
 function parseAiDescriptionJson(content) {
     const text = String(content || '').trim();
     if (!text) return [];
@@ -1427,13 +1505,13 @@ function alignProcessNames(tableData, referenceNames) {
 function alignProcessNamesByOrder(tableData, referenceNames) {
     if (!referenceNames || referenceNames.length === 0) return tableData;
 
-    // V4 安全检查：统计实际E行数量
+    // 安全检查：统计实际E行数量
     const eRows = tableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess);
 
     // 如果E行数量与参考名数量不匹配（AI跳过了某些功能过程），
     // 回退到模糊匹配，避免顺序错位导致名称全部对齐错误
     if (eRows.length !== referenceNames.length) {
-        console.warn(`⚠️ V4顺序对齐: E行数(${eRows.length}) ≠ 参考名数(${referenceNames.length})，回退模糊匹配`);
+        console.warn(`⚠️ 顺序对齐: E行数(${eRows.length}) ≠ 参考名数(${referenceNames.length})，回退模糊匹配`);
         return alignProcessNames(tableData, referenceNames);
     }
 
@@ -1444,14 +1522,14 @@ function alignProcessNamesByOrder(tableData, referenceNames) {
         if (refIndex >= referenceNames.length) break;
         const refName = referenceNames[refIndex++];
         if (row.functionalProcess !== refName) {
-            console.log(`  🔗 V4顺序对齐: "${row.functionalProcess}" → "${refName}"`);
+            console.log(`  🔗 顺序对齐: "${row.functionalProcess}" → "${refName}"`);
             row.functionalProcess = refName;
             alignCount++;
         }
     }
 
     if (alignCount > 0) {
-        console.log(`🔗 V4顺序名称对齐: 共修正 ${alignCount} 个功能过程名称`);
+        console.log(`🔗 顺序名称对齐: 共修正 ${alignCount} 个功能过程名称`);
     }
 
     return tableData;
@@ -2170,17 +2248,15 @@ function buildFunctionListText(functions) {
 
 // 健康检查
 app.get('/api/health', (req, res) => {
-    const hasSenseNovaApiKey = Boolean(process.env.SENSENOVA_API_KEY);
     const hasVolcengineApiKey = Boolean(process.env.VOLCENGINE_API_KEY);
     res.json({
         status: 'ok',
-        hasApiKey: hasSenseNovaApiKey || hasVolcengineApiKey,
-        hasSenseNovaApiKey,
+        hasApiKey: hasVolcengineApiKey,
         hasVolcengineApiKey,
-        codeAnalysisModel: MODEL_MAP['deepseek-v4-pro'] || 'deepseek-v4-pro-260425',
+        codeAnalysisModel: MODEL_MAP['deepseek-v4-pro-ga'] || VOLCENGINE_V4_PRO_GA,
         currentModel: currentModel,
         model: currentModel,
-        platform: SENSENOVA_MODELS.has(currentModel) ? 'SenseNova' : 'OpenAI-compatible',
+        platform: '火山引擎',
         availableModels: Array.from(new Set(Object.values(MODEL_MAP)))
     });
 });
@@ -3527,11 +3603,12 @@ app.post('/api/extract-functions', async (req, res) => {
         if (extractionMode === 'quantity' && targetCount > 0) {
             userPrompt = `请从以下${chapterInfo}需求文档中按目标数量提取功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
             userPrompt += `\n\n【数量优先执行策略】\n`;
-            userPrompt += `- 本次目标：输出约 ${targetCount} 个功能过程，上下浮动不超过5%。\n`;
+            userPrompt += `- 本次目标：恰好输出 ${targetCount} 个功能过程，不允许上下浮动。\n`;
             userPrompt += `- 如果文档可拆出的功能明显多于目标数：请筛选业务主干、核心接口、关键数据处理、主要查询统计、关键自动化任务；忽略低频、重复、边缘、纯展示、可由主流程覆盖的功能。\n`;
             userPrompt += `- 如果文档可拆出的功能少于目标数：请在不虚构业务的前提下，按业务对象、CRUD、状态流转、查询统计、导入导出、定时任务、外部接口等维度合理扩展。\n`;
             userPrompt += `- 目标少时不要追求覆盖所有细节；目标多时可以展开细粒度功能，但禁止无意义凑数或重复改名。\n`;
-            userPrompt += `- 输出数量必须优先服从本次目标，而不是“宁可多提取”。`;
+            userPrompt += `- 输出数量必须优先服从本次目标；发现重复项时必须从文档中选择另一项独立业务结果补位，不能直接少交。\n`;
+            userPrompt += `- 输出前逐项计数，确保“##功能过程”行数严格等于 ${targetCount}。`;
         } else {
             userPrompt = `请从以下${chapterInfo}需求文档中提取所有功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
         }
@@ -3539,10 +3616,10 @@ app.post('/api/extract-functions', async (req, res) => {
             userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
         }
         if (extractionMode === 'quantity' && targetCount > 0) {
-            userPrompt += `\n\n**再次确认：本章节只输出约 ${targetCount} 个功能过程。目标少则筛选精简，目标多则合理扩展。**`;
+            userPrompt += `\n\n**再次确认：本章节必须恰好输出 ${targetCount} 个功能过程。目标少则筛选精简，目标多则按真实独立业务维度补足。**`;
         }
         if (isV4Flash) {
-            userPrompt += `\n\n【V4 Flash 专用校准】\n- 你必须优先避免重复和过细拆分。\n- 同一业务对象的配置、新增、修改、删除、查看列表，如果业务目的相同，应合并为一个维护/配置/查询功能过程。\n- 不要为了接近数量目标而重复输出近似功能过程；功能过程名称必须唯一。\n- 如果无法在不重复的前提下达到目标数量，允许低于目标。`;
+            userPrompt += `\n\n【V4 Flash 专用校准】\n- 你必须优先避免重复和过细拆分。\n- 同一业务对象的配置、新增、修改、删除、查看列表，如果业务目的相同，应合并为一个维护/配置/查询功能过程。\n- 不要为了达到数量目标而重复输出近似功能过程；功能过程名称必须唯一。\n- 合并重复项后必须从原文中按其他真实业务对象、触发事件、接口方向、状态变化或统计维度补位，最终数量仍须精确等于目标。`;
         }
 
         const completion = await callAIWithRetry({
@@ -3551,7 +3628,7 @@ app.post('/api/extract-functions', async (req, res) => {
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.3,
+            temperature: extractionMode === 'quantity' ? 0 : 0.3,
             max_tokens: 16000
         });
 
@@ -3561,29 +3638,100 @@ app.post('/api/extract-functions', async (req, res) => {
         }
         let reply = completion.choices[0].message.content;
         const extractedFunctions = extractFunctionsFromText(reply);
+        const strictQuantityMode = extractionMode === 'quantity' && Number(targetCount) > 0;
+        const requestedTarget = strictQuantityMode ? Math.max(1, Math.floor(Number(targetCount))) : null;
         let functions = qualifyFunctionNames(extractedFunctions, chapterName, moduleStructure);
-        functions = dedupeFunctionsByName(functions);
+        const rawCandidateCount = functions.length;
+        // 精准模式保留原有的语义去重；数量模式只删除完全同名项，避免程序把
+        // “查询/查看”等相似但按数量规划要求独立保留的功能过程静默吃掉。
+        functions = dedupeFunctionsByName(functions, { semantic: !strictQuantityMode });
+        const afterDedupeCount = functions.length;
         const namesAdjusted = functions.length !== extractedFunctions.length
             || functions.some((func, idx) => func.functionName !== extractedFunctions[idx]?.functionName);
         if (namesAdjusted) {
             console.log(`🏷️ 功能过程名称整理: ${extractedFunctions.length} 个候选 → ${functions.length} 个唯一完整名称`);
             reply = buildFunctionListText(functions);
         }
-        if (extractionMode === 'quantity' && targetCount > 0) {
-            const maxAllowed = Math.max(1, Math.ceil(targetCount * 1.05));
-            if (functions.length > maxAllowed) {
-                console.log(`✂️ 数量优先裁剪: ${functions.length} → ${maxAllowed}（目标 ${targetCount}）`);
-                functions = functions.slice(0, maxAllowed);
-                reply = buildFunctionListText(functions);
+
+        let supplementAttempts = 0;
+        let supplementalCandidateCount = 0;
+        if (strictQuantityMode) {
+            if (functions.length > requestedTarget) {
+                console.log(`✂️ 数量优先精确裁剪: ${functions.length} → ${requestedTarget}`);
+                functions = functions.slice(0, requestedTarget);
             }
+
+            // 模型或前置去重少交时进行定向补位。补位只接受新名称，并最多尝试两轮，
+            // 防止无限请求；仍不足时通过 countDiagnostics 明确返回缺口，而不是静默成功。
+            while (functions.length < requestedTarget && supplementAttempts < 2) {
+                supplementAttempts++;
+                const missingCount = requestedTarget - functions.length;
+                const existingNames = functions.map(func => func.functionName);
+                const supplementPrompt = `请为以下章节补充恰好 ${missingCount} 个新的COSMIC功能过程，使最终总数达到 ${requestedTarget} 个。
+
+【章节原文】
+${documentContent}
+${moduleScaffoldHint}
+
+【已经保留的 ${existingNames.length} 个功能过程，禁止重复或同义改名】
+${existingNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}
+
+要求：
+1. 只输出新增的 ${missingCount} 个功能过程，不要重发已有项。
+2. 每项必须有原文业务依据，并与已有项在业务对象、触发事件、状态变化、接口方向、统计维度或业务结果上至少一项不同。
+3. 不要因为功能相似而少交；输出前确认“##功能过程”行数恰好为 ${missingCount}。
+4. 严格沿用系统提示中的四行格式，不要输出解释。${userGuidelines ? `\n5. 用户特殊要求：${userGuidelines}` : ''}`;
+
+                try {
+                    const supplementCompletion = await callAIWithRetry({
+                        messages: [
+                            { role: 'system', content: activePrompt },
+                            { role: 'user', content: supplementPrompt }
+                        ],
+                        model: modelName,
+                        temperature: 0,
+                        max_tokens: Math.min(12000, Math.max(3000, missingCount * 700))
+                    });
+                    const supplementReply = supplementCompletion?.choices?.[0]?.message?.content || '';
+                    const supplemental = qualifyFunctionNames(
+                        extractFunctionsFromText(supplementReply),
+                        chapterName,
+                        moduleStructure
+                    );
+                    supplementalCandidateCount += supplemental.length;
+                    const beforeMerge = functions.length;
+                    functions = dedupeFunctionsByName([...functions, ...supplemental], { semantic: false })
+                        .slice(0, requestedTarget);
+                    console.log(`🧩 数量补位第 ${supplementAttempts} 轮: 新增 ${functions.length - beforeMerge} 个，当前 ${functions.length}/${requestedTarget}`);
+                    if (functions.length === beforeMerge) break;
+                } catch (supplementError) {
+                    console.warn(`⚠️ 数量补位第 ${supplementAttempts} 轮失败: ${supplementError.message}`);
+                    break;
+                }
+            }
+            reply = buildFunctionListText(functions);
         }
+
+        const countDiagnostics = {
+            mode: extractionMode,
+            target: requestedTarget,
+            rawCandidateCount,
+            afterDedupeCount,
+            removedByDedupe: rawCandidateCount - afterDedupeCount,
+            supplementAttempts,
+            supplementalCandidateCount,
+            finalCount: functions.length,
+            targetSatisfied: requestedTarget === null || functions.length === requestedTarget,
+            deficit: requestedTarget === null ? 0 : Math.max(0, requestedTarget - functions.length)
+        };
 
         console.log(`✅ 提取到 ${functions.length} 个功能过程`);
         res.json({
             success: true,
             functionList: reply,
             functions,
-            count: functions.length
+            count: functions.length,
+            countDiagnostics
         });
     } catch (error) {
         console.error('功能过程提取失败:', error);
@@ -3682,7 +3830,9 @@ ${completenessRule}
         const refFunctions = extractFunctionsFromText(functionList);
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
-        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, isV4Flash ? 'sequential' : 'fuzzy');
+        // 所有模型都优先按输入顺序对齐。E行数量不一致时，alignProcessNamesByOrder
+        // 会自动回退到模糊匹配，因此无需再按模型白名单决定数据完整性策略。
+        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, 'sequential');
         tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
 
         // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
@@ -3780,8 +3930,8 @@ ${completenessRule}
             }
         }
 
-        // ═══ V4 专用：检测被AI跳过（未输出）的功能过程，自动补拆 ═══
-        if (isV4Flash && refNames.length > 0) {
+        // ═══ 通用数量守恒：检测被模型跳过（未输出）的功能过程，自动补拆 ═══
+        if (refNames.length > 0) {
             const parsedProcessNamesNorm = new Set(
                 tableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
                     .map(r => normalizeProcessName(r.functionalProcess))
@@ -3791,21 +3941,21 @@ ${completenessRule}
             );
 
             if (skippedProcesses.length > 0) {
-                console.warn(`⚠️ V4检测: AI跳过了 ${skippedProcesses.length} 个功能过程，自动补拆: ${skippedProcesses.join('、')}`);
+                console.warn(`⚠️ 数量守恒检测: 模型跳过了 ${skippedProcesses.length} 个功能过程，自动补拆: ${skippedProcesses.join('、')}`);
 
                 for (const funcName of skippedProcesses) {
                     try {
-                        const { prompt: v4RepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
+                        const { prompt: missingRepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
-                        const v4Repair = await callAIWithRetry({
-                            messages: [{ role: 'user', content: v4RepairPrompt }],
+                        const missingRepair = await callAIWithRetry({
+                            messages: [{ role: 'user', content: missingRepairPrompt }],
                             model: modelName,
                             temperature: 0.3,
                             max_tokens: 2000
                         });
 
-                        if (v4Repair?.choices?.[0]?.message?.content) {
-                            const jsonMatch = v4Repair.choices[0].message.content.match(/\[[\s\S]*\]/);
+                        if (missingRepair?.choices?.[0]?.message?.content) {
+                            const jsonMatch = missingRepair.choices[0].message.content.match(/\[[\s\S]*\]/);
                             if (jsonMatch) {
                                 const parsed = JSON.parse(jsonMatch[0]);
                                 if (Array.isArray(parsed) && parsed.length >= repairPolicy.minRows && isCosmicRepairValid(parsed, repairPolicy)) {
@@ -3828,14 +3978,14 @@ ${completenessRule}
                                     }));
 
                                     tableData = [...tableData, ...repairData];
-                                    console.log(`  ✅ V4补拆跳过的 "${funcName}" 成功 (${repairData.length}行)`);
+                                    console.log(`  ✅ 补拆跳过的 "${funcName}" 成功 (${repairData.length}行)`);
                                 } else {
-                                    console.warn(`  ⚠️ V4补拆 "${funcName}" JSON结构不完整`);
+                                    console.warn(`  ⚠️ 补拆 "${funcName}" JSON结构不完整`);
                                 }
                             }
                         }
                     } catch (err) {
-                        console.warn(`  ⚠️ V4补拆 "${funcName}" 失败: ${err.message}`);
+                        console.warn(`  ⚠️ 补拆 "${funcName}" 失败: ${err.message}`);
                     }
                 }
             }
@@ -3843,13 +3993,25 @@ ${completenessRule}
 
         tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
         tableData = limitSubprocessesPerFunction(ensureFunctionDescriptions(tableData, refFunctions));
+        const processReconciliation = reconcileCosmicProcessGroups(tableData, refNames);
+        if (processReconciliation.missing.length > 0) {
+            throw new Error(`COSMIC拆分缺少功能过程：${processReconciliation.missing.join('、')}`);
+        }
+        tableData = processReconciliation.tableData;
 
         console.log(`✅ COSMIC拆分完成，解析到 ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
             success: true,
             reply,
             tableData,
-            count: tableData.length
+            count: tableData.length,
+            countDiagnostics: {
+                expectedFunctionCount: processReconciliation.expectedFunctionCount,
+                actualFunctionCount: processReconciliation.actualFunctionCount,
+                duplicateProcessCount: processReconciliation.duplicateProcessCount,
+                unexpectedProcessCount: processReconciliation.unexpectedProcessCount,
+                missingProcessNames: processReconciliation.missing
+            }
         });
     } catch (error) {
         console.error('COSMIC拆分失败:', error.message);
@@ -3983,7 +4145,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         const refFunctions = extractFunctionsFromText(batchFunctionText);
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
-        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, isV4Flash ? 'sequential' : 'fuzzy');
+        let tableData = parseMarkdownTable(reply, refNames, headingContext, functionLevelMap, 'sequential');
         tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
 
         // ═══ V3.2 完整性校验：检测只有E行没有R/W/X的功能过程，自动补拆 ═══
@@ -4088,8 +4250,8 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             }
         }
 
-        // ═══ V4 专用：检测被AI跳过（未输出）的功能过程，自动补拆 ═══
-        if (isV4Flash && refNames.length > 0) {
+        // ═══ 通用数量守恒：检测被模型跳过（未输出）的功能过程，自动补拆 ═══
+        if (refNames.length > 0) {
             const parsedProcessNamesNorm = new Set(
                 tableData.filter(r => r.dataMovementType === 'E' && r.functionalProcess)
                     .map(r => normalizeProcessName(r.functionalProcess))
@@ -4099,7 +4261,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             );
 
             if (skippedProcesses.length > 0) {
-                console.warn(`⚠️ V4检测 (批次${batchIndex + 1}): AI跳过了 ${skippedProcesses.length} 个功能过程，自动补拆: ${skippedProcesses.join('、')}`);
+                console.warn(`⚠️ 数量守恒检测 (批次${batchIndex + 1}): 模型跳过了 ${skippedProcesses.length} 个功能过程，自动补拆: ${skippedProcesses.join('、')}`);
 
                 // 从batchFunctions文本中解析每个功能过程的触发事件和功能用户
                 const batchFuncInfoMap = {};
@@ -4117,17 +4279,17 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
                 for (const funcName of skippedProcesses) {
                     try {
-                        const { prompt: v4RepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
+                        const { prompt: missingRepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
-                        const v4Repair = await callAIWithRetry({
-                            messages: [{ role: 'user', content: v4RepairPrompt }],
+                        const missingRepair = await callAIWithRetry({
+                            messages: [{ role: 'user', content: missingRepairPrompt }],
                             model: modelName,
                             temperature: 0.3,
                             max_tokens: 2000
                         });
 
-                        if (v4Repair?.choices?.[0]?.message?.content) {
-                            const jsonMatch = v4Repair.choices[0].message.content.match(/\[[\s\S]*\]/);
+                        if (missingRepair?.choices?.[0]?.message?.content) {
+                            const jsonMatch = missingRepair.choices[0].message.content.match(/\[[\s\S]*\]/);
                             if (jsonMatch) {
                                 const parsed = JSON.parse(jsonMatch[0]);
                                 if (Array.isArray(parsed) && parsed.length >= repairPolicy.minRows && isCosmicRepairValid(parsed, repairPolicy)) {
@@ -4150,14 +4312,14 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                                     }));
 
                                     tableData = [...tableData, ...repairData];
-                                    console.log(`  ✅ V4补拆跳过的 "${funcName}" 成功 (${repairData.length}行)`);
+                                    console.log(`  ✅ 补拆跳过的 "${funcName}" 成功 (${repairData.length}行)`);
                                 } else {
-                                    console.warn(`  ⚠️ V4补拆 "${funcName}" JSON结构不完整`);
+                                    console.warn(`  ⚠️ 补拆 "${funcName}" JSON结构不完整`);
                                 }
                             }
                         }
                     } catch (err) {
-                        console.warn(`  ⚠️ V4补拆 "${funcName}" 失败: ${err.message}`);
+                        console.warn(`  ⚠️ 补拆 "${funcName}" 失败: ${err.message}`);
                     }
                 }
             }
@@ -4165,6 +4327,11 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
         tableData = applyEnhancedExperienceTemplatePruning(tableData, useEnhancedExperience);
         tableData = limitSubprocessesPerFunction(ensureFunctionDescriptions(tableData, refFunctions));
+        const processReconciliation = reconcileCosmicProcessGroups(tableData, refNames);
+        if (processReconciliation.missing.length > 0) {
+            throw new Error(`COSMIC分段拆分缺少功能过程：${processReconciliation.missing.join('、')}`);
+        }
+        tableData = processReconciliation.tableData;
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
         res.json({
@@ -4173,7 +4340,14 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             tableData,
             count: tableData.length,
             batchIndex,
-            totalBatches
+            totalBatches,
+            countDiagnostics: {
+                expectedFunctionCount: processReconciliation.expectedFunctionCount,
+                actualFunctionCount: processReconciliation.actualFunctionCount,
+                duplicateProcessCount: processReconciliation.duplicateProcessCount,
+                unexpectedProcessCount: processReconciliation.unexpectedProcessCount,
+                missingProcessNames: processReconciliation.missing
+            }
         });
     } catch (error) {
         console.error(`COSMIC分段拆分失败 (批次 ${req.body.batchIndex + 1}):`, error.message);

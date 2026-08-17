@@ -1,107 +1,82 @@
 // ═══════════════════════════════════════════════════════════
 // COSMIC 拆分系统 - AI客户端模块
+// 统一使用火山引擎 DeepSeek-V4 系列模型
 // ═══════════════════════════════════════════════════════════
 
 const OpenAI = require('openai');
 
-const SENSENOVA_MODEL_NAME = process.env.SENSENOVA_MODEL || 'deepseek-v4-flash';
-const SENSENOVA_BASE_URL = process.env.SENSENOVA_BASE_URL || 'https://token.sensenova.cn/v1';
-// 额外的 SenseNova 模型：使用同一套 OpenAI 兼容端点和 SENSENOVA_API_KEY。
-// 通过环境变量保留平台模型 ID 的可配置性；Render 上不填时使用 UI 中的默认选项。
-const SENSENOVA_GLM_MODEL_NAME = process.env.SENSENOVA_GLM_MODEL || 'glm-5.2';
-const SENSENOVA_FLASH_LITE_MODEL_NAME = process.env.SENSENOVA_FLASH_LITE_MODEL || 'sensenova-6.8-flash-lite';
-const KRILL_MODEL_NAME = process.env.KRILL_MODEL || process.env.ANTHROPIC_MODEL || 'deepseek-v4-flash:free';
-const KRILL_BASE_URL = process.env.KRILL_BASE_URL || process.env.ANTHROPIC_BASE_URL || 'https://api-slb.krill-ai.com/coding';
-const DEFAULT_MODEL_ALIAS = 'deepseek-v4-flash-free';
+// ═══════════ 火山引擎四个模型 ═══════════
+// 1. DeepSeek-V4-Pro正式版 (正式版，最强质量)
+const VOLCENGINE_V4_PRO_GA = process.env.VOLCENGINE_V4_PRO_GA_MODEL || 'deepseek-v4-pro-0813';
+// 2. DeepSeek-V4-Flash正式版 (正式版，高速)
+const VOLCENGINE_V4_FLASH_GA = process.env.VOLCENGINE_V4_FLASH_GA_MODEL || 'deepseek-v4-flash-ga-260731';
+// 3. DeepSeek-V4-pro (预览版 Pro)
+const VOLCENGINE_V4_PRO = process.env.VOLCENGINE_V4_PRO_MODEL || 'deepseek-v4-pro-260425';
+// 4. DeepSeek-V4-flash (预览版 Flash)
+const VOLCENGINE_V4_FLASH = process.env.VOLCENGINE_V4_FLASH_MODEL || 'deepseek-v4-flash';
 
-// 火山引擎模型名称
-const VOLCENGINE_MODEL_NAME = process.env.VOLCENGINE_MODEL || 'deepseek-v4-pro-260425';
-const VOLCENGINE_BASE_URL = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding';
+// 火山引擎 API 配置
+const VOLCENGINE_API_KEY = process.env.VOLCENGINE_API_KEY;
+const VOLCENGINE_BASE_URL = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
+const VOLCENGINE_CODING_BASE_URL = process.env.VOLCENGINE_CODING_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding';
 
-// 模型映射表
+// 默认模型（DeepSeek-V4-Pro正式版）
+const DEFAULT_MODEL_ALIAS = 'deepseek-v4-pro-ga';
+
+// 模型映射表：UI 标识 → 实际模型名
 const MODEL_MAP = {
-    'deepseek-v4-flash-free': SENSENOVA_MODEL_NAME,
-    'deepseek-v4-flash': SENSENOVA_MODEL_NAME,
-    'deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
-    'deepseek/deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
-    'glm-5.2': SENSENOVA_GLM_MODEL_NAME,
-    'sensenova-6.8-flash-lite': SENSENOVA_FLASH_LITE_MODEL_NAME,
-    'deepseek-v4-pro': VOLCENGINE_MODEL_NAME,
-    'deepseek-v3': SENSENOVA_MODEL_NAME,               // 兼容旧入口：改走 SenseNova V4 Flash
-    'deepseek-v3.2': SENSENOVA_MODEL_NAME,             // 兼容旧入口：改走 SenseNova V4 Flash
-    'deepseek-r1': VOLCENGINE_MODEL_NAME,              // 兼容旧入口：改走火山引擎 DeepSeek V4 Pro
-    'deepseek-reasoner': VOLCENGINE_MODEL_NAME,         // 别名
-    'qwen3-coder': 'DeepSeek-R1-0528-Qwen3-8B',   // → 白山云
-    'qwen3-coder-plus': 'DeepSeek-R1-0528-Qwen3-8B', // → 白山云
-    'gpt-5.1-codex-mini': VOLCENGINE_MODEL_NAME,   // → 火山引擎 DeepSeek V4 Pro
-    // 兼容旧版大写名称
-    'DeepSeek-V3-671B': SENSENOVA_MODEL_NAME,     // 兼容旧名称：改走 SenseNova V4 Flash
-    'Qwen3-Coder-Plus': 'DeepSeek-R1-0528-Qwen3-8B'
+    // 四个主要模型
+    'deepseek-v4-pro-ga': VOLCENGINE_V4_PRO_GA,         // DeepSeek-V4-Pro正式版
+    'deepseek-v4-flash-ga': VOLCENGINE_V4_FLASH_GA,     // DeepSeek-V4-Flash正式版
+    'deepseek-v4-pro': VOLCENGINE_V4_PRO,               // DeepSeek-V4-pro
+    'deepseek-v4-flash': VOLCENGINE_V4_FLASH,           // DeepSeek-V4-flash
+    // 兼容旧入口 → 统一映射到新模型
+    'deepseek-v4-flash-free': VOLCENGINE_V4_FLASH_GA,   // 旧Flash → Flash正式版
+    'deepseek-v4-flash:free': VOLCENGINE_V4_FLASH_GA,
+    'deepseek/deepseek-v4-flash:free': VOLCENGINE_V4_FLASH_GA,
+    'deepseek-v3': VOLCENGINE_V4_FLASH_GA,
+    'deepseek-v3.2': VOLCENGINE_V4_FLASH_GA,
+    'deepseek-r1': VOLCENGINE_V4_PRO_GA,
+    'deepseek-reasoner': VOLCENGINE_V4_PRO_GA,
+    'deepseek-v4-pro-260425': VOLCENGINE_V4_PRO,
+    'gpt-5.1-codex-mini': VOLCENGINE_V4_PRO_GA,
+    'glm-5.2': VOLCENGINE_V4_FLASH_GA,
+    'company-glm-5.2': VOLCENGINE_V4_FLASH_GA,
+    'sensenova-6.8-flash-lite': VOLCENGINE_V4_FLASH,
+    'qwen3-coder': VOLCENGINE_V4_FLASH,
+    'qwen3-coder-plus': VOLCENGINE_V4_FLASH,
+    'DeepSeek-V3-671B': VOLCENGINE_V4_FLASH_GA,
+    'Qwen3-Coder-Plus': VOLCENGINE_V4_FLASH
 };
 
-// GPT平台模型列表（已废弃，原GPT按钮改为火山引擎）
-const GPT_MODELS = new Set([]);
-
-// 白山云平台模型列表
-const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
-
-// 火山引擎平台模型列表
-const VOLCENGINE_MODELS = new Set([VOLCENGINE_MODEL_NAME]);
-
-// SenseNova平台模型列表（OpenAI兼容）。必须包含 UI 暴露的模型，否则会错误回退到 IFLOW 配置。
-const SENSENOVA_MODELS = new Set([
-    SENSENOVA_MODEL_NAME,
-    SENSENOVA_GLM_MODEL_NAME,
-    SENSENOVA_FLASH_LITE_MODEL_NAME
+// 所有模型统一走火山引擎
+const VOLCENGINE_MODELS = new Set([
+    VOLCENGINE_V4_PRO_GA,
+    VOLCENGINE_V4_FLASH_GA,
+    VOLCENGINE_V4_PRO,
+    VOLCENGINE_V4_FLASH
 ]);
 
-// Krill平台模型列表（Anthropic/Claude Code 兼容）
-const KRILL_MODELS = new Set([KRILL_MODEL_NAME]);
+// 已废弃的平台列表（保留变量以兼容其他模块引用）
+const GPT_MODELS = new Set([]);
+const BAISHAN_MODELS = new Set([]);
+const SENSENOVA_MODELS = new Set([]);
+const KRILL_MODELS = new Set([]);
 
-// 必须使用流式调用的模型（R1 思考链很长，流式更稳定）
-const STREAM_ONLY_MODELS = new Set(['deepseek-r1', 'DeepSeek-R1-0528-Qwen3-8B']);
+// 必须使用流式调用的模型（Pro 大模型思考链长，流式更稳定）
+const STREAM_ONLY_MODELS = new Set([VOLCENGINE_V4_PRO_GA, VOLCENGINE_V4_PRO]);
 
 /**
- * 获取 OpenAI 兼容客户端
+ * 获取 OpenAI 兼容客户端（统一使用火山引擎）
  */
 function createClient(apiKey, baseUrl, model) {
-    // 根据模型选择对应平台的密钥和URL
-    const isGptModel = model && GPT_MODELS.has(model);
-    const isBaishanModel = model && BAISHAN_MODELS.has(model);
-    const isVolcengineModel = model && VOLCENGINE_MODELS.has(model);
-    const isSensenovaModel = model && SENSENOVA_MODELS.has(model);
-    let key, url;
-    if (apiKey) {
-        key = apiKey;
-    } else if (isSensenovaModel) {
-        key = process.env.SENSENOVA_API_KEY;
-    } else if (isVolcengineModel) {
-        key = process.env.VOLCENGINE_API_KEY;
-    } else if (isGptModel) {
-        key = process.env.GPT_API_KEY;
-    } else if (isBaishanModel) {
-        key = process.env.BAISHAN_API_KEY;
-    } else {
-        key = process.env.IFLOW_API_KEY;
-    }
-    if (baseUrl) {
-        url = baseUrl;
-    } else if (isSensenovaModel) {
-        url = SENSENOVA_BASE_URL;
-    } else if (isVolcengineModel) {
-        url = VOLCENGINE_BASE_URL;
-    } else if (isGptModel) {
-        url = process.env.GPT_BASE_URL || 'https://x.ainiaini.xyz/v1';
-    } else if (isBaishanModel) {
-        url = process.env.BAISHAN_BASE_URL || 'https://api.edgefn.net/v1';
-    } else {
-        url = process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1';
-    }
+    const key = apiKey || VOLCENGINE_API_KEY;
+    const url = baseUrl || VOLCENGINE_BASE_URL;
     return new OpenAI({ apiKey: key, baseURL: url });
 }
 
 function isKrillModel(model) {
-    return model && KRILL_MODELS.has(model);
+    return false; // 已废弃 Krill
 }
 
 function normalizeAnthropicMessages(messages = []) {
@@ -135,11 +110,38 @@ function normalizeAnthropicMessages(messages = []) {
 }
 
 function krillUrl(path) {
-    return `${KRILL_BASE_URL.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+    // 保留函数签名以兼容引用
+    return '';
 }
 
-function volcengineUrl(path, baseUrl = VOLCENGINE_BASE_URL) {
+function companyGlmUrl(path, baseUrl) {
+    // 保留函数签名以兼容引用
+    return '';
+}
+
+function volcengineUrl(path, baseUrl = VOLCENGINE_CODING_BASE_URL) {
     return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+function getVolcengineStandardBaseUrl(baseUrl = VOLCENGINE_CODING_BASE_URL) {
+    const configured = String(process.env.VOLCENGINE_STANDARD_BASE_URL || '').trim();
+    if (configured) return configured.replace(/\/+$/, '');
+    const source = String(baseUrl || '').replace(/\/+$/, '');
+    if (/\/api\/coding$/i.test(source)) {
+        return source.replace(/\/api\/coding$/i, '/api/v3');
+    }
+    if (/\/api\/v3$/i.test(source)) return source;
+    try {
+        return `${new URL(source).origin}/api/v3`;
+    } catch {
+        return VOLCENGINE_BASE_URL.replace(/\/+$/, '');
+    }
+}
+
+function isCodingPlanUnavailableError(error) {
+    const message = String(error?.message || '');
+    return error?.status === 400
+        && /CodingPlan|valid\s+subscription|subscription\s+has\s+expired/i.test(message);
 }
 
 function extractAnthropicText(data) {
@@ -153,68 +155,16 @@ function extractAnthropicText(data) {
     return data?.completion || data?.message?.content || '';
 }
 
-async function callKrillAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey }) {
-    const key = apiKey || process.env.KRILL_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
-    if (!key) {
-        throw new Error('缺少 KRILL_API_KEY / ANTHROPIC_AUTH_TOKEN');
-    }
+async function callKrillAI() {
+    throw new Error('Krill 通道已废弃，请使用火山引擎模型');
+}
 
-    const normalized = normalizeAnthropicMessages(messages);
-    const body = {
-        model: modelName,
-        messages: normalized.messages,
-        max_tokens,
-        temperature
-    };
-    if (normalized.system) body.system = normalized.system;
-
-    const response = await fetch(krillUrl('/v1/messages'), {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${key}`,
-            'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify(body)
-    });
-
-    const raw = await response.text();
-    let data = null;
-    try {
-        data = raw ? JSON.parse(raw) : null;
-    } catch (error) {
-        throw new Error(`Krill响应不是JSON: ${raw.slice(0, 300)}`);
-    }
-
-    if (!response.ok) {
-        const message = data?.error?.message || data?.message || data?.msg || raw;
-        const error = new Error(`Krill API错误 [${response.status}]: ${message}`);
-        error.status = response.status;
-        throw error;
-    }
-
-    const content = extractAnthropicText(data);
-    if (stream && res) {
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
-        return null;
-    }
-
-    return {
-        choices: [{
-            message: { role: 'assistant', content },
-            finish_reason: data?.stop_reason || 'stop'
-        }],
-        model: data?.model || modelName,
-        usage: {
-            prompt_tokens: data?.usage?.input_tokens || 0,
-            completion_tokens: data?.usage?.output_tokens || 0,
-            total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0)
-        }
-    };
+async function callCompanyGlmAI() {
+    throw new Error('公司 GLM 通道已废弃，请使用火山引擎模型');
 }
 
 async function callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl }) {
-    const key = apiKey || process.env.VOLCENGINE_API_KEY;
+    const key = apiKey || VOLCENGINE_API_KEY;
     if (!key) {
         throw new Error('缺少 VOLCENGINE_API_KEY');
     }
@@ -274,7 +224,7 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
 }
 
 /**
- * 调用 AI Chat 接口
+ * 调用 AI Chat 接口（统一火山引擎）
  * @param {Object} options - 调用选项
  * @param {Array} options.messages - 消息数组
  * @param {string} options.model - 模型标识
@@ -301,14 +251,23 @@ async function callAI(options) {
     const modelName = MODEL_MAP[model] || model;
     const isStreamOnly = STREAM_ONLY_MODELS.has(modelName);
     const isVolcengineModel = VOLCENGINE_MODELS.has(modelName);
-    const activeBaseUrl = baseUrl || (isVolcengineModel ? VOLCENGINE_BASE_URL : null);
+    const activeBaseUrl = baseUrl || VOLCENGINE_BASE_URL;
 
-    if (isKrillModel(modelName)) {
-        return callKrillAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey });
-    }
-
+    // 尝试 Coding 端点（如果配置了 coding URL）
     if (isVolcengineModel && /\/api\/coding\/?$/i.test(activeBaseUrl || '')) {
-        return callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl });
+        try {
+            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl });
+        } catch (error) {
+            if (!isCodingPlanUnavailableError(error)) throw error;
+            const standardBaseUrl = getVolcengineStandardBaseUrl(activeBaseUrl);
+            console.warn(`   ↪️ 火山 CodingPlan 不可用，改走同模型标准推理端点: ${standardBaseUrl}`);
+            return callAI({
+                ...options,
+                model: modelName,
+                apiKey: apiKey || VOLCENGINE_API_KEY,
+                baseUrl: standardBaseUrl
+            });
+        }
     }
 
     const client = createClient(apiKey, baseUrl, modelName);
@@ -344,22 +303,22 @@ async function callAI(options) {
         let fullContent = '';
         let thinkingContent = '';
         let finishReason = 'stop';
-        const isR1 = modelName === 'deepseek-r1' || modelName === 'DeepSeek-R1-0528-Qwen3-8B';
+        const isProModel = modelName === VOLCENGINE_V4_PRO_GA || modelName === VOLCENGINE_V4_PRO;
         for await (const chunk of completion) {
             const delta = chunk.choices[0]?.delta;
             // 检测 finish_reason
             if (chunk.choices[0]?.finish_reason) {
                 finishReason = chunk.choices[0].finish_reason;
             }
-            // R1 模型：reasoning_content 是思考链，content 是最终答案
-            if (isR1 && delta?.reasoning_content) {
+            // Pro 模型：reasoning_content 是思考链，content 是最终答案
+            if (isProModel && delta?.reasoning_content) {
                 thinkingContent += delta.reasoning_content;
             }
             const content = delta?.content || '';
             fullContent += content;
         }
-        if (isR1 && thinkingContent) {
-            console.log(`   🧠 DeepSeek-R1 思考链长度: ${thinkingContent.length} 字符`);
+        if (isProModel && thinkingContent) {
+            console.log(`   🧠 DeepSeek V4 Pro 思考链长度: ${thinkingContent.length} 字符`);
         }
         if (finishReason === 'length') {
             console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${max_tokens}`);
@@ -459,12 +418,30 @@ module.exports = {
     callAI,
     callAIWithRetry,
     MODEL_MAP,
-    SENSENOVA_MODEL_NAME,
-    SENSENOVA_GLM_MODEL_NAME,
-    SENSENOVA_FLASH_LITE_MODEL_NAME,
+    // 新的四个火山引擎模型
+    VOLCENGINE_V4_PRO_GA,
+    VOLCENGINE_V4_FLASH_GA,
+    VOLCENGINE_V4_PRO,
+    VOLCENGINE_V4_FLASH,
+    VOLCENGINE_BASE_URL,
+    VOLCENGINE_CODING_BASE_URL,
+    VOLCENGINE_MODELS,
+    getVolcengineStandardBaseUrl,
+    isCodingPlanUnavailableError,
+    DEFAULT_MODEL_ALIAS,
+    // 兼容旧模块引用（指向新模型或空值）
+    SENSENOVA_MODEL_NAME: VOLCENGINE_V4_FLASH_GA,
+    SENSENOVA_GLM_MODEL_NAME: VOLCENGINE_V4_FLASH_GA,
+    SENSENOVA_FLASH_LITE_MODEL_NAME: VOLCENGINE_V4_FLASH,
+    COMPANY_GLM_MODEL_ALIAS: 'company-glm-5.2',
+    COMPANY_GLM_MODEL_NAME: VOLCENGINE_V4_FLASH_GA,
+    COMPANY_GLM_BASE_URL: VOLCENGINE_BASE_URL,
     SENSENOVA_MODELS,
-    SENSENOVA_BASE_URL,
-    KRILL_MODEL_NAME,
-    KRILL_BASE_URL,
-    DEFAULT_MODEL_ALIAS
+    SENSENOVA_BASE_URL: VOLCENGINE_BASE_URL,
+    KRILL_MODEL_NAME: VOLCENGINE_V4_FLASH_GA,
+    KRILL_BASE_URL: VOLCENGINE_BASE_URL,
+    VOLCENGINE_MODEL_NAME: VOLCENGINE_V4_PRO_GA,
+    VOLCENGINE_STANDARD_BASE_URL: VOLCENGINE_BASE_URL,
+    companyGlmUrl,
+    callCompanyGlmAI
 };
