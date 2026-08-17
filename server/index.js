@@ -14,7 +14,14 @@ const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 require('dotenv').config(); // also try CWD
 
-const { callAI, callAIWithRetry, MODEL_MAP, DEFAULT_MODEL_ALIAS, SENSENOVA_MODEL_NAME } = require('./ai-client');
+const {
+    callAI,
+    callAIWithRetry,
+    MODEL_MAP,
+    DEFAULT_MODEL_ALIAS,
+    SENSENOVA_MODEL_NAME,
+    SENSENOVA_MODELS
+} = require('./ai-client');
 const {
     FUNCTION_EXTRACTION_PROMPT,
     COSMIC_SPLIT_PROMPT,
@@ -2173,7 +2180,7 @@ app.get('/api/health', (req, res) => {
         codeAnalysisModel: MODEL_MAP['deepseek-v4-pro'] || 'deepseek-v4-pro-260425',
         currentModel: currentModel,
         model: currentModel,
-        platform: currentModel === SENSENOVA_MODEL_NAME ? 'SenseNova' : 'OpenAI-compatible',
+        platform: SENSENOVA_MODELS.has(currentModel) ? 'SenseNova' : 'OpenAI-compatible',
         availableModels: Array.from(new Set(Object.values(MODEL_MAP)))
     });
 });

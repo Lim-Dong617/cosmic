@@ -6,6 +6,10 @@ const OpenAI = require('openai');
 
 const SENSENOVA_MODEL_NAME = process.env.SENSENOVA_MODEL || 'deepseek-v4-flash';
 const SENSENOVA_BASE_URL = process.env.SENSENOVA_BASE_URL || 'https://token.sensenova.cn/v1';
+// 额外的 SenseNova 模型：使用同一套 OpenAI 兼容端点和 SENSENOVA_API_KEY。
+// 通过环境变量保留平台模型 ID 的可配置性；Render 上不填时使用 UI 中的默认选项。
+const SENSENOVA_GLM_MODEL_NAME = process.env.SENSENOVA_GLM_MODEL || 'glm-5.2';
+const SENSENOVA_FLASH_LITE_MODEL_NAME = process.env.SENSENOVA_FLASH_LITE_MODEL || 'sensenova-6.8-flash-lite';
 const KRILL_MODEL_NAME = process.env.KRILL_MODEL || process.env.ANTHROPIC_MODEL || 'deepseek-v4-flash:free';
 const KRILL_BASE_URL = process.env.KRILL_BASE_URL || process.env.ANTHROPIC_BASE_URL || 'https://api-slb.krill-ai.com/coding';
 const DEFAULT_MODEL_ALIAS = 'deepseek-v4-flash-free';
@@ -20,6 +24,8 @@ const MODEL_MAP = {
     'deepseek-v4-flash': SENSENOVA_MODEL_NAME,
     'deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
     'deepseek/deepseek-v4-flash:free': SENSENOVA_MODEL_NAME,
+    'glm-5.2': SENSENOVA_GLM_MODEL_NAME,
+    'sensenova-6.8-flash-lite': SENSENOVA_FLASH_LITE_MODEL_NAME,
     'deepseek-v4-pro': VOLCENGINE_MODEL_NAME,
     'deepseek-v3': SENSENOVA_MODEL_NAME,               // 兼容旧入口：改走 SenseNova V4 Flash
     'deepseek-v3.2': SENSENOVA_MODEL_NAME,             // 兼容旧入口：改走 SenseNova V4 Flash
@@ -42,8 +48,12 @@ const BAISHAN_MODELS = new Set(['DeepSeek-R1-0528-Qwen3-8B']);
 // 火山引擎平台模型列表
 const VOLCENGINE_MODELS = new Set([VOLCENGINE_MODEL_NAME]);
 
-// SenseNova平台模型列表（OpenAI兼容）
-const SENSENOVA_MODELS = new Set([SENSENOVA_MODEL_NAME]);
+// SenseNova平台模型列表（OpenAI兼容）。必须包含 UI 暴露的模型，否则会错误回退到 IFLOW 配置。
+const SENSENOVA_MODELS = new Set([
+    SENSENOVA_MODEL_NAME,
+    SENSENOVA_GLM_MODEL_NAME,
+    SENSENOVA_FLASH_LITE_MODEL_NAME
+]);
 
 // Krill平台模型列表（Anthropic/Claude Code 兼容）
 const KRILL_MODELS = new Set([KRILL_MODEL_NAME]);
@@ -450,6 +460,9 @@ module.exports = {
     callAIWithRetry,
     MODEL_MAP,
     SENSENOVA_MODEL_NAME,
+    SENSENOVA_GLM_MODEL_NAME,
+    SENSENOVA_FLASH_LITE_MODEL_NAME,
+    SENSENOVA_MODELS,
     SENSENOVA_BASE_URL,
     KRILL_MODEL_NAME,
     KRILL_BASE_URL,

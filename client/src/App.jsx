@@ -521,6 +521,8 @@ function App({ user, token, onLogout }) {
             const labels = {
                 'deepseek-v4-flash-free': 'DeepSeek V4 Flash (SenseNova)',
                 'deepseek-v3': 'DeepSeek V4 Flash (SenseNova)',
+                'glm-5.2': 'GLM 5.2 (SenseNova)',
+                'sensenova-6.8-flash-lite': 'SenseNova 6.8 Flash Lite',
                 'deepseek-r1': 'DeepSeek V4 Pro',
                 'qwen3-coder': 'Qwen3-Coder',
                 'gpt-5.1-codex-mini': '优先使用 V4 Pro'
@@ -553,7 +555,9 @@ function App({ user, token, onLogout }) {
         const modelMap = {
             'deepseek-v4-flash-free': 'deepseek-v4-flash-free',
             'deepseek-v3': 'deepseek-v4-flash-free',
-            'deepseek-r1': 'deepseek-r1'
+            'deepseek-r1': 'deepseek-r1',
+            'glm-5.2': 'glm-5.2',
+            'sensenova-6.8-flash-lite': 'sensenova-6.8-flash-lite'
         };
         return {
             apiKey: null,
@@ -3986,6 +3990,28 @@ function App({ user, token, onLogout }) {
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek V4 Flash</div>
                                     <div style={{ fontSize: 11, opacity: 0.6 }}></div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option ${selectedModel === 'glm-5.2' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('glm-5.2')}
+                                style={selectedModel === 'glm-5.2' ? { borderColor: '#2563eb', background: 'rgba(37,99,235,0.12)' } : {}}
+                            >
+                                <span className="model-option-dot" style={{ background: '#2563eb' }} />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>GLM 5.2</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>SenseNova · 通用模型</div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option ${selectedModel === 'sensenova-6.8-flash-lite' ? 'active' : ''}`}
+                                onClick={() => handleModelChange('sensenova-6.8-flash-lite')}
+                                style={selectedModel === 'sensenova-6.8-flash-lite' ? { borderColor: '#0ea5e9', background: 'rgba(14,165,233,0.12)' } : {}}
+                            >
+                                <span className="model-option-dot" style={{ background: '#0ea5e9' }} />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>SenseNova 6.8 Flash Lite</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>SenseNova · 快速低成本</div>
                                 </div>
                             </button>
                             <button
