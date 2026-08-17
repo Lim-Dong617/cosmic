@@ -12,6 +12,106 @@ export const normalizeProcessOrderKey = (name) => String(name || '')
     .toLowerCase()
     .trim();
 
+const normalizeAllocationText = (value) => String(value || '')
+    .normalize('NFKC')
+    .replace(/^\s*\d+(?:\.\d+)*[.、\s]*/, '')
+    .replace(/[\s_\-—–，,。；;：:（）()【】\[\]“”"'·]/g, '')
+    .toLowerCase()
+    .trim();
+
+const distributeIntegerTarget = (total, indexes, chapters) => {
+    const safeTotal = Math.max(0, Math.floor(Number(total) || 0));
+    if (safeTotal === 0 || indexes.length === 0) return new Map();
+    const weights = indexes.map(index => Math.max(
+        1,
+        Number(chapters[index]?.charCount) || String(chapters[index]?.content || '').length || 1
+    ));
+    const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+    const allocations = indexes.map((index, order) => {
+        const raw = safeTotal * weights[order] / weightTotal;
+        return { index, value: Math.floor(raw), fraction: raw - Math.floor(raw), weight: weights[order] };
+    });
+    let remainder = safeTotal - allocations.reduce((sum, item) => sum + item.value, 0);
+    allocations
+        .slice()
+        .sort((left, right) => right.fraction - left.fraction || right.weight - left.weight || left.index - right.index)
+        .forEach(item => {
+            if (remainder <= 0) return;
+            const original = allocations.find(candidate => candidate.index === item.index);
+            original.value += 1;
+            remainder -= 1;
+        });
+    return new Map(allocations.map(item => [item.index, item.value]));
+};
+
+/**
+ * 把模块数量规划守恒地分配到实际章节。
+ * 每个规划项只消费一次；同一模块命中多个章节时按正文长度拆分；
+ * 一个父章节命中多个子模块时会累加这些子模块的目标。
+ */
+export const allocateQuantityPlanToChapters = (chapters = [], quantityPlan = [], fallbackTotal = 0) => {
+    const chapterList = Array.isArray(chapters) ? chapters : [];
+    if (chapterList.length === 0) return [];
+    const targets = Array(chapterList.length).fill(0);
+    const allIndexes = chapterList.map((_, index) => index);
+
+    if (!Array.isArray(quantityPlan) || quantityPlan.length === 0) {
+        const distributed = distributeIntegerTarget(fallbackTotal, allIndexes, chapterList);
+        distributed.forEach((value, index) => { targets[index] += value; });
+        return targets;
+    }
+
+    let unmatchedTotal = 0;
+    quantityPlan.forEach((planItem, planIndex) => {
+        const target = Math.max(0, Math.floor(Number(planItem?.target) || 0));
+        if (target === 0) return;
+
+        const indexedMatches = allIndexes.filter(index => chapterList[index]?.moduleIndex === planIndex);
+        let matches = indexedMatches;
+
+        if (matches.length === 0) {
+            const planLevel3 = normalizeAllocationText(planItem?.level3);
+            const planLevel2 = normalizeAllocationText(planItem?.level2);
+            const scored = allIndexes.map(index => {
+                const chapter = chapterList[index] || {};
+                const chapterLevel3 = [chapter.level3, chapter.title]
+                    .map(normalizeAllocationText)
+                    .filter(Boolean);
+                const chapterLevel2 = normalizeAllocationText(chapter.level2);
+                let score = 0;
+                if (planLevel3) {
+                    if (chapterLevel3.some(value => value === planLevel3)) score = 100;
+                    else if (chapterLevel3.some(value => value.length >= 4 && planLevel3.length >= 4 && (value.includes(planLevel3) || planLevel3.includes(value)))) score = 85;
+                }
+                if (score === 0 && planLevel2) {
+                    if (chapterLevel2 === planLevel2 || chapterLevel3.some(value => value === planLevel2)) score = 60;
+                    else if ([chapterLevel2, ...chapterLevel3].some(value => value.length >= 4 && planLevel2.length >= 4 && (value.includes(planLevel2) || planLevel2.includes(value)))) score = 45;
+                }
+                return { index, score };
+            });
+            const bestScore = Math.max(0, ...scored.map(item => item.score));
+            if (bestScore > 0) matches = scored.filter(item => item.score === bestScore).map(item => item.index);
+        }
+
+        if (matches.length === 0 && chapterList[planIndex]?.moduleAligned) {
+            matches = [planIndex];
+        }
+        if (matches.length === 0) {
+            unmatchedTotal += target;
+            return;
+        }
+
+        const distributed = distributeIntegerTarget(target, matches, chapterList);
+        distributed.forEach((value, index) => { targets[index] += value; });
+    });
+
+    if (unmatchedTotal > 0) {
+        const distributed = distributeIntegerTarget(unmatchedTotal, allIndexes, chapterList);
+        distributed.forEach((value, index) => { targets[index] += value; });
+    }
+    return targets;
+};
+
 const normalizeScope = (func) => normalizeText(
     func?.sourceChapter || func?.level1 || ''
 );
@@ -68,18 +168,21 @@ export const canonicalFunctionKey = (name) => {
     return `${parts.batch ? '批量' : ''}${parts.operation}\u0001${parts.object}`;
 };
 
-const areLikelyDuplicateFunctions = (left, right) => {
+const areLikelyDuplicateFunctions = (left, right, { semantic = true } = {}) => {
     const leftScope = normalizeScope(left);
     const rightScope = normalizeScope(right);
     if (leftScope && rightScope && leftScope !== rightScope) return false;
+    if (!semantic) {
+        return normalizeText(left?.functionName) === normalizeText(right?.functionName);
+    }
     return canonicalFunctionKey(left?.functionName) === canonicalFunctionKey(right?.functionName);
 };
 
-export const deduplicateFunctionObjects = (functions = []) => {
+export const deduplicateFunctionObjects = (functions = [], options = {}) => {
     const kept = [];
     for (const func of functions) {
         if (!normalizeText(func?.functionName)) continue;
-        if (kept.some(existing => areLikelyDuplicateFunctions(existing, func))) continue;
+        if (kept.some(existing => areLikelyDuplicateFunctions(existing, func, options))) continue;
         kept.push(func);
     }
     return kept;

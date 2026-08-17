@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import {
+  allocateQuantityPlanToChapters,
   canonicalFunctionKey,
   deduplicateFunctionObjects,
   inheritMissingFunctionLevels,
@@ -37,6 +38,31 @@ assert.deepEqual(
   deduped.map((item) => item.functionName),
   ["查询漫入用户统计列表", "查看漫入用户统计记录"],
 );
+
+const quantityPreserved = deduplicateFunctionObjects([
+  { functionName: "查询漫入用户统计列表", sourceChapter: "7. 漫入用户统计" },
+  { functionName: "查看漫入用户统计记录", sourceChapter: "7 漫入用户统计" },
+], { semantic: false });
+assert.equal(quantityPreserved.length, 2);
+
+const splitModuleTargets = allocateQuantityPlanToChapters([
+  { title: "模块A 子章1", level3: "模块A", charCount: 100 },
+  { title: "模块A 子章2", level3: "模块A", charCount: 100 },
+  { title: "模块B", level3: "模块B", charCount: 100 },
+], [
+  { level3: "模块A", target: 6 },
+  { level3: "模块B", target: 4 },
+], 10);
+assert.deepEqual(splitModuleTargets, [3, 3, 4]);
+assert.equal(splitModuleTargets.reduce((sum, value) => sum + value, 0), 10);
+
+const parentChapterTargets = allocateQuantityPlanToChapters([
+  { title: "告警管理", level2: "告警管理", charCount: 100 },
+], [
+  { level2: "告警管理", level3: "无线告警", target: 6 },
+  { level2: "告警管理", level3: "有线告警", target: 4 },
+], 10);
+assert.deepEqual(parentChapterTargets, [10]);
 
 const leveled = inheritMissingFunctionLevels([
   {

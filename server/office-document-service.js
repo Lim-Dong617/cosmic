@@ -37,21 +37,28 @@ const MAX_EXCEL_BATCHES = 40;
 const MAX_JSON_GENERATION_ATTEMPTS = 2;
 const MAX_JSON_RETRY_CONTEXT_CHARS = 16000;
 
-const WORD_SYSTEM_PROMPT = `你是专业的中文办公文档编辑与排版专家。你需要准确理解用户指令，对已有内容进行修改、优化、重组，或从零生成一份可直接交付的 Word 文档。
+const WORD_SYSTEM_PROMPT = `你是专业的办公文档专家，擅长理解用户意图并生成高质量的 Word 文档。
 
-必须遵守：
-1. 不编造用户未提供的事实、数字、结论、出处或人员信息；缺失信息使用“待补充”或保留原文。
-2. 编辑已有文档时保留所有未被要求删除的重要信息，优先做局部、可追踪的内容改进。
-3. 使用清晰的 Markdown 表达最终结构：# 标题、##/### 分级标题、真实项目符号、真实编号列表、仅在数据确实适合行列比较时使用表格。
-4. 不输出解释、代码围栏或额外对话，只输出严格 JSON。
+工作流程：
+1. 深度理解用户的真实意图和期望效果
+2. 保留原文中的所有事实、数据、关键信息（除非明确要求删除）
+3. 优化结构、表达和格式，让文档更专业、易读
+4. 不编造任何用户未提供的事实、数字或结论
+
+输出规范：
+- 使用标准 Markdown：# 一级标题、## 二级标题、### 三级标题
+- 列表用 - 或 1. 开头，表格仅用于真正需要对比的数据
+- 保持语言专业、简洁、准确
+- 只输出 JSON，不要任何解释或代码围栏
 
 JSON 格式：
 {
-  "summary": "一句话概括完成的工作",
-  "filename": "不含扩展名的中文文件名",
-  "title": "文档标题",
-  "subtitle": "可选副标题",
-  "contentMarkdown": "完整的最终文档正文 Markdown"
+  “intentUnderstanding”: “用一句话确认你理解的用户意图”,
+  “summary”: “一句话说明完成了什么”,
+  “filename”: “不含扩展名的文件名”,
+  “title”: “文档标题”,
+  “subtitle”: “可选的副标题”,
+  “contentMarkdown”: “完整的文档正文内容（Markdown 格式）”
 }`;
 
 const WORD_CHUNK_SYSTEM_PROMPT = `你是专业的中文 Word 文档编辑。用户会给出一份长文档中的一个连续片段，以及对整份文档的修改要求。
@@ -64,57 +71,61 @@ const WORD_CHUNK_SYSTEM_PROMPT = `你是专业的中文 Word 文档编辑。用�
   "contentMarkdown": "处理后的完整片段"
 }`;
 
-const EXCEL_SYSTEM_PROMPT = `你是专业的 Excel 数据整理、建模和工作簿设计专家。你需要准确理解用户指令，为已有工作簿生成最小、可审计的修改计划，或从零生成结构清晰的新工作簿。
+const EXCEL_SYSTEM_PROMPT = `你是专业的 Excel 数据分析与工作簿设计专家。
 
-必须遵守：
-1. 不编造用户未提供的业务事实或数据。缺失数据保留为空或标记“待补充”。
-2. 派生值使用清晰、可审计的 Excel 公式；公式中的跨表引用始终使用单引号包裹工作表名。
-3. 编辑已有工作簿时，不重建无关工作表，不覆盖无关单元格，不破坏现有公式和格式。
-4. 仅在用户明确要求删除、去重或重构时使用删除操作。
-5. 单元格纯文本即使以等号开头也放在 value；只有真正公式才使用 formula（formula 不带开头等号）。
-6. 只输出严格 JSON，不输出解释或代码围栏。
+工作流程：
+1. 准确理解用户的业务场景和真实需求
+2. 分析现有数据结构，识别关键字段和业务逻辑
+3. 设计清晰、可维护的表格结构和公式
+4. 保持最小修改原则，只改动需要改的部分
 
-可以输出的新建工作簿结构：
+核心原则：
+- 不编造数据，缺失的用”待补充”或保留原值
+- 公式必须可审计、易理解，跨表引用用单引号包工作表名
+- 编辑时只修改相关部分，保护现有公式和格式
+- 删除操作需用户明确要求
+
+输出规范：
+- 只输出 JSON，不要解释或代码围栏
+- 单元格纯文本放 value，公式放 formula（不带等号）
+- styleRole 限定为：title、header、subheader、input、output、highlight、warning、normal
+
+新建工作簿结构：
 {
-  "summary": "一句话概括完成的工作",
-  "filename": "不含扩展名的中文文件名",
-  "applyProfessionalFormatting": true,
-  "sheets": [
+  “intentUnderstanding”: “确认理解的用户意图”,
+  “summary”: “一句话说明完成了什么”,
+  “filename”: “文件名（不含扩展名）”,
+  “applyProfessionalFormatting”: true,
+  “sheets”: [
     {
-      "name": "工作表名",
-      "title": "可选的大标题",
-      "headers": ["列1", "列2"],
-      "rows": [[1, "文本"], [{"formula":"SUM(B2:B10)","numberFormat":"#,##0"}, null]],
-      "freezeHeader": true,
-      "autoFilter": true
+      “name”: “工作表名”,
+      “title”: “可选标题”,
+      “headers”: [“列1”, “列2”],
+      “rows”: [[1, “文本”], [{“formula”:”SUM(B2:B10)”,”numberFormat”:”#,##0”}, null]],
+      “freezeHeader”: true,
+      “autoFilter”: true
     }
   ],
-  "operations": []
+  “operations”: []
 }
 
-编辑已有工作簿时，优先返回 operations：
+编辑已有工作簿（优先使用）：
 {
-  "summary": "一句话概括完成的工作",
-  "filename": "不含扩展名的中文文件名",
-  "applyProfessionalFormatting": false,
-  "operations": [
-    {"type":"setCell","sheet":"Sheet1","address":"B2","value":"文本","formula":null,"numberFormat":"0.0%","styleRole":"normal"},
-    {"type":"setRange","sheet":"Sheet1","startCell":"A2","rows":[["A","B"],["C","D"]]},
-    {"type":"appendRows","sheet":"Sheet1","rows":[["A","B"]]},
-    {"type":"insertRows","sheet":"Sheet1","startRow":3,"rows":[["A","B"]]},
-    {"type":"deleteRows","sheet":"Sheet1","startRow":3,"count":1},
-    {"type":"addSheet","name":"汇总","title":"汇总","headers":["指标","结果"],"rows":[["总数",{"formula":"COUNTA('明细'!A2:A1000)"}]]},
-    {"type":"renameSheet","sheet":"Sheet1","name":"明细"},
-    {"type":"setColumnWidth","sheet":"明细","column":"A","width":24},
-    {"type":"formatRange","sheet":"明细","range":"A1:D1","styleRole":"header","numberFormat":null},
-    {"type":"mergeCells","sheet":"明细","range":"A1:D1"},
-    {"type":"freezePane","sheet":"明细","rows":1,"columns":0},
-    {"type":"autoFilter","sheet":"明细","range":"A1:D100"},
-    {"type":"dataValidation","sheet":"明细","range":"D2:D100","values":["未开始","进行中","已完成"]}
+  “intentUnderstanding”: “确认理解的用户意图”,
+  “summary”: “一句话说明完成了什么”,
+  “filename”: “文件名（不含扩展名）”,
+  “applyProfessionalFormatting”: false,
+  “operations”: [
+    {“type”:”setCell”,”sheet”:”Sheet1”,”address”:”B2”,”value”:”文本”,”styleRole”:”normal”},
+    {“type”:”setRange”,”sheet”:”Sheet1”,”startCell”:”A2”,”rows”:[[“A”,”B”],[“C”,”D”]]},
+    {“type”:”addSheet”,”name”:”汇总”,”headers”:[“指标”,”结果”],”rows”:[[“总数”,{“formula”:”COUNTA('明细'!A2:A1000)”}]]},
+    {“type”:”setColumnWidth”,”sheet”:”明细”,”column”:”A”,”width”:24},
+    {“type”:”formatRange”,”sheet”:”明细”,”range”:”A1:D1”,”styleRole”:”header”},
+    {“type”:”mergeCells”,”sheet”:”明细”,”range”:”A1:D1”},
+    {“type”:”freezePane”,”sheet”:”明细”,”rows”:1,”columns”:0},
+    {“type”:”autoFilter”,”sheet”:”明细”,”range”:”A1:D100”}
   ]
-}
-
-styleRole 只使用：title、header、subheader、input、output、highlight、warning、normal。`;
+}`;
 
 const EXCEL_BATCH_BLUEPRINT_SYSTEM_PROMPT = `你是专业的 Excel 批量处理规划专家。当前工作簿较大，后续系统会按行分批执行。你只负责输出一份简洁、稳定的全局蓝图，不要在本轮生成逐行内容。
 
@@ -1750,6 +1761,7 @@ async function buildWordResult({
             .match(/^#\s+(.+)$/m)?.[1]
             || sourceBaseName;
         plan = {
+            intentUnderstanding: `已分 ${chunks.length} 片段理解并处理：${summaries.slice(0, 2).join('；')}`,
             summary: `已分 ${chunks.length} 个片段完成处理${summaries.length ? `：${summaries.slice(0, 3).join('；')}` : ''}`,
             filename: `${sourceBaseName}_优化版`,
             title: inferredTitle,
@@ -1780,6 +1792,7 @@ async function buildWordResult({
         mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         filename: `${sanitizeFilename(plan.filename || title)}.docx`,
         summary: String(plan.summary || 'Word 文档已处理完成'),
+        intentUnderstanding: String(plan.intentUnderstanding || ''),
         stats: {
             characters: markdown.length,
             sections: (markdown.match(/^#{1,3}\s+/gm) || []).length,
@@ -2047,6 +2060,7 @@ async function buildExcelResult({
         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         filename: `${sanitizeFilename(plan.filename || source?.filename || '办公表格处理结果')}.xlsx`,
         summary: String(plan.summary || 'Excel 工作簿已处理完成'),
+        intentUnderstanding: String(plan.intentUnderstanding || ''),
         stats: {
             ...result.stats,
             ...(plan.batchStats || {}),
@@ -2143,6 +2157,7 @@ function registerOfficeDocumentRoutes(app, {
             res.setHeader('Content-Type', result.mimeType);
             res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`);
             res.setHeader('X-Office-Summary', encodeURIComponent(result.summary).slice(0, 1800));
+            res.setHeader('X-Office-Intent', encodeURIComponent(result.intentUnderstanding || '').slice(0, 1800));
             res.setHeader('X-Office-Format', result.format);
             res.setHeader('X-Office-Stats', encodeURIComponent(JSON.stringify(result.stats || {})).slice(0, 1800));
             res.setHeader('Cache-Control', 'no-store');

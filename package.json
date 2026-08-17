@@ -5,6 +5,7 @@
     "main": "server/index.js",
     "scripts": {
         "test": "node test-ai-client-model-routing.mjs && node test-cosmic-quality.mjs && node test-code-source-analyzer.mjs && node test-conversation-orchestrator.mjs && node test-office-document-service.mjs",
+        "benchmark:models": "node tools/benchmark-glm-vs-deepseek.mjs",
         "dev": "concurrently \"npm run server\" \"npm run client\"",
         "server": "node server/index.js",
         "client": "npm --prefix client run dev",
