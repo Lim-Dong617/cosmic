@@ -46,5 +46,10 @@ services:
         value: 480000
       - key: AI_QUEUE_TIMEOUT_MS
         value: 600000
+      # 模块脚手架阶段快速失败并走标题兜底，避免界面长时间停在 40%
+      - key: AI_MODULE_REQUEST_TIMEOUT_MS
+        value: 120000
+      - key: AI_MODULE_MAX_ATTEMPTS
+        value: 2
       - key: JWT_SECRET
         generateValue: true

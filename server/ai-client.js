@@ -43,6 +43,13 @@ const AI_QUEUE_TIMEOUT_MS = readBoundedInteger(
     30 * 60 * 1000
 );
 const AI_MAX_ATTEMPTS = readBoundedInteger(process.env.AI_MAX_ATTEMPTS, 4, 1, 8);
+const AI_MODULE_REQUEST_TIMEOUT_MS = readBoundedInteger(
+    process.env.AI_MODULE_REQUEST_TIMEOUT_MS,
+    2 * 60 * 1000,
+    30 * 1000,
+    AI_REQUEST_TIMEOUT_MS
+);
+const AI_MODULE_MAX_ATTEMPTS = readBoundedInteger(process.env.AI_MODULE_MAX_ATTEMPTS, 2, 1, 4);
 
 // 默认模型（DeepSeek-V4-Pro正式版）
 const DEFAULT_MODEL_ALIAS = 'deepseek-v4-pro-ga';
@@ -93,13 +100,13 @@ const STREAM_ONLY_MODELS = new Set([VOLCENGINE_V4_PRO_GA, VOLCENGINE_V4_PRO]);
 /**
  * 获取 OpenAI 兼容客户端（统一使用火山引擎）
  */
-function createClient(apiKey, baseUrl, model) {
+function createClient(apiKey, baseUrl, model, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
     const key = apiKey || VOLCENGINE_API_KEY;
     const url = baseUrl || VOLCENGINE_BASE_URL;
     return new OpenAI({
         apiKey: key,
         baseURL: url,
-        timeout: AI_REQUEST_TIMEOUT_MS,
+        timeout: timeoutMs,
         maxRetries: 0
     });
 }
@@ -192,7 +199,7 @@ async function callCompanyGlmAI() {
     throw new Error('公司 GLM 通道已废弃，请使用火山引擎模型');
 }
 
-async function callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl }) {
+async function callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl, timeoutMs = AI_REQUEST_TIMEOUT_MS }) {
     const key = apiKey || VOLCENGINE_API_KEY;
     if (!key) {
         throw new Error('缺少 VOLCENGINE_API_KEY');
@@ -208,7 +215,7 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
     if (normalized.system) body.system = normalized.system;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     let raw;
     try {
@@ -225,7 +232,7 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
         raw = await response.text();
     } catch (error) {
         if (controller.signal.aborted) {
-            const timeoutError = new Error(`火山引擎 Coding API调用超时（${Math.round(AI_REQUEST_TIMEOUT_MS / 1000)}秒）`);
+            const timeoutError = new Error(`火山引擎 Coding API调用超时（${Math.round(timeoutMs / 1000)}秒）`);
             timeoutError.code = 'ETIMEDOUT';
             timeoutError.status = 504;
             throw timeoutError;
@@ -291,7 +298,8 @@ async function callAI(options) {
         stream = false,
         res = null,
         apiKey = null,
-        baseUrl = null
+        baseUrl = null,
+        requestTimeoutMs = AI_REQUEST_TIMEOUT_MS
     } = options;
 
     const modelName = MODEL_MAP[model] || model;
@@ -302,7 +310,7 @@ async function callAI(options) {
     // 尝试 Coding 端点（如果配置了 coding URL）
     if (isVolcengineModel && /\/api\/coding\/?$/i.test(activeBaseUrl || '')) {
         try {
-            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl });
+            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl, timeoutMs: requestTimeoutMs });
         } catch (error) {
             if (!isCodingPlanUnavailableError(error)) throw error;
             const standardBaseUrl = getVolcengineStandardBaseUrl(activeBaseUrl);
@@ -316,7 +324,7 @@ async function callAI(options) {
         }
     }
 
-    const client = createClient(apiKey, baseUrl, modelName);
+    const client = createClient(apiKey, baseUrl, modelName, requestTimeoutMs);
 
     if (stream && res) {
         // 流式调用（直接输出给客户端）
@@ -532,6 +540,8 @@ module.exports = {
     AI_REQUEST_TIMEOUT_MS,
     AI_MAX_CONCURRENCY,
     AI_MAX_ATTEMPTS,
+    AI_MODULE_REQUEST_TIMEOUT_MS,
+    AI_MODULE_MAX_ATTEMPTS,
     MODEL_MAP,
     // 新的四个火山引擎模型
     VOLCENGINE_V4_PRO_GA,

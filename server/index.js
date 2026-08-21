@@ -26,7 +26,9 @@ const {
     VOLCENGINE_V4_FLASH,
     getAIErrorStatus,
     getAIConcurrencyState,
-    AI_REQUEST_TIMEOUT_MS
+    AI_REQUEST_TIMEOUT_MS,
+    AI_MODULE_REQUEST_TIMEOUT_MS,
+    AI_MODULE_MAX_ATTEMPTS
 } = require('./ai-client');
 // 兼容旧代码引用
 const SENSENOVA_MODEL_NAME = VOLCENGINE_V4_FLASH_GA;
@@ -3207,8 +3209,9 @@ JSON 格式：
         ],
         model: modelName,
         temperature: 0.05,
-        max_tokens: 12000
-    });
+        max_tokens: 12000,
+        requestTimeoutMs: AI_MODULE_REQUEST_TIMEOUT_MS
+    }, AI_MODULE_MAX_ATTEMPTS);
 
     return parseModuleRecognitionContent(completion?.choices?.[0]?.message?.content);
 }
@@ -5991,8 +5994,9 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
             ],
             model: modelName,
             temperature: 0.1,
-            max_tokens: 8000
-        });
+            max_tokens: 8000,
+            requestTimeoutMs: AI_MODULE_REQUEST_TIMEOUT_MS
+        }, AI_MODULE_MAX_ATTEMPTS);
 
         if (!completion?.choices?.[0]?.message?.content) {
             return res.status(500).json({ error: 'AI返回了空响应，请重试' });
