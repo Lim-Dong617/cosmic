@@ -7036,7 +7036,9 @@ if (process.env.NODE_ENV === 'production') {
         }
     });
 
-    const httpServer = app.listen(PORT, () => {
+    // Render 要求 Web Service 监听外部网卡；显式绑定 0.0.0.0，
+    // 避免平台健康检查或负载均衡无法连到仅本机地址。
+    const httpServer = app.listen(PORT, '0.0.0.0', () => {
         console.log(`
 ╔══════════════════════════════════════════════════════════╗
 ║         AI 智能分析与办公文档处理系统 v2.1              ║
