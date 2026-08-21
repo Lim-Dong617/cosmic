@@ -11,8 +11,20 @@ const {
     VOLCENGINE_MODELS,
     getVolcengineStandardBaseUrl,
     isCodingPlanUnavailableError,
+    isPermanentRateLimitError,
+    isRetryableAIError,
+    getAIConcurrencyState,
+    AI_REQUEST_TIMEOUT_MS,
+    AI_MAX_CONCURRENCY,
+    AI_MAX_ATTEMPTS,
     DEFAULT_MODEL_ALIAS
 } = require('./server/ai-client');
+
+// 官方模型 ID 必须包含 GA/日期后缀，否则 Ark 标准端点返回 404。
+assert.equal(VOLCENGINE_V4_PRO_GA, process.env.VOLCENGINE_V4_PRO_GA_MODEL || 'deepseek-v4-pro-ga-260813');
+assert.equal(VOLCENGINE_V4_FLASH_GA, process.env.VOLCENGINE_V4_FLASH_GA_MODEL || 'deepseek-v4-flash-ga-260731');
+assert.equal(VOLCENGINE_V4_PRO, process.env.VOLCENGINE_V4_PRO_MODEL || 'deepseek-v4-pro-260425');
+assert.equal(VOLCENGINE_V4_FLASH, process.env.VOLCENGINE_V4_FLASH_MODEL || 'deepseek-v4-flash-260425');
 
 // 四个主要模型映射正确
 assert.equal(MODEL_MAP['deepseek-v4-pro-ga'], VOLCENGINE_V4_PRO_GA);
@@ -49,5 +61,27 @@ assert.equal(isCodingPlanUnavailableError({
     message: 'Your account does not have a valid CodingPlan subscription'
 }), true);
 assert.equal(isCodingPlanUnavailableError({ status: 429, message: 'rate limit' }), false);
+
+// 已暂停/额度用尽是永久限制，不应连续等待重试。
+const pausedLimitError = {
+    status: 429,
+    code: 'SetLimitExceeded',
+    message: 'model service has been paused by Safe Experience Mode inference limit'
+};
+assert.equal(isPermanentRateLimitError(pausedLimitError), true);
+assert.equal(isRetryableAIError(pausedLimitError), false);
+assert.equal(isRetryableAIError({ status: 429, message: 'temporary rate limit' }), true);
+assert.equal(isRetryableAIError({ status: 502, message: 'Bad Gateway' }), true);
+assert.equal(isRetryableAIError({ status: 404, message: 'model not found' }), false);
+assert.equal(isRetryableAIError({ code: 'ETIMEDOUT', message: 'request timed out' }), true);
+
+assert.ok(AI_REQUEST_TIMEOUT_MS >= 30000);
+assert.ok(AI_MAX_CONCURRENCY >= 1 && AI_MAX_CONCURRENCY <= 8);
+assert.ok(AI_MAX_ATTEMPTS >= 1 && AI_MAX_ATTEMPTS <= 8);
+assert.deepEqual(getAIConcurrencyState(), {
+    active: 0,
+    queued: 0,
+    maxConcurrency: AI_MAX_CONCURRENCY
+});
 
 console.log('✅ 火山引擎模型路由测试通过');

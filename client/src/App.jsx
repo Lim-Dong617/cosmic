@@ -28,6 +28,21 @@ const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 const COSMIC_FAST_CONCURRENCY = 3;
+const COSMIC_LARGE_DOCUMENT_CHARS = 12000;
+const COSMIC_LARGE_FUNCTION_COUNT = 40;
+const COSMIC_MANY_CHAPTERS = 8;
+
+const resolveCosmicConcurrency = ({ mode, documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
+    const autoStabilized = mode === 'fast' && (
+        documentChars >= COSMIC_LARGE_DOCUMENT_CHARS
+        || functionCount >= COSMIC_LARGE_FUNCTION_COUNT
+        || chapterCount >= COSMIC_MANY_CHAPTERS
+    );
+    return {
+        concurrency: mode === 'fast' && !autoStabilized ? COSMIC_FAST_CONCURRENCY : 1,
+        autoStabilized
+    };
+};
 const COSMIC_EXCEL_IMPORT_STEPS = [
     { percent: 28, current: 2, phase: '读取工作簿', detail: '服务端正在读取 Excel 工作簿和工作表。' },
     { percent: 44, current: 3, phase: '识别表头和层级', detail: '正在识别 COSMIC 表头、模块层级和数据移动列。' },
@@ -343,9 +358,9 @@ function App({ user, token, onLogout }) {
     const [splitExecutionMode, setSplitExecutionMode] = useState(() => {
         if (typeof window !== 'undefined') {
             const savedMode = window.localStorage.getItem('cosmicSplitExecutionMode');
-            return savedMode === 'stable' ? 'stable' : 'fast';
+            return savedMode === 'fast' ? 'fast' : 'stable';
         }
-        return 'fast';
+        return 'stable';
     });
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
@@ -1507,8 +1522,15 @@ function App({ user, token, onLogout }) {
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
         const signal = abortControllerRef.current.signal;
-        const extractionConcurrency = splitExecutionMode === 'fast' ? COSMIC_FAST_CONCURRENCY : 1;
-        const extractionModeLabel = extractionConcurrency > 1
+        const extractionProfile = resolveCosmicConcurrency({
+            mode: splitExecutionMode,
+            documentChars: documentContent.length,
+            chapterCount: selectedChapters.length
+        });
+        const extractionConcurrency = extractionProfile.concurrency;
+        const extractionModeLabel = extractionProfile.autoStabilized
+            ? '大文档自动稳健模式（串行）'
+            : extractionConcurrency > 1
             ? `快速模式（${extractionConcurrency} 路并发）`
             : '稳健模式（串行）';
 
@@ -1850,12 +1872,6 @@ function App({ user, token, onLogout }) {
     const COSMIC_BATCH_SIZE = 2; // 每批拆分2个功能过程（V3.2必须逐个完整输出ERWX，批次越小越可靠）
 
     const startCosmicSplit = async () => {
-        // Lock the selected mode for this run so concurrency cannot change midway.
-        const batchConcurrency = splitExecutionMode === 'fast' ? COSMIC_FAST_CONCURRENCY : 1;
-        const executionModeLabel = batchConcurrency > 1
-            ? `快速模式（${batchConcurrency} 路并发）`
-            : '稳健模式（串行）';
-
         // 先同步结构化数据回 text
         let activeFunctions = inheritMissingFunctionLevels(parsedFunctions).filter(f => f.selected !== false);
         if (activeFunctions.length === 0) {
@@ -1865,6 +1881,21 @@ function App({ user, token, onLogout }) {
             activeFunctions = inheritMissingFunctionLevels(parseFunctionListText(textForSplit)).filter(f => f.selected !== false);
             if (activeFunctions.length === 0) { showToast('未找到功能过程'); return; }
         }
+
+        // Lock the selected mode for this run. Large documents and long
+        // function lists automatically fall back to serial execution even if
+        // the user previously selected fast mode.
+        const splitProfile = resolveCosmicConcurrency({
+            mode: splitExecutionMode,
+            documentChars: documentContent.length,
+            functionCount: activeFunctions.length
+        });
+        const batchConcurrency = splitProfile.concurrency;
+        const executionModeLabel = splitProfile.autoStabilized
+            ? '大文档自动稳健模式（串行）'
+            : batchConcurrency > 1
+                ? `快速模式（${batchConcurrency} 路并发）`
+                : '稳健模式（串行）';
 
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
@@ -3047,7 +3078,7 @@ function App({ user, token, onLogout }) {
             role="group"
             aria-label="COSMIC 执行模式"
             title={splitExecutionMode === 'fast'
-                ? `功能提取和COSMIC拆分均最多 ${COSMIC_FAST_CONCURRENCY} 路并发，结果按原提交顺序汇总`
+                ? `短文档最多 ${COSMIC_FAST_CONCURRENCY} 路并发；大文档、40个以上功能或多章节会自动改为串行`
                 : '功能提取和COSMIC拆分均串行执行，适合容易限流或更看重稳定性的模型'}
         >
             <span className="split-execution-label">执行模式</span>

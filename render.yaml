@@ -27,15 +27,24 @@ services:
         value: https://ark.cn-beijing.volces.com/api/coding
       # 四个模型 ID
       - key: VOLCENGINE_V4_PRO_GA_MODEL
-        value: deepseek-v4-pro-0813
+        value: deepseek-v4-pro-ga-260813
       - key: VOLCENGINE_V4_FLASH_GA_MODEL
         value: deepseek-v4-flash-ga-260731
       - key: VOLCENGINE_V4_PRO_MODEL
         value: deepseek-v4-pro-260425
       - key: VOLCENGINE_V4_FLASH_MODEL
-        value: deepseek-v4-flash
+        value: deepseek-v4-flash-260425
       # 默认模型
       - key: DEFAULT_MODEL
         value: deepseek-v4-pro-ga
+      # AI 稳定性：关闭 SDK 隐式重试，由服务端统一限流和重试
+      - key: AI_MAX_CONCURRENCY
+        value: 2
+      - key: AI_MAX_ATTEMPTS
+        value: 4
+      - key: AI_REQUEST_TIMEOUT_MS
+        value: 480000
+      - key: AI_QUEUE_TIMEOUT_MS
+        value: 600000
       - key: JWT_SECRET
         generateValue: true

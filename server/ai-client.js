@@ -7,18 +7,42 @@ const OpenAI = require('openai');
 
 // ═══════════ 火山引擎四个模型 ═══════════
 // 1. DeepSeek-V4-Pro正式版 (正式版，最强质量)
-const VOLCENGINE_V4_PRO_GA = process.env.VOLCENGINE_V4_PRO_GA_MODEL || 'deepseek-v4-pro-0813';
+const VOLCENGINE_V4_PRO_GA = process.env.VOLCENGINE_V4_PRO_GA_MODEL || 'deepseek-v4-pro-ga-260813';
 // 2. DeepSeek-V4-Flash正式版 (正式版，高速)
 const VOLCENGINE_V4_FLASH_GA = process.env.VOLCENGINE_V4_FLASH_GA_MODEL || 'deepseek-v4-flash-ga-260731';
 // 3. DeepSeek-V4-pro (预览版 Pro)
 const VOLCENGINE_V4_PRO = process.env.VOLCENGINE_V4_PRO_MODEL || 'deepseek-v4-pro-260425';
 // 4. DeepSeek-V4-flash (预览版 Flash)
-const VOLCENGINE_V4_FLASH = process.env.VOLCENGINE_V4_FLASH_MODEL || 'deepseek-v4-flash';
+const VOLCENGINE_V4_FLASH = process.env.VOLCENGINE_V4_FLASH_MODEL || 'deepseek-v4-flash-260425';
 
 // 火山引擎 API 配置
 const VOLCENGINE_API_KEY = process.env.VOLCENGINE_API_KEY;
 const VOLCENGINE_BASE_URL = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
 const VOLCENGINE_CODING_BASE_URL = process.env.VOLCENGINE_CODING_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding';
+
+function readBoundedInteger(value, fallback, min, max) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, Math.min(max, parsed));
+}
+
+// OpenAI SDK has its own retries by default. This service already owns retry
+// policy, so disable the hidden layer to avoid 3x SDK retries multiplied by
+// 6x business retries under load.
+const AI_REQUEST_TIMEOUT_MS = readBoundedInteger(
+    process.env.AI_REQUEST_TIMEOUT_MS,
+    8 * 60 * 1000,
+    30 * 1000,
+    20 * 60 * 1000
+);
+const AI_MAX_CONCURRENCY = readBoundedInteger(process.env.AI_MAX_CONCURRENCY, 2, 1, 8);
+const AI_QUEUE_TIMEOUT_MS = readBoundedInteger(
+    process.env.AI_QUEUE_TIMEOUT_MS,
+    10 * 60 * 1000,
+    30 * 1000,
+    30 * 60 * 1000
+);
+const AI_MAX_ATTEMPTS = readBoundedInteger(process.env.AI_MAX_ATTEMPTS, 4, 1, 8);
 
 // 默认模型（DeepSeek-V4-Pro正式版）
 const DEFAULT_MODEL_ALIAS = 'deepseek-v4-pro-ga';
@@ -72,7 +96,12 @@ const STREAM_ONLY_MODELS = new Set([VOLCENGINE_V4_PRO_GA, VOLCENGINE_V4_PRO]);
 function createClient(apiKey, baseUrl, model) {
     const key = apiKey || VOLCENGINE_API_KEY;
     const url = baseUrl || VOLCENGINE_BASE_URL;
-    return new OpenAI({ apiKey: key, baseURL: url });
+    return new OpenAI({
+        apiKey: key,
+        baseURL: url,
+        timeout: AI_REQUEST_TIMEOUT_MS,
+        maxRetries: 0
+    });
 }
 
 function isKrillModel(model) {
@@ -178,17 +207,34 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
     };
     if (normalized.system) body.system = normalized.system;
 
-    const response = await fetch(volcengineUrl('/v1/messages', baseUrl), {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${key}`,
-            'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify(body)
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
+    let response;
+    let raw;
+    try {
+        response = await fetch(volcengineUrl('/v1/messages', baseUrl), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${key}`,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal
+        });
+        raw = await response.text();
+    } catch (error) {
+        if (controller.signal.aborted) {
+            const timeoutError = new Error(`火山引擎 Coding API调用超时（${Math.round(AI_REQUEST_TIMEOUT_MS / 1000)}秒）`);
+            timeoutError.code = 'ETIMEDOUT';
+            timeoutError.status = 504;
+            throw timeoutError;
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
 
-    const raw = await response.text();
     let data = null;
     try {
         data = raw ? JSON.parse(raw) : null;
@@ -357,59 +403,121 @@ async function callAI(options) {
     }
 }
 
+function getAIErrorStatus(error) {
+    return error?.status || error?.response?.status || null;
+}
+
+function isRateLimitError(error) {
+    const status = getAIErrorStatus(error);
+    const message = String(error?.message || '');
+    return status === 429 || status === 449
+        || /\b(?:429|449)\b|rate limit|exceeded your current rate/i.test(message);
+}
+
+function isPermanentRateLimitError(error) {
+    if (!isRateLimitError(error)) return false;
+    return /SetLimitExceeded|service has been paused|Safe Experience Mode|inference limit|insufficient quota|billing quota/i
+        .test(String(error?.message || ''));
+}
+
+function isRetryableAIError(error) {
+    if (isPermanentRateLimitError(error)) return false;
+    const status = getAIErrorStatus(error);
+    const message = String(error?.message || '');
+    return isRateLimitError(error)
+        || [500, 502, 503, 504].includes(status)
+        || ['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE', 'ECONNREFUSED'].includes(error?.code)
+        || /timeout|Unexpected end of JSON|invalid json response body|unexpected end of file|Premature close|PREMATURE_CLOSE|Invalid response body/i
+            .test(message);
+}
+
+let activeAIRequests = 0;
+const aiRequestQueue = [];
+
+function getAIConcurrencyState() {
+    return {
+        active: activeAIRequests,
+        queued: aiRequestQueue.length,
+        maxConcurrency: AI_MAX_CONCURRENCY
+    };
+}
+
+function createAIRelease() {
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        activeAIRequests = Math.max(0, activeAIRequests - 1);
+        const next = aiRequestQueue.shift();
+        if (next) next.start();
+    };
+}
+
+function acquireAIConcurrencySlot(modelName) {
+    if (activeAIRequests < AI_MAX_CONCURRENCY) {
+        activeAIRequests += 1;
+        return Promise.resolve(createAIRelease());
+    }
+
+    return new Promise((resolve, reject) => {
+        const queuedAt = Date.now();
+        const entry = {
+            start: () => {
+                clearTimeout(entry.timeout);
+                activeAIRequests += 1;
+                console.log(`   🟢 AI排队请求已启动: ${modelName || '默认模型'} (等待 ${Date.now() - queuedAt}ms)`);
+                resolve(createAIRelease());
+            },
+            timeout: null
+        };
+        entry.timeout = setTimeout(() => {
+            const index = aiRequestQueue.indexOf(entry);
+            if (index >= 0) aiRequestQueue.splice(index, 1);
+            const error = new Error(`AI请求排队超时（${Math.round(AI_QUEUE_TIMEOUT_MS / 1000)}秒）`);
+            error.code = 'AI_QUEUE_TIMEOUT';
+            error.status = 503;
+            reject(error);
+        }, AI_QUEUE_TIMEOUT_MS);
+        aiRequestQueue.push(entry);
+        console.log(`   🟡 AI并发已满，请求排队: ${modelName || '默认模型'} (队列 ${aiRequestQueue.length})`);
+    });
+}
+
 /**
- * 带重试机制的AI调用
- * - 449/429 rate limit: 指数退避，从10秒起，最长60秒，带随机抖动
- * - 网络/JSON错误: 指数退避，从3秒起
- * @param {Object} options - callAI的选项
- * @param {number} maxRetries - 最大重试次数
- * @returns {Object} AI响应
+ * 带并发保护和分类重试的 AI 调用。
+ * 永久额度暂停不重试；短暂限流和 5xx 使用有界指数退避。
  */
-async function callAIWithRetry(options, maxRetries = 6) {
+async function callAIWithRetry(options, maxAttempts = AI_MAX_ATTEMPTS) {
+    const attempts = readBoundedInteger(maxAttempts, AI_MAX_ATTEMPTS, 1, 8);
+    const modelName = MODEL_MAP[options?.model] || options?.model || DEFAULT_MODEL_ALIAS;
+    const release = await acquireAIConcurrencySlot(modelName);
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-            if (attempt > 0) {
-                // 日志已在上一轮 catch 中输出
-            }
+    try {
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            try {
+                return await callAI(options);
+            } catch (error) {
+                const status = getAIErrorStatus(error);
+                const permanentLimit = isPermanentRateLimitError(error);
+                const retryable = isRetryableAIError(error);
+                console.warn(`   ⚠️ AI调用失败 (尝试 ${attempt + 1}/${attempts}): [${status || error.code || '?'}] ${String(error.message || '').substring(0, 200)}`);
 
-            return await callAI(options);
-        } catch (error) {
-            const status = error.status || error.response?.status;
-            const isRateLimit = status === 429 || status === 449
-                || error.message?.includes('429') || error.message?.includes('449')
-                || error.message?.includes('rate limit') || error.message?.includes('Rate Limit')
-                || error.message?.includes('exceeded your current rate');
-            const isRetryable = isRateLimit
-                || status === 500 || status === 502 || status === 503
-                || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED'
-                || error.code === 'ERR_STREAM_PREMATURE_CLOSE' || error.code === 'ECONNREFUSED'
-                || error.message?.includes('timeout')
-                || error.message?.includes('Unexpected end of JSON') || error.message?.includes('invalid json response body')
-                || error.message?.includes('unexpected end of file')
-                || error.message?.includes('Premature close') || error.message?.includes('premature close')
-                || error.message?.includes('PREMATURE_CLOSE') || error.message?.includes('Invalid response body');
-
-            console.warn(`   ⚠️ AI调用失败 (尝试 ${attempt + 1}/${maxRetries}): [${status || error.code || '?'}] ${error.message?.substring(0, 200)}`);
-
-            if (isRetryable && attempt < maxRetries - 1) {
-                // Rate limit: 更激进的退避 (10s, 20s, 40s, 60s, 60s ...)
-                // 普通错误: 常规退避 (3s, 6s, 12s, 24s, 48s ...)
-                let delay;
-                if (isRateLimit) {
-                    delay = Math.min(10000 * Math.pow(2, attempt), 60000);
-                    console.log(`   🚫 触发限流(${status || '?'})，第 ${attempt + 1} 次重试，等待 ${(delay / 1000).toFixed(0)} 秒...`);
-                } else {
-                    delay = Math.min(3000 * Math.pow(2, attempt), 30000);
-                    console.log(`   ⏳ 第 ${attempt + 1} 次重试，等待 ${(delay / 1000).toFixed(0)} 秒...`);
+                if (permanentLimit) {
+                    console.warn('   ⛔ 检测到已暂停或用尽的模型额度，停止无效重试');
                 }
-                // 加入随机抖动 ±20%，避免多请求同时重试雪崩
+                if (!retryable || attempt >= attempts - 1) throw error;
+
+                const rateLimited = isRateLimitError(error);
+                const delay = rateLimited
+                    ? Math.min(8000 * Math.pow(2, attempt), 32000)
+                    : Math.min(3000 * Math.pow(2, attempt), 20000);
                 const jitter = delay * (0.8 + Math.random() * 0.4);
+                console.log(`   ⏳ ${rateLimited ? '限流' : '5xx/网络错误'}退避 ${(jitter / 1000).toFixed(1)} 秒后重试...`);
                 await new Promise(resolve => setTimeout(resolve, jitter));
-                continue;
             }
-            throw error;
         }
+    } finally {
+        release();
     }
 }
 
@@ -417,6 +525,12 @@ module.exports = {
     createClient,
     callAI,
     callAIWithRetry,
+    isPermanentRateLimitError,
+    isRetryableAIError,
+    getAIConcurrencyState,
+    AI_REQUEST_TIMEOUT_MS,
+    AI_MAX_CONCURRENCY,
+    AI_MAX_ATTEMPTS,
     MODEL_MAP,
     // 新的四个火山引擎模型
     VOLCENGINE_V4_PRO_GA,

@@ -23,7 +23,9 @@ const {
     VOLCENGINE_V4_PRO_GA,
     VOLCENGINE_V4_FLASH_GA,
     VOLCENGINE_V4_PRO,
-    VOLCENGINE_V4_FLASH
+    VOLCENGINE_V4_FLASH,
+    getAIConcurrencyState,
+    AI_REQUEST_TIMEOUT_MS
 } = require('./ai-client');
 // 兼容旧代码引用
 const SENSENOVA_MODEL_NAME = VOLCENGINE_V4_FLASH_GA;
@@ -70,6 +72,15 @@ const PORT = parseInt(process.env.PORT, 10) || 3001;
 const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '300', 10);
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const REQUEST_BODY_LIMIT = `${MAX_UPLOAD_MB}mb`;
+const HTTP_REQUEST_TIMEOUT_MS = Math.max(
+    AI_REQUEST_TIMEOUT_MS + 2 * 60 * 1000,
+    parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '900000', 10)
+);
+const HTTP_KEEP_ALIVE_TIMEOUT_MS = Math.max(65000, parseInt(process.env.HTTP_KEEP_ALIVE_TIMEOUT_MS || '120000', 10));
+const HTTP_HEADERS_TIMEOUT_MS = Math.max(
+    HTTP_KEEP_ALIVE_TIMEOUT_MS + 5000,
+    parseInt(process.env.HTTP_HEADERS_TIMEOUT_MS || '125000', 10)
+);
 
 function escapeXmlAttr(value) {
     return String(value || '')
@@ -267,6 +278,30 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization'],
     exposedHeaders: ['Content-Disposition', 'X-Office-Summary', 'X-Office-Format', 'X-Office-Stats']
 }));
+
+let apiRequestSequence = 0;
+app.use('/api', (req, res, next) => {
+    const requestId = String(req.headers['x-request-id'] || `${Date.now().toString(36)}-${(++apiRequestSequence).toString(36)}`);
+    const startedAt = Date.now();
+    let finished = false;
+    req.requestId = requestId;
+    res.setHeader('X-Request-Id', requestId);
+    req.setTimeout(HTTP_REQUEST_TIMEOUT_MS);
+    res.setTimeout(HTTP_REQUEST_TIMEOUT_MS);
+
+    res.on('finish', () => {
+        finished = true;
+        const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        console.log(`🌐 [${requestId}] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms, RSS ${memoryMb}MB)`);
+    });
+    res.on('close', () => {
+        if (!finished) {
+            const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+            console.warn(`⚠️ [${requestId}] 连接提前关闭: ${req.method} ${req.originalUrl} (${Date.now() - startedAt}ms, RSS ${memoryMb}MB)`);
+        }
+    });
+    next();
+});
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
@@ -2257,7 +2292,9 @@ app.get('/api/health', (req, res) => {
         currentModel: currentModel,
         model: currentModel,
         platform: '火山引擎',
-        availableModels: Array.from(new Set(Object.values(MODEL_MAP)))
+        availableModels: Array.from(new Set(Object.values(MODEL_MAP))),
+        aiRequestTimeoutMs: AI_REQUEST_TIMEOUT_MS,
+        aiConcurrency: getAIConcurrencyState()
     });
 });
 
@@ -6922,17 +6959,21 @@ if (process.env.NODE_ENV === 'production') {
         }
     });
 
-    app.listen(PORT, () => {
+    const httpServer = app.listen(PORT, () => {
         console.log(`
 ╔══════════════════════════════════════════════════════════╗
 ║         AI 智能分析与办公文档处理系统 v2.1              ║
 ╠══════════════════════════════════════════════════════════╣
 ║  🌐 服务地址: http://localhost:${PORT}                    ║
 ║  🤖 当前模型: ${currentModel.padEnd(40)}║
-║  📡 API平台: SenseNova (api.sensenova.cn)              ║
-║  🔑 API密钥: ${process.env.SENSENOVA_API_KEY ? '已配置 ✅' : '未配置 ❌'}                               ║
+║  📡 API平台: 火山引擎 Ark                               ║
+║  🔑 API密钥: ${process.env.VOLCENGINE_API_KEY ? '已配置 ✅' : '未配置 ❌'}                               ║
 ║  🐘 数据库:  PostgreSQL (Render)                        ║
 ╚══════════════════════════════════════════════════════════╝
       `);
     });
+    httpServer.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
+    httpServer.headersTimeout = HTTP_HEADERS_TIMEOUT_MS;
+    httpServer.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
+    console.log(`🔧 HTTP超时: request=${HTTP_REQUEST_TIMEOUT_MS}ms, keepAlive=${HTTP_KEEP_ALIVE_TIMEOUT_MS}ms, headers=${HTTP_HEADERS_TIMEOUT_MS}ms`);
 })();
