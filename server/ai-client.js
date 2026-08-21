@@ -525,6 +525,7 @@ module.exports = {
     createClient,
     callAI,
     callAIWithRetry,
+    getAIErrorStatus,
     isPermanentRateLimitError,
     isRetryableAIError,
     getAIConcurrencyState,

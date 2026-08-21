@@ -1396,6 +1396,12 @@ function App({ user, token, onLogout }) {
                 documentContent,
                 userConfig: getUserConfig()
             });
+            if (modRes.data.degraded) {
+                setMessages(prev => [...prev, {
+                    role: 'system',
+                    content: `⚠️ ${modRes.data.warning || 'AI模块识别暂不可用，已根据文档标题生成模块脚手架。'}`
+                }]);
+            }
             if (modRes.data.success && modRes.data.moduleData?.modules?.length > 0) {
                 recognizedModules = modRes.data.moduleData;
                 setModuleStructure(recognizedModules);
@@ -1436,9 +1442,10 @@ function App({ user, token, onLogout }) {
                     ? `\n\n**已生成数量规划**（总目标 ${totalTargetCount} 个）。可点击「**调整规划**」按钮修改各模块目标数量。${skippedModules.length > 0 ? `\n\n注意：因目标数小于模块数，本轮将跳过 ${skippedModules.length} 个模块：${skippedModules.map(m => m.level3).join('、')}` : ''}`
                     : '';
 
+                const moduleTitle = modRes.data.degraded ? '模块脚手架降级生成' : '三级模块结构识别完成';
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `## 三级模块结构识别完成\n\n共识别到 **${recognizedModules.modules.length}** 个三级模块节点：\n\n${modSummary}${planTip}\n\n这些模块将作为"脚手架"指导功能过程提取。数量目标不足覆盖全部模块时，系统会明确标记本轮跳过的模块。`
+                    content: `## ${moduleTitle}\n\n共得到 **${recognizedModules.modules.length}** 个三级模块节点：\n\n${modSummary}${planTip}\n\n这些模块将作为"脚手架"指导功能过程提取。数量目标不足覆盖全部模块时，系统会明确标记本轮跳过的模块。`
                 }]);
             }
         } catch (e) {

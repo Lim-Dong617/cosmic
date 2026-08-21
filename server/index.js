@@ -24,6 +24,7 @@ const {
     VOLCENGINE_V4_FLASH_GA,
     VOLCENGINE_V4_PRO,
     VOLCENGINE_V4_FLASH,
+    getAIErrorStatus,
     getAIConcurrencyState,
     AI_REQUEST_TIMEOUT_MS
 } = require('./ai-client');
@@ -3284,6 +3285,52 @@ async function recoverModuleData({ moduleData, documentContent, modelName, metho
     return collapseOverDetailedModules(recovered);
 }
 
+// AI 模块识别失败时，仍然基于文档原有标题生成一个可用的脚手架。
+// 这条路径不依赖模型，避免一次限流、超时或密钥配置问题直接把整个拆分流程打成 500。
+function buildDocumentHeadingFallbackModules(documentContent) {
+    const chapters = splitIntoChapters(documentContent);
+    const candidates = chapters
+        .filter(chapter => chapter?.title && chapter?.content && !chapter.referenceOnly)
+        .filter(chapter => String(chapter.content).replace(/\s/g, '').length >= 20)
+        .slice(0, 30);
+
+    if (!candidates.length) {
+        return {
+            modules: [],
+            totalEstimated: 0,
+            summary: '未检测到可用章节标题，等待后续章节模式处理',
+            fallback: true
+        };
+    }
+
+    const usedLevel3 = new Set();
+    const modules = candidates.map((chapter, index) => {
+        const ordinal = index + 1;
+        const level1 = String(chapter.level1 || `${ordinal} ${chapter.title}`).trim();
+        const level2 = String(chapter.level2 || level1).trim();
+        let level3 = String(chapter.level3 || chapter.title).trim();
+        if (!level3 || level3 === level2) level3 = `${chapter.title}功能`;
+        if (usedLevel3.has(level3)) level3 = `${level3}-${ordinal}`;
+        usedLevel3.add(level3);
+
+        return {
+            level1,
+            level2,
+            level3,
+            businessObjects: [],
+            estimatedFunctions: Math.max(3, Math.min(12, Math.round(String(chapter.content).length / 500))),
+            triggerTypes: ['用户触发']
+        };
+    });
+
+    return normalizeModuleData({
+        modules,
+        summary: 'AI模块识别暂不可用，已根据文档标题生成模块脚手架',
+        fallback: true,
+        degraded: true
+    });
+}
+
 function splitIntoChapters(text) {
     if (!text) return [];
 
@@ -5975,8 +6022,34 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
         console.log(`✅ COSMIC模块识别完成: ${moduleData?.modules?.length || 0} 个模块节点`);
         res.json({ success: true, moduleData });
     } catch (error) {
-        console.error('COSMIC模块识别失败:', error);
-        res.status(500).json({ error: 'COSMIC模块识别失败: ' + error.message });
+        const upstreamStatus = getAIErrorStatus(error);
+        const requestId = req.requestId || 'unknown-request';
+        console.error(`COSMIC模块识别失败 [${requestId}]${upstreamStatus ? ` 上游状态=${upstreamStatus}` : ''}:`, error);
+
+        let fallbackModuleData;
+        try {
+            fallbackModuleData = buildDocumentHeadingFallbackModules(req.body?.documentContent || '');
+        } catch (fallbackError) {
+            console.error(`COSMIC模块标题兜底失败 [${requestId}]:`, fallbackError);
+            fallbackModuleData = { modules: [], totalEstimated: 0, summary: '模块脚手架兜底失败', fallback: true };
+        }
+
+        const diagnostic = [
+            upstreamStatus ? `上游状态 ${upstreamStatus}` : '',
+            error?.code ? `错误码 ${error.code}` : ''
+        ].filter(Boolean).join('，');
+        res.setHeader('X-AI-Degraded', 'module-fallback');
+        return res.status(200).json({
+            success: true,
+            degraded: true,
+            warning: `AI模块识别失败${diagnostic ? `（${diagnostic}）` : ''}，已根据文档标题生成模块脚手架`,
+            diagnostic: {
+                requestId,
+                upstreamStatus: upstreamStatus || null,
+                code: error?.code || null
+            },
+            moduleData: fallbackModuleData
+        });
     }
 });
 
