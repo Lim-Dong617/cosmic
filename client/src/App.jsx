@@ -26,6 +26,7 @@ import {
 import {
     completedFunctionNames,
     createCosmicRunId,
+    isUsableDocumentUnderstanding,
     resolveContinueAnalysisRound,
     runContinueAnalysisJob,
     runCosmicModuleRecognitionJob,
@@ -2769,9 +2770,9 @@ function App({ user, token, onLogout }) {
                     }
                 });
 
-                if (understandRes.success) {
+                if (understandRes.success && isUsableDocumentUnderstanding(understandRes.understanding)) {
                     understanding = understandRes.understanding;
-                    const modules = understanding.coreModules || [];
+                    const modules = understanding.coreModules;
                     const moduleSummary = modules.map((m, i) => {
                         const funcs = m.estimatedFunctions || [];
                         const funcList = funcs.map(f =>
@@ -2779,19 +2780,34 @@ function App({ user, token, onLogout }) {
                         ).join('、');
                         return `**${i + 1}. ${m.moduleName}** - ${funcList}`;
                     }).join('\n\n');
+                    const estimatedCount = Number(understanding.totalEstimatedFunctions) > 0
+                        ? understanding.totalEstimatedFunctions
+                        : '未生成';
+                    const recoveryNote = understandRes.recoveryMode === 'continued'
+                        ? '\n\n> 输出曾达到长度上限，系统已自动续写并校验。'
+                        : understandRes.recoveryMode === 'compact-retry'
+                            ? '\n\n> 首次输出不完整，系统已用紧凑结构重新生成并校验。'
+                            : '';
 
                     setMessages([{
                         role: 'assistant',
-                        content: `## 文档理解完成\n\n**项目**: ${understanding.projectName || '未识别'}\n**预估功能数**: ${understanding.totalEstimatedFunctions || 30}\n\n### 核心模块\n${moduleSummary || '暂无'}\n\n**开始COSMIC拆分...**`
+                        content: `## 文档理解完成\n\n**项目**: ${understanding.projectName}\n**预估功能数**: ${estimatedCount}\n\n### 核心模块\n${moduleSummary || '暂无'}${recoveryNote}\n\n**开始COSMIC拆分...**`
                     }]);
                     await new Promise((resolve, reject) => {
                         const t = setTimeout(resolve, 1000);
                         signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                     });
+                } else {
+                    throw new Error('文档理解未返回通过校验的业务结构');
                 }
             } catch (e) {
                 if (e.name === 'AbortError' || signal.aborted) return;
-                setMessages([{ role: 'system', content: '文档理解跳过，直接进行COSMIC拆分...' }]);
+                understanding = null;
+                const reason = e.response?.data?.error || e.message || '结果格式无效';
+                setMessages([{
+                    role: 'system',
+                    content: `⚠️ 文档理解未生成有效结构，已跳过辅助理解并继续按原文拆分。\n\n原因：${reason}`
+                }]);
             }
 
             // 阶段2: 循环拆分

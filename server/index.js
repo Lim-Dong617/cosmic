@@ -38,6 +38,7 @@ const {
     FUNCTION_EXTRACTION_PROMPT,
     COSMIC_SPLIT_PROMPT,
     DOCUMENT_UNDERSTANDING_PROMPT,
+    DOCUMENT_UNDERSTANDING_COMPACT_PROMPT,
     COVERAGE_VERIFICATION_PROMPT,
     SUPPLEMENTARY_EXTRACTION_PROMPT,
     COSMIC_MODULE_RECOGNITION_PROMPT,
@@ -70,6 +71,7 @@ const {
 const { registerOfficeDocumentRoutes } = require('./office-document-service');
 const { createAsyncJobManager, createHttpError } = require('./async-job-manager');
 const { describeContinueAnalysisRound } = require('./cosmic-round-result');
+const { generateDocumentUnderstanding } = require('./document-understanding');
 
 
 const app = express();
@@ -2725,7 +2727,7 @@ app.post('/api/parse-cosmic-excel', upload.single('file'), handleMulterError, as
 
 // ═══════════════════════ 文档理解 ═══════════════════════
 
-async function executeDocumentUnderstanding(requestPayload, { signal } = {}) {
+async function executeDocumentUnderstanding(requestPayload, { signal, onProgress = () => {} } = {}) {
     try {
         const { documentContent, userConfig = null } = requestPayload || {};
         if (!documentContent) {
@@ -2735,42 +2737,20 @@ async function executeDocumentUnderstanding(requestPayload, { signal } = {}) {
         console.log('🔍 开始深度理解文档...');
         const modelName = getModelName(userConfig);
 
-        const completion = await callAIWithRetry({
-            messages: [
-                { role: 'system', content: DOCUMENT_UNDERSTANDING_PROMPT },
-                { role: 'user', content: `请分析以下需求文档：\n\n${documentContent}` }
-            ],
-            model: modelName,
-            temperature: 0.1,
-            max_tokens: 8000,
-            signal
+        const result = await generateDocumentUnderstanding({
+            callAIWithRetry,
+            modelName,
+            documentContent,
+            fullPrompt: DOCUMENT_UNDERSTANDING_PROMPT,
+            compactPrompt: DOCUMENT_UNDERSTANDING_COMPACT_PROMPT,
+            signal,
+            onProgress
         });
-
-        if (!completion?.choices?.[0]?.message?.content) {
-            console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
-            throw createHttpError('AI返回了空响应，请重试或切换模型', 502, 'EMPTY_AI_RESPONSE');
+        if (result.recoveryMode !== 'none') {
+            console.warn(`⚠️ 文档理解已自动恢复，方式: ${result.recoveryMode}，生成次数: ${result.generationAttempts}`);
         }
-        const reply = completion.choices[0].message.content;
-
-        // 尝试解析JSON
-        let understanding = null;
-        try {
-            const jsonMatch = reply.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                understanding = JSON.parse(jsonMatch[0]);
-            }
-        } catch (e) {
-            console.warn('JSON解析失败，使用默认结构');
-            understanding = {
-                projectName: '未识别',
-                projectDescription: reply.substring(0, 200),
-                coreModules: [],
-                totalEstimatedFunctions: 30
-            };
-        }
-
-        console.log('✅ 文档理解完成');
-        return { success: true, understanding };
+        console.log('✅ 文档理解完成并通过JSON结构校验');
+        return { success: true, ...result };
     } catch (error) {
         console.error('文档理解失败:', error);
         if (!error.status || error.status >= 500) {
@@ -2788,7 +2768,7 @@ const documentUnderstandingJobManager = createAsyncJobManager({
     jobTimeoutMs: 20 * 60 * 1000,
     processor: (payload, updateProgress, signal) => {
         updateProgress({ phase: 'understanding', message: '正在理解文档结构与业务内容' });
-        return executeDocumentUnderstanding(payload, { signal });
+        return executeDocumentUnderstanding(payload, { signal, onProgress: updateProgress });
     }
 });
 

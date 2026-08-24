@@ -460,10 +460,33 @@ const DOCUMENT_UNDERSTANDING_PROMPT = `你是一个资深的需求分析师和CO
 
 # 重要提醒
 - 只返回JSON，不要任何额外文字
+- 必须输出完整闭合、可直接JSON.parse的对象；禁止Markdown代码围栏、注释、尾随逗号和省略号
+- 所有描述使用短句，单个描述不超过40个汉字；内容过多时优先压缩描述，绝不能省略JSON结尾
 - **指标不要合并**，"掉话率、切换成功率、接通率"是3个不同的指标
 - **汇总不要合并**，"按地市汇总"和"按区县汇总"是2个不同的汇总需求
 - **业务规则不要合并**，"阈值判断"和"发送预警"是2个不同的规则
 - 功能名称必须具体到业务对象，禁止"汇总数据"、"生成报表"等笼统描述`;
+
+const DOCUMENT_UNDERSTANDING_COMPACT_PROMPT = `你是需求分析与COSMIC专家。请从需求文档中提取后续功能拆分真正需要的业务锚点，并只输出一个完整、严格、可直接JSON.parse的对象。
+
+必须使用以下紧凑结构：
+{
+  "projectName": "项目名称",
+  "businessEntities": [{"entityName":"实体名","hasLifecycle":false,"lifecycleStates":[],"crudOperations":[]}],
+  "kpiAndMetrics": [{"metricName":"指标名","relatedEntity":"关联实体","hasThreshold":false}],
+  "aggregationAndReports": [{"name":"名称","type":"类型","dimensions":[],"metrics":[],"triggerType":"触发方式"}],
+  "externalInterfaces": [{"interfaceName":"接口名","direction":"方向","externalSystem":"外部系统","dataDescription":"数据"}],
+  "businessRules": [{"ruleName":"规则名","ruleDescription":"规则","triggerCondition":"条件","resultAction":"动作"}],
+  "coreModules": [{"moduleName":"模块名","estimatedFunctions":[{"functionName":"具体功能名","triggerType":"用户触发/时钟触发/接口调用触发"}]}],
+  "functionBreakdown": {"crudFunctions":0,"aggregationFunctions":0,"reportFunctions":0,"workflowFunctions":0,"interfaceFunctions":0,"timerFunctions":0,"alertFunctions":0,"otherFunctions":0},
+  "totalEstimatedFunctions": 0
+}
+
+规则：
+- 只列文档有依据的内容，空缺使用[]或空字符串
+- 功能名称必须具体到业务对象，不得写笼统名称
+- 字符串使用短句，不输出解释、Markdown代码围栏、注释、省略号或尾随逗号
+- 必须优先保证JSON完整闭合；内容过多时压缩描述，但保留真实总数估计`;
 
 
 /**
@@ -923,6 +946,7 @@ module.exports = {
   FUNCTION_EXTRACTION_PROMPT,
   COSMIC_SPLIT_PROMPT,
   DOCUMENT_UNDERSTANDING_PROMPT,
+  DOCUMENT_UNDERSTANDING_COMPACT_PROMPT,
   COVERAGE_VERIFICATION_PROMPT,
   SUPPLEMENTARY_EXTRACTION_PROMPT,
   COSMIC_MODULE_RECOGNITION_PROMPT,

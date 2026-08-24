@@ -16,6 +16,28 @@ export const completedFunctionNames = (rows = []) => [...new Set(
     rows.map(row => row?.functionalProcess).filter(Boolean)
 )];
 
+export const isUsableDocumentUnderstanding = (understanding) => {
+    if (!understanding || typeof understanding !== 'object' || Array.isArray(understanding)) return false;
+    if (!Array.isArray(understanding.coreModules)) return false;
+    const projectName = String(understanding.projectName || '').trim();
+    const total = Number(understanding.totalEstimatedFunctions);
+    if (!projectName || !Number.isFinite(total) || total < 0) return false;
+
+    const anchorFields = [
+        'businessEntities',
+        'kpiAndMetrics',
+        'aggregationAndReports',
+        'externalInterfaces',
+        'businessRules'
+    ];
+    const hasBusinessAnchors = understanding.coreModules.length > 0
+        || anchorFields.some(field => Array.isArray(understanding[field]) && understanding[field].length > 0);
+    const isLegacyFakeDefault = projectName === '未识别'
+        && total === 30
+        && !hasBusinessAnchors;
+    return !isLegacyFakeDefault;
+};
+
 export const resolveContinueAnalysisRound = (response = {}, legacyTableData = null) => {
     const reply = String(response?.reply || '');
     const hasServerTableData = Array.isArray(response?.tableData);

@@ -4,7 +4,7 @@
     "description": "AI智能分析与办公文档处理系统 - 支持COSMIC、NESMA及Word/Excel通用任务",
     "main": "server/index.js",
     "scripts": {
-        "test": "node test-ai-client-model-routing.mjs && node test-ai-cancellation.mjs && node test-async-job-manager.mjs && node test-cosmic-split-job-client.mjs && node test-cosmic-round-result.mjs && node test-cosmic-quality.mjs && node test-code-source-analyzer.mjs && node test-conversation-orchestrator.mjs && node test-office-document-service.mjs",
+        "test": "node test-ai-client-model-routing.mjs && node test-ai-cancellation.mjs && node test-async-job-manager.mjs && node test-cosmic-split-job-client.mjs && node test-cosmic-round-result.mjs && node test-document-understanding.mjs && node test-cosmic-quality.mjs && node test-code-source-analyzer.mjs && node test-conversation-orchestrator.mjs && node test-office-document-service.mjs",
         "benchmark:models": "node tools/benchmark-glm-vs-deepseek.mjs",
         "dev": "concurrently \"npm run server\" \"npm run client\"",
         "server": "node server/index.js",

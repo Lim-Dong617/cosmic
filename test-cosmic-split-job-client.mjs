@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+    isUsableDocumentUnderstanding,
     resolveContinueAnalysisRound,
     runContinueAnalysisJob,
     runCosmicModuleRecognitionJob,
@@ -327,6 +328,25 @@ function testContinueAnalysisRoundResolution() {
     assert.equal(invalid.shouldContinue, false);
 }
 
+function testDocumentUnderstandingGuard() {
+    assert.equal(isUsableDocumentUnderstanding({
+        projectName: '工单系统',
+        coreModules: [],
+        totalEstimatedFunctions: 0
+    }), true);
+    assert.equal(isUsableDocumentUnderstanding({
+        projectName: '未识别',
+        coreModules: [],
+        totalEstimatedFunctions: 30
+    }), false, 'legacy fake fallback must not be displayed as completed');
+    assert.equal(isUsableDocumentUnderstanding(null), false);
+    assert.equal(isUsableDocumentUnderstanding({
+        projectName: '工单系统',
+        coreModules: {},
+        totalEstimatedFunctions: 3
+    }), false);
+}
+
 await testNormalLifecycle();
 await testPolling502DoesNotResubmit();
 await testPostTimeoutRetriesSameRequestKey();
@@ -335,5 +355,6 @@ await testFailed500UsesNewAttemptKey();
 await testCancellationStopsPolling();
 await testJobWrappersUseTheirOwnEndpoints();
 testContinueAnalysisRoundResolution();
+testDocumentUnderstandingGuard();
 
 console.log('cosmic split job client tests passed');
