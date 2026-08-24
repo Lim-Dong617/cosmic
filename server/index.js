@@ -24,6 +24,8 @@ const {
     VOLCENGINE_V4_FLASH_GA,
     VOLCENGINE_V4_PRO,
     VOLCENGINE_V4_FLASH,
+    UNLIMITDS_V4_PRO_ALIAS,
+    UNLIMITDS_MODELS,
     getAIErrorStatus,
     getAIConcurrencyState,
     AI_REQUEST_TIMEOUT_MS,
@@ -432,7 +434,8 @@ const SENSENOVA_V4_MODEL_ALIASES = new Set([
     VOLCENGINE_V4_PRO_GA,
     VOLCENGINE_V4_FLASH_GA,
     VOLCENGINE_V4_PRO,
-    VOLCENGINE_V4_FLASH
+    VOLCENGINE_V4_FLASH,
+    UNLIMITDS_V4_PRO_ALIAS
 ]);
 
 function isSenseNovaV4Model(modelName, requestedModel = null) {
@@ -2319,14 +2322,16 @@ function buildFunctionListText(functions) {
 // 健康检查
 app.get('/api/health', (req, res) => {
     const hasVolcengineApiKey = Boolean(process.env.VOLCENGINE_API_KEY);
+    const hasUnlimitdsApiKey = Boolean(process.env.UNLIMITDS_API_KEY);
     res.json({
         status: 'ok',
-        hasApiKey: hasVolcengineApiKey,
+        hasApiKey: hasVolcengineApiKey || hasUnlimitdsApiKey,
         hasVolcengineApiKey,
+        hasUnlimitdsApiKey,
         codeAnalysisModel: MODEL_MAP['deepseek-v4-pro-ga'] || VOLCENGINE_V4_PRO_GA,
         currentModel: currentModel,
         model: currentModel,
-        platform: '火山引擎',
+        platform: '火山引擎 / UnlimitDS',
         availableModels: Array.from(new Set(Object.values(MODEL_MAP))),
         aiRequestTimeoutMs: AI_REQUEST_TIMEOUT_MS,
         aiConcurrency: getAIConcurrencyState(),
@@ -2346,6 +2351,12 @@ app.get('/api/health', (req, res) => {
 app.post('/api/switch-model', (req, res) => {
     const { model } = req.body;
     const modelName = MODEL_MAP[model] || model;
+    if (UNLIMITDS_MODELS.has(modelName) && !process.env.UNLIMITDS_API_KEY) {
+        return res.status(503).json({
+            error: '服务器尚未配置 UNLIMITDS_API_KEY',
+            code: 'MISSING_AI_API_KEY'
+        });
+    }
     currentModel = modelName;
     console.log(`✅ 模型已切换到: ${currentModel}`);
     res.json({ success: true, model: currentModel });

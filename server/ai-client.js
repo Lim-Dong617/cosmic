@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════
 // COSMIC 拆分系统 - AI客户端模块
-// 统一使用火山引擎 DeepSeek-V4 系列模型
+// DeepSeek-V4 多提供商 AI 客户端
 // ═══════════════════════════════════════════════════════════
 
 const OpenAI = require('openai');
@@ -19,6 +19,13 @@ const VOLCENGINE_V4_FLASH = process.env.VOLCENGINE_V4_FLASH_MODEL || 'deepseek-v
 const VOLCENGINE_API_KEY = process.env.VOLCENGINE_API_KEY;
 const VOLCENGINE_BASE_URL = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
 const VOLCENGINE_CODING_BASE_URL = process.env.VOLCENGINE_CODING_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding';
+
+// UnlimitDS OpenAI 兼容配置。使用独立内部别名，避免与火山引擎
+// `deepseek-v4-pro` UI 别名发生二次映射冲突。
+const UNLIMITDS_V4_PRO_ALIAS = 'unlimitds-deepseek-v4-pro';
+const UNLIMITDS_V4_PRO_MODEL = process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro';
+const UNLIMITDS_API_KEY = process.env.UNLIMITDS_API_KEY || null;
+const UNLIMITDS_BASE_URL = process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1';
 
 function readBoundedInteger(value, fallback, min, max) {
     const parsed = Number.parseInt(value, 10);
@@ -141,6 +148,7 @@ const MODEL_MAP = {
     'deepseek-v4-flash-ga': VOLCENGINE_V4_FLASH_GA,     // DeepSeek-V4-Flash正式版
     'deepseek-v4-pro': VOLCENGINE_V4_PRO,               // DeepSeek-V4-pro
     'deepseek-v4-flash': VOLCENGINE_V4_FLASH,           // DeepSeek-V4-flash
+    [UNLIMITDS_V4_PRO_ALIAS]: UNLIMITDS_V4_PRO_ALIAS,    // UnlimitDS DeepSeek-V4-Pro
     // 兼容旧入口 → 统一映射到新模型
     'deepseek-v4-flash-free': VOLCENGINE_V4_FLASH_GA,   // 旧Flash → Flash正式版
     'deepseek-v4-flash:free': VOLCENGINE_V4_FLASH_GA,
@@ -167,6 +175,7 @@ const VOLCENGINE_MODELS = new Set([
     VOLCENGINE_V4_PRO,
     VOLCENGINE_V4_FLASH
 ]);
+const UNLIMITDS_MODELS = new Set([UNLIMITDS_V4_PRO_ALIAS]);
 
 // 已废弃的平台列表（保留变量以兼容其他模块引用）
 const GPT_MODELS = new Set([]);
@@ -175,17 +184,47 @@ const SENSENOVA_MODELS = new Set([]);
 const KRILL_MODELS = new Set([]);
 
 // 必须使用流式调用的模型（Pro 大模型思考链长，流式更稳定）
-const STREAM_ONLY_MODELS = new Set([VOLCENGINE_V4_PRO_GA, VOLCENGINE_V4_PRO]);
+const STREAM_ONLY_MODELS = new Set([
+    VOLCENGINE_V4_PRO_GA,
+    VOLCENGINE_V4_PRO,
+    UNLIMITDS_V4_PRO_ALIAS
+]);
+
+function resolveModelRoute(model, apiKey = null, baseUrl = null) {
+    const modelName = MODEL_MAP[model] || model || DEFAULT_MODEL_ALIAS;
+    if (UNLIMITDS_MODELS.has(modelName)) {
+        return {
+            provider: 'unlimitds',
+            modelName,
+            requestModelName: UNLIMITDS_V4_PRO_MODEL,
+            apiKey: apiKey || UNLIMITDS_API_KEY,
+            baseUrl: baseUrl || UNLIMITDS_BASE_URL
+        };
+    }
+    return {
+        provider: 'volcengine',
+        modelName,
+        requestModelName: modelName,
+        apiKey: apiKey || VOLCENGINE_API_KEY,
+        baseUrl: baseUrl || VOLCENGINE_BASE_URL
+    };
+}
 
 /**
- * 获取 OpenAI 兼容客户端（统一使用火山引擎）
+ * 获取当前模型提供商对应的 OpenAI 兼容客户端。
  */
 function createClient(apiKey, baseUrl, model, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
-    const key = apiKey || VOLCENGINE_API_KEY;
-    const url = baseUrl || VOLCENGINE_BASE_URL;
+    const route = resolveModelRoute(model, apiKey, baseUrl);
+    if (!route.apiKey) {
+        const envName = route.provider === 'unlimitds' ? 'UNLIMITDS_API_KEY' : 'VOLCENGINE_API_KEY';
+        const error = new Error(`缺少 ${envName}`);
+        error.code = 'MISSING_AI_API_KEY';
+        error.status = 503;
+        throw error;
+    }
     return new OpenAI({
-        apiKey: key,
-        baseURL: url,
+        apiKey: route.apiKey,
+        baseURL: route.baseUrl,
         timeout: timeoutMs,
         maxRetries: 0
     });
@@ -362,7 +401,7 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
 }
 
 /**
- * 调用 AI Chat 接口（统一火山引擎）
+ * 调用 AI Chat 接口（按模型路由到对应提供商）
  * @param {Object} options - 调用选项
  * @param {Array} options.messages - 消息数组
  * @param {string} options.model - 模型标识
@@ -389,15 +428,16 @@ async function callAI(options) {
     } = options;
     throwIfAborted(signal);
 
-    const modelName = MODEL_MAP[model] || model;
+    const route = resolveModelRoute(model, apiKey, baseUrl);
+    const { modelName, requestModelName } = route;
     const isStreamOnly = STREAM_ONLY_MODELS.has(modelName);
     const isVolcengineModel = VOLCENGINE_MODELS.has(modelName);
-    const activeBaseUrl = baseUrl || VOLCENGINE_BASE_URL;
+    const activeBaseUrl = route.baseUrl;
 
     // 尝试 Coding 端点（如果配置了 coding URL）
     if (isVolcengineModel && /\/api\/coding\/?$/i.test(activeBaseUrl || '')) {
         try {
-            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl, timeoutMs: requestTimeoutMs, signal });
+            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey: route.apiKey, baseUrl: activeBaseUrl, timeoutMs: requestTimeoutMs, signal });
         } catch (error) {
             if (!isCodingPlanUnavailableError(error)) throw error;
             const standardBaseUrl = getVolcengineStandardBaseUrl(activeBaseUrl);
@@ -411,7 +451,7 @@ async function callAI(options) {
         }
     }
 
-    const client = createClient(apiKey, baseUrl, modelName, requestTimeoutMs);
+    const client = createClient(route.apiKey, route.baseUrl, modelName, requestTimeoutMs);
 
     if (stream && res) {
         // 流式调用（直接输出给客户端）
@@ -419,7 +459,7 @@ async function callAI(options) {
         let emittedContent = false;
         try {
             const completion = await client.chat.completions.create({
-                model: modelName,
+                model: requestModelName,
                 messages,
                 temperature,
                 max_tokens,
@@ -444,11 +484,11 @@ async function callAI(options) {
         }
     } else if (isStreamOnly) {
         // 强制流式模型：内部用stream调用，收集完整响应后返回为非流式结果
-        console.log(`   📡 模型 ${modelName} 强制流式调用中...`);
+        console.log(`   📡 模型 ${requestModelName} (${route.provider}) 强制流式调用中...`);
         const guard = createStreamGuard(signal, requestTimeoutMs);
         try {
             const completion = await client.chat.completions.create({
-                model: modelName,
+                model: requestModelName,
                 messages,
                 temperature,
                 max_tokens,
@@ -458,7 +498,9 @@ async function callAI(options) {
             let fullContent = '';
             let thinkingChars = 0;
             let finishReason = 'stop';
-            const isProModel = modelName === VOLCENGINE_V4_PRO_GA || modelName === VOLCENGINE_V4_PRO;
+            const isProModel = modelName === VOLCENGINE_V4_PRO_GA
+                || modelName === VOLCENGINE_V4_PRO
+                || UNLIMITDS_MODELS.has(modelName);
             for await (const chunk of completion) {
                 guard.touch();
                 const delta = chunk.choices[0]?.delta;
@@ -483,7 +525,7 @@ async function callAI(options) {
                     message: { role: 'assistant', content: fullContent },
                     finish_reason: finishReason
                 }],
-                model: modelName,
+                model: requestModelName,
                 usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
             };
         } catch (error) {
@@ -497,7 +539,7 @@ async function callAI(options) {
         let completion;
         try {
             completion = await client.chat.completions.create({
-                model: modelName,
+                model: requestModelName,
                 messages,
                 temperature,
                 max_tokens,
@@ -511,7 +553,7 @@ async function callAI(options) {
 
         // 验证API响应格式（部分兼容平台可能返回200但body是错误信息）
         if (completion && completion.status && completion.msg && !completion.choices) {
-            throw new Error(`API错误 [${completion.status}]: ${completion.msg}（模型: ${modelName}）`);
+            throw new Error(`API错误 [${completion.status}]: ${completion.msg}（模型: ${requestModelName}）`);
         }
 
         // 检测截断
@@ -536,12 +578,13 @@ function isRateLimitError(error) {
 
 function isPermanentRateLimitError(error) {
     if (!isRateLimitError(error)) return false;
-    return /SetLimitExceeded|service has been paused|Safe Experience Mode|inference limit|insufficient quota|billing quota/i
+    return /SetLimitExceeded|service has been paused|Safe Experience Mode|inference limit|insufficient quota|billing quota|quota (?:is )?(?:exhausted|depleted)|weekly (?:usage )?limit|monthly (?:usage )?limit|周期额度|额度(?:已)?用完|注册限制/i
         .test(String(error?.message || ''));
 }
 
 function isRetryableAIError(error) {
     if (error?.doNotRetry) return false;
+    if (error?.code === 'MISSING_AI_API_KEY') return false;
     if (isPermanentRateLimitError(error)) return false;
     const status = getAIErrorStatus(error);
     const message = String(error?.message || '');
@@ -690,6 +733,11 @@ module.exports = {
     VOLCENGINE_BASE_URL,
     VOLCENGINE_CODING_BASE_URL,
     VOLCENGINE_MODELS,
+    UNLIMITDS_V4_PRO_ALIAS,
+    UNLIMITDS_V4_PRO_MODEL,
+    UNLIMITDS_BASE_URL,
+    UNLIMITDS_MODELS,
+    resolveModelRoute,
     getVolcengineStandardBaseUrl,
     isCodingPlanUnavailableError,
     DEFAULT_MODEL_ALIAS,

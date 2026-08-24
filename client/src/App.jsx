@@ -43,6 +43,7 @@ const COSMIC_FAST_CONCURRENCY = 2;
 const COSMIC_LARGE_DOCUMENT_CHARS = 12000;
 const COSMIC_LARGE_FUNCTION_COUNT = 40;
 const COSMIC_MANY_CHAPTERS = 8;
+const UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
 
 const resolveCosmicConcurrency = ({ mode, documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
     const autoStabilized = mode === 'fast' && (
@@ -407,8 +408,9 @@ function App({ user, token, onLogout }) {
                 'deepseek-r1': 'deepseek-v4-pro-ga',
                 'glm-5.2': 'deepseek-v4-flash-ga',
                 'company-glm-5.2': 'deepseek-v4-flash-ga',
-                'sensenova-6.8-flash-lite': 'deepseek-v4-flash',
-                'qwen3-coder': 'deepseek-v4-flash',
+                'deepseek-v4-flash': UNLIMITDS_MODEL_ALIAS,
+                'sensenova-6.8-flash-lite': UNLIMITDS_MODEL_ALIAS,
+                'qwen3-coder': UNLIMITDS_MODEL_ALIAS,
                 'gpt-5.1-codex-mini': 'deepseek-v4-pro-ga'
             };
             return migrationMap[savedModel] || savedModel || 'deepseek-v4-pro-ga';
@@ -515,24 +517,27 @@ function App({ user, token, onLogout }) {
         try {
             const res = await axios.get('/api/health');
             setApiStatus(res.data);
+            if (!res.data.hasUnlimitdsApiKey) {
+                setSelectedModel(model => model === UNLIMITDS_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
+            }
         } catch (error) {
             console.error('检查API状态失败:', error);
         }
     };
 
     const handleModelChange = async (model) => {
-        setSelectedModel(model);
         try {
             await axios.post('/api/switch-model', { model });
+            setSelectedModel(model);
             const labels = {
                 'deepseek-v4-pro-ga': 'DeepSeek-V4-Pro正式版',
                 'deepseek-v4-flash-ga': 'DeepSeek-V4-Flash正式版',
                 'deepseek-v4-pro': 'DeepSeek-V4-pro',
-                'deepseek-v4-flash': 'DeepSeek-V4-flash'
+                [UNLIMITDS_MODEL_ALIAS]: 'DeepSeek-V4-Pro（UnlimitDS）'
             };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
-            showToast('切换模型失败');
+            showToast(error.response?.data?.error || '切换模型失败');
         }
     };
 
@@ -541,7 +546,7 @@ function App({ user, token, onLogout }) {
             apiKey: null,
             baseUrl: null,
             model: selectedModel,
-            provider: 'volcengine'
+            provider: selectedModel === UNLIMITDS_MODEL_ALIAS ? 'unlimitds' : 'volcengine'
         };
     };
 
@@ -4334,9 +4339,9 @@ function App({ user, token, onLogout }) {
                         </div>
                     </div>
 
-                    {/* 模型选择 - 统一火山引擎 */}
+                    {/* 模型选择 */}
                     <div className="section-group">
-                        <div className="section-label">🌋 AI 模型（火山引擎）</div>
+                        <div className="section-label">🤖 AI 模型</div>
                         <div className="model-selector">
                             <button
                                 className={`model-option ${selectedModel === 'deepseek-v4-pro-ga' ? 'active' : ''}`}
@@ -4372,14 +4377,20 @@ function App({ user, token, onLogout }) {
                                 </div>
                             </button>
                             <button
-                                className={`model-option ${selectedModel === 'deepseek-v4-flash' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('deepseek-v4-flash')}
-                                style={selectedModel === 'deepseek-v4-flash' ? { borderColor: '#06b6d4', background: 'rgba(6,182,212,0.12)' } : {}}
+                                className={`model-option ${selectedModel === UNLIMITDS_MODEL_ALIAS ? 'active' : ''}`}
+                                onClick={() => handleModelChange(UNLIMITDS_MODEL_ALIAS)}
+                                disabled={apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey}
+                                title={apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey ? '服务器尚未配置 UNLIMITDS_API_KEY' : '使用 UnlimitDS DeepSeek V4 Pro'}
+                                style={selectedModel === UNLIMITDS_MODEL_ALIAS ? { borderColor: '#06b6d4', background: 'rgba(6,182,212,0.12)' } : {}}
                             >
                                 <span className="model-option-dot" style={{ background: '#06b6d4' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-flash</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>预览版 · 快速轻量</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-Pro</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>
+                                        {apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey
+                                            ? 'UnlimitDS · 需配置 API Key'
+                                            : 'UnlimitDS · 第三方 API'}
+                                    </div>
                                 </div>
                             </button>
                         </div>
@@ -4570,7 +4581,7 @@ function App({ user, token, onLogout }) {
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon blue"><Brain size={18} /></div>
                                             <h3>AI 深度拆分</h3>
-                                            <p>DeepSeek V4 Flash / Qwen3 双模型，精准ERWX拆分</p>
+                                            <p>DeepSeek V4 Pro 多通道，精准ERWX拆分</p>
                                         </div>
                                         <div className="welcome-feature">
                                             <div className="welcome-feature-icon cyan"><BarChart3 size={18} /></div>
