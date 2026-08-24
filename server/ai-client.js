@@ -50,6 +50,86 @@ const AI_MODULE_REQUEST_TIMEOUT_MS = readBoundedInteger(
     AI_REQUEST_TIMEOUT_MS
 );
 const AI_MODULE_MAX_ATTEMPTS = readBoundedInteger(process.env.AI_MODULE_MAX_ATTEMPTS, 2, 1, 4);
+const AI_STREAM_IDLE_TIMEOUT_MS = readBoundedInteger(
+    process.env.AI_STREAM_IDLE_TIMEOUT_MS,
+    2 * 60 * 1000,
+    15 * 1000,
+    Math.min(AI_REQUEST_TIMEOUT_MS, 5 * 60 * 1000)
+);
+
+function createAbortError(message = 'AI调用已取消') {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    error.code = 'ABORT_ERR';
+    return error;
+}
+
+function throwIfAborted(signal) {
+    if (signal?.aborted) throw createAbortError();
+}
+
+function waitWithSignal(ms, signal) {
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(createAbortError());
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+function createStreamGuard(externalSignal, totalTimeoutMs, idleTimeoutMs = AI_STREAM_IDLE_TIMEOUT_MS) {
+    const controller = new AbortController();
+    let abortKind = null;
+    let idleTimer = null;
+
+    const abort = (kind) => {
+        if (controller.signal.aborted) return;
+        abortKind = kind;
+        controller.abort();
+    };
+    const onExternalAbort = () => abort('external');
+    if (externalSignal?.aborted) abort('external');
+    else externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+    const totalTimer = setTimeout(() => abort('total-timeout'), totalTimeoutMs);
+    const touch = () => {
+        if (controller.signal.aborted) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => abort('idle-timeout'), idleTimeoutMs);
+    };
+    touch();
+
+    return {
+        signal: controller.signal,
+        touch,
+        cleanup() {
+            clearTimeout(totalTimer);
+            if (idleTimer) clearTimeout(idleTimer);
+            externalSignal?.removeEventListener('abort', onExternalAbort);
+        },
+        normalizeError(error) {
+            if (abortKind === 'external') return createAbortError();
+            if (abortKind === 'idle-timeout' || abortKind === 'total-timeout') {
+                const seconds = Math.round((abortKind === 'idle-timeout' ? idleTimeoutMs : totalTimeoutMs) / 1000);
+                const timeoutError = new Error(
+                    abortKind === 'idle-timeout'
+                        ? `AI流连续${seconds}秒无数据，已中止并准备重试`
+                        : `AI流总耗时超过${seconds}秒，已中止并准备重试`
+                );
+                timeoutError.code = 'ETIMEDOUT';
+                timeoutError.status = 504;
+                return timeoutError;
+            }
+            return error;
+        }
+    };
+}
 
 // 默认模型（DeepSeek-V4-Pro正式版）
 const DEFAULT_MODEL_ALIAS = 'deepseek-v4-pro-ga';
@@ -199,7 +279,7 @@ async function callCompanyGlmAI() {
     throw new Error('公司 GLM 通道已废弃，请使用火山引擎模型');
 }
 
-async function callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl, timeoutMs = AI_REQUEST_TIMEOUT_MS }) {
+async function callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl, timeoutMs = AI_REQUEST_TIMEOUT_MS, signal = null }) {
     const key = apiKey || VOLCENGINE_API_KEY;
     if (!key) {
         throw new Error('缺少 VOLCENGINE_API_KEY');
@@ -216,6 +296,9 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const abortFromCaller = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', abortFromCaller, { once: true });
     let response;
     let raw;
     try {
@@ -232,6 +315,7 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
         raw = await response.text();
     } catch (error) {
         if (controller.signal.aborted) {
+            if (signal?.aborted) throw createAbortError();
             const timeoutError = new Error(`火山引擎 Coding API调用超时（${Math.round(timeoutMs / 1000)}秒）`);
             timeoutError.code = 'ETIMEDOUT';
             timeoutError.status = 504;
@@ -240,6 +324,7 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
         throw error;
     } finally {
         clearTimeout(timeout);
+        signal?.removeEventListener('abort', abortFromCaller);
     }
 
     let data = null;
@@ -299,8 +384,10 @@ async function callAI(options) {
         res = null,
         apiKey = null,
         baseUrl = null,
-        requestTimeoutMs = AI_REQUEST_TIMEOUT_MS
+        requestTimeoutMs = AI_REQUEST_TIMEOUT_MS,
+        signal = null
     } = options;
+    throwIfAborted(signal);
 
     const modelName = MODEL_MAP[model] || model;
     const isStreamOnly = STREAM_ONLY_MODELS.has(modelName);
@@ -310,7 +397,7 @@ async function callAI(options) {
     // 尝试 Coding 端点（如果配置了 coding URL）
     if (isVolcengineModel && /\/api\/coding\/?$/i.test(activeBaseUrl || '')) {
         try {
-            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl, timeoutMs: requestTimeoutMs });
+            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl: activeBaseUrl, timeoutMs: requestTimeoutMs, signal });
         } catch (error) {
             if (!isCodingPlanUnavailableError(error)) throw error;
             const standardBaseUrl = getVolcengineStandardBaseUrl(activeBaseUrl);
@@ -328,74 +415,99 @@ async function callAI(options) {
 
     if (stream && res) {
         // 流式调用（直接输出给客户端）
-        const completion = await client.chat.completions.create({
-            model: modelName,
-            messages,
-            temperature,
-            max_tokens,
-            stream: true
-        });
+        const guard = createStreamGuard(signal, requestTimeoutMs);
+        let emittedContent = false;
+        try {
+            const completion = await client.chat.completions.create({
+                model: modelName,
+                messages,
+                temperature,
+                max_tokens,
+                stream: true
+            }, { signal: guard.signal });
 
-        for await (const chunk of completion) {
-            const content = chunk.choices[0]?.delta?.content || '';
-            if (content) {
-                res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            for await (const chunk of completion) {
+                guard.touch();
+                const content = chunk.choices[0]?.delta?.content || '';
+                if (content) {
+                    emittedContent = true;
+                    res.write(`data: ${JSON.stringify({ content })}\n\n`);
+                }
             }
+            return null;
+        } catch (error) {
+            const normalizedError = guard.normalizeError(error);
+            if (emittedContent) normalizedError.doNotRetry = true;
+            throw normalizedError;
+        } finally {
+            guard.cleanup();
         }
-        return null;
     } else if (isStreamOnly) {
         // 强制流式模型：内部用stream调用，收集完整响应后返回为非流式结果
         console.log(`   📡 模型 ${modelName} 强制流式调用中...`);
-        const completion = await client.chat.completions.create({
-            model: modelName,
-            messages,
-            temperature,
-            max_tokens,
-            stream: true
-        });
+        const guard = createStreamGuard(signal, requestTimeoutMs);
+        try {
+            const completion = await client.chat.completions.create({
+                model: modelName,
+                messages,
+                temperature,
+                max_tokens,
+                stream: true
+            }, { signal: guard.signal });
 
-        let fullContent = '';
-        let thinkingContent = '';
-        let finishReason = 'stop';
-        const isProModel = modelName === VOLCENGINE_V4_PRO_GA || modelName === VOLCENGINE_V4_PRO;
-        for await (const chunk of completion) {
-            const delta = chunk.choices[0]?.delta;
-            // 检测 finish_reason
-            if (chunk.choices[0]?.finish_reason) {
-                finishReason = chunk.choices[0].finish_reason;
+            let fullContent = '';
+            let thinkingChars = 0;
+            let finishReason = 'stop';
+            const isProModel = modelName === VOLCENGINE_V4_PRO_GA || modelName === VOLCENGINE_V4_PRO;
+            for await (const chunk of completion) {
+                guard.touch();
+                const delta = chunk.choices[0]?.delta;
+                if (chunk.choices[0]?.finish_reason) {
+                    finishReason = chunk.choices[0].finish_reason;
+                }
+                // 只统计思考链长度，不把整段思考链常驻内存。
+                if (isProModel && delta?.reasoning_content) {
+                    thinkingChars += delta.reasoning_content.length;
+                }
+                fullContent += delta?.content || '';
             }
-            // Pro 模型：reasoning_content 是思考链，content 是最终答案
-            if (isProModel && delta?.reasoning_content) {
-                thinkingContent += delta.reasoning_content;
+            if (isProModel && thinkingChars > 0) {
+                console.log(`   🧠 DeepSeek V4 Pro 思考链长度: ${thinkingChars} 字符`);
             }
-            const content = delta?.content || '';
-            fullContent += content;
-        }
-        if (isProModel && thinkingContent) {
-            console.log(`   🧠 DeepSeek V4 Pro 思考链长度: ${thinkingContent.length} 字符`);
-        }
-        if (finishReason === 'length') {
-            console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${max_tokens}`);
-        }
+            if (finishReason === 'length') {
+                console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${max_tokens}`);
+            }
 
-        // 构造一个兼容非流式格式的响应对象
-        return {
-            choices: [{
-                message: { role: 'assistant', content: fullContent },
-                finish_reason: finishReason
-            }],
-            model: modelName,
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-        };
+            return {
+                choices: [{
+                    message: { role: 'assistant', content: fullContent },
+                    finish_reason: finishReason
+                }],
+                model: modelName,
+                usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+            };
+        } catch (error) {
+            throw guard.normalizeError(error);
+        } finally {
+            guard.cleanup();
+        }
     } else {
         // 标准非流式调用
-        const completion = await client.chat.completions.create({
-            model: modelName,
-            messages,
-            temperature,
-            max_tokens,
-            stream: false
-        });
+        const guard = createStreamGuard(signal, requestTimeoutMs, requestTimeoutMs);
+        let completion;
+        try {
+            completion = await client.chat.completions.create({
+                model: modelName,
+                messages,
+                temperature,
+                max_tokens,
+                stream: false
+            }, { signal: guard.signal });
+        } catch (error) {
+            throw guard.normalizeError(error);
+        } finally {
+            guard.cleanup();
+        }
 
         // 验证API响应格式（部分兼容平台可能返回200但body是错误信息）
         if (completion && completion.status && completion.msg && !completion.choices) {
@@ -429,6 +541,7 @@ function isPermanentRateLimitError(error) {
 }
 
 function isRetryableAIError(error) {
+    if (error?.doNotRetry) return false;
     if (isPermanentRateLimitError(error)) return false;
     const status = getAIErrorStatus(error);
     const message = String(error?.message || '');
@@ -461,7 +574,8 @@ function createAIRelease() {
     };
 }
 
-function acquireAIConcurrencySlot(modelName) {
+function acquireAIConcurrencySlot(modelName, signal = null) {
+    if (signal?.aborted) return Promise.reject(createAbortError());
     if (activeAIRequests < AI_MAX_CONCURRENCY) {
         activeAIRequests += 1;
         return Promise.resolve(createAIRelease());
@@ -469,9 +583,27 @@ function acquireAIConcurrencySlot(modelName) {
 
     return new Promise((resolve, reject) => {
         const queuedAt = Date.now();
+        let settled = false;
+        const cleanup = () => {
+            clearTimeout(entry.timeout);
+            signal?.removeEventListener('abort', onAbort);
+        };
+        const removeFromQueue = () => {
+            const index = aiRequestQueue.indexOf(entry);
+            if (index >= 0) aiRequestQueue.splice(index, 1);
+        };
+        const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            removeFromQueue();
+            cleanup();
+            reject(createAbortError());
+        };
         const entry = {
             start: () => {
-                clearTimeout(entry.timeout);
+                if (settled) return;
+                settled = true;
+                cleanup();
                 activeAIRequests += 1;
                 console.log(`   🟢 AI排队请求已启动: ${modelName || '默认模型'} (等待 ${Date.now() - queuedAt}ms)`);
                 resolve(createAIRelease());
@@ -479,13 +611,16 @@ function acquireAIConcurrencySlot(modelName) {
             timeout: null
         };
         entry.timeout = setTimeout(() => {
-            const index = aiRequestQueue.indexOf(entry);
-            if (index >= 0) aiRequestQueue.splice(index, 1);
+            if (settled) return;
+            settled = true;
+            removeFromQueue();
+            cleanup();
             const error = new Error(`AI请求排队超时（${Math.round(AI_QUEUE_TIMEOUT_MS / 1000)}秒）`);
             error.code = 'AI_QUEUE_TIMEOUT';
             error.status = 503;
             reject(error);
         }, AI_QUEUE_TIMEOUT_MS);
+        signal?.addEventListener('abort', onAbort, { once: true });
         aiRequestQueue.push(entry);
         console.log(`   🟡 AI并发已满，请求排队: ${modelName || '默认模型'} (队列 ${aiRequestQueue.length})`);
     });
@@ -498,10 +633,12 @@ function acquireAIConcurrencySlot(modelName) {
 async function callAIWithRetry(options, maxAttempts = AI_MAX_ATTEMPTS) {
     const attempts = readBoundedInteger(maxAttempts, AI_MAX_ATTEMPTS, 1, 8);
     const modelName = MODEL_MAP[options?.model] || options?.model || DEFAULT_MODEL_ALIAS;
-    const release = await acquireAIConcurrencySlot(modelName);
+    const signal = options?.signal || null;
 
-    try {
-        for (let attempt = 0; attempt < attempts; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+        throwIfAborted(signal);
+        const release = await acquireAIConcurrencySlot(modelName, signal);
+        try {
             try {
                 return await callAI(options);
             } catch (error) {
@@ -521,11 +658,12 @@ async function callAIWithRetry(options, maxAttempts = AI_MAX_ATTEMPTS) {
                     : Math.min(3000 * Math.pow(2, attempt), 20000);
                 const jitter = delay * (0.8 + Math.random() * 0.4);
                 console.log(`   ⏳ ${rateLimited ? '限流' : '5xx/网络错误'}退避 ${(jitter / 1000).toFixed(1)} 秒后重试...`);
-                await new Promise(resolve => setTimeout(resolve, jitter));
+                release();
+                await waitWithSignal(jitter, signal);
             }
+        } finally {
+            release();
         }
-    } finally {
-        release();
     }
 }
 
@@ -542,6 +680,7 @@ module.exports = {
     AI_MAX_ATTEMPTS,
     AI_MODULE_REQUEST_TIMEOUT_MS,
     AI_MODULE_MAX_ATTEMPTS,
+    AI_STREAM_IDLE_TIMEOUT_MS,
     MODEL_MAP,
     // 新的四个火山引擎模型
     VOLCENGINE_V4_PRO_GA,
@@ -568,5 +707,10 @@ module.exports = {
     VOLCENGINE_MODEL_NAME: VOLCENGINE_V4_PRO_GA,
     VOLCENGINE_STANDARD_BASE_URL: VOLCENGINE_BASE_URL,
     companyGlmUrl,
-    callCompanyGlmAI
+    callCompanyGlmAI,
+    __testing: {
+        acquireAIConcurrencySlot,
+        createStreamGuard,
+        waitWithSignal
+    }
 };

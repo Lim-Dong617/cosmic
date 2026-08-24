@@ -558,7 +558,8 @@ async function createConversationPlan({
     userGuidelines,
     userConfig,
     modelName,
-    callAIWithRetry
+    callAIWithRetry,
+    signal = null
 }) {
     const context = buildConversationContext({
         instruction,
@@ -580,7 +581,8 @@ async function createConversationPlan({
         apiKey: userConfig?.apiKey || null,
         baseUrl: userConfig?.baseUrl || null,
         temperature: 0.1,
-        max_tokens: 7000
+        max_tokens: 7000,
+        signal
     });
     const content = completion?.choices?.[0]?.message?.content;
     if (!content) throw new Error('AI没有返回对话理解结果');

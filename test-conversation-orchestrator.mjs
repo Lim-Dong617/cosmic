@@ -134,8 +134,8 @@ const chatRoute = serverSource.slice(
     serverSource.indexOf('// ═══════════════════════ 导出Excel', serverSource.indexOf("app.post('/api/chat/stream'"))
 );
 const cosmicBatchRoute = serverSource.slice(
-    serverSource.indexOf("app.post('/api/cosmic-split-batch'"),
-    serverSource.indexOf('// ═══════════════════════', serverSource.indexOf("app.post('/api/cosmic-split-batch'") + 50)
+    serverSource.indexOf('async function executeCosmicSplitBatch'),
+    serverSource.indexOf('const cosmicSplitJobManager', serverSource.indexOf('async function executeCosmicSplitBatch'))
 );
 assert.ok(chatRoute.includes('createConversationPlan'));
 assert.ok(!chatRoute.includes('getCosmicSplitPrompt('));

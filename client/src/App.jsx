@@ -23,6 +23,15 @@ import {
     orderCosmicTableData,
     allocateQuantityPlanToChapters
 } from './cosmic-quality';
+import {
+    completedFunctionNames,
+    createCosmicRunId,
+    runContinueAnalysisJob,
+    runCosmicModuleRecognitionJob,
+    runCosmicSplitJob,
+    runDocumentUnderstandingJob,
+    runFunctionExtractionJob
+} from './cosmic-split-jobs';
 
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
@@ -534,6 +543,34 @@ function App({ user, token, onLogout }) {
         };
     };
 
+    const requestCosmicSplitBatch = async (payload, {
+        signal = null,
+        requestKey = createCosmicRunId('batch'),
+        onStatus = null
+    } = {}) => ({
+        data: await runCosmicSplitJob({
+            httpClient: axios,
+            payload,
+            requestKey,
+            signal,
+            onStatus
+        })
+    });
+
+    const requestFunctionExtraction = async (payload, {
+        signal = null,
+        requestKey = createCosmicRunId('extract'),
+        onStatus = null
+    } = {}) => ({
+        data: await runFunctionExtractionJob({
+            httpClient: axios,
+            payload,
+            requestKey,
+            signal,
+            onStatus
+        })
+    });
+
     const showToast = (message) => {
         setToastMessage(message);
         setTimeout(() => setToastMessage(''), 2500);
@@ -647,7 +684,7 @@ function App({ user, token, onLogout }) {
             const now = Date.now();
             const isNewTask = !prev.visible
                 || (patch.title && patch.title !== prev.title)
-                || (patch.status === 'running' && ['done', 'waiting', 'error'].includes(prev.status));
+                || (patch.status === 'running' && ['done', 'waiting', 'error', 'canceled'].includes(prev.status));
             const previousHistory = isNewTask ? [] : (prev.history || []);
             const nextStatus = patch.status || prev.status || 'running';
             const nextPhase = patch.phase || prev.phase || '准备中';
@@ -722,13 +759,27 @@ function App({ user, token, onLogout }) {
         const percent = Math.max(0, Math.min(100, Math.round(analysisProgress.percent || 0)));
         const isDone = analysisProgress.status === 'done';
         const isWaiting = analysisProgress.status === 'waiting';
-        const statusText = isDone ? '已完成' : isWaiting ? '等待确认' : '进行中';
+        const isError = analysisProgress.status === 'error';
+        const isCanceled = analysisProgress.status === 'canceled';
+        const statusText = isDone
+            ? '已完成'
+            : isWaiting
+                ? '等待确认'
+                : isError
+                    ? '执行失败'
+                    : isCanceled
+                        ? '已停止'
+                        : '进行中';
 
         return (
-            <div className={`analysis-progress-panel ${isDone ? 'done' : isWaiting ? 'waiting' : ''}`}>
+            <div className={`analysis-progress-panel ${isDone ? 'done' : isWaiting ? 'waiting' : isError ? 'error' : isCanceled ? 'canceled' : ''}`}>
                 <div className="analysis-progress-head">
                     <div className="analysis-progress-title">
-                        {isDone ? <CheckCircle size={16} /> : isWaiting ? <AlertCircle size={16} /> : <Loader2 size={16} className="spinner" />}
+                        {isDone
+                            ? <CheckCircle size={16} />
+                            : isWaiting || isError || isCanceled
+                                ? <AlertCircle size={16} />
+                                : <Loader2 size={16} className="spinner" />}
                         <span>{analysisProgress.title || '分析进度'}</span>
                         <em>{statusText}</em>
                     </div>
@@ -1375,6 +1426,11 @@ function App({ user, token, onLogout }) {
     const startChapterRecognition = async () => {
         if (!documentContent) { showToast('请先上传文档'); return; }
 
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
+        const moduleRunId = createCosmicRunId('module-recognition');
+
         setIsLoading(true);
         setIsWaitingForAnalysis(false);
         setCurrentStep(1);
@@ -1393,10 +1449,20 @@ function App({ user, token, onLogout }) {
 
         // ── 第一步：三级模块结构识别（借鉴NESMA） ──
         try {
-            const modRes = await axios.post('/api/cosmic/recognize-modules', {
-                documentContent,
-                userConfig: getUserConfig()
+            const moduleResult = await runCosmicModuleRecognitionJob({
+                httpClient: axios,
+                payload: {
+                    documentContent,
+                    userConfig: getUserConfig()
+                },
+                requestKey: `${moduleRunId}:document`,
+                signal,
+                onStatus: job => {
+                    const message = job?.progress?.message || job?.message;
+                    if (message) updateAnalysisProgress({ detail: message });
+                }
             });
+            const modRes = { data: moduleResult };
             if (modRes.data.degraded) {
                 setMessages(prev => [...prev, {
                     role: 'system',
@@ -1450,6 +1516,10 @@ function App({ user, token, onLogout }) {
                 }]);
             }
         } catch (e) {
+            if (e.name === 'AbortError' || e.name === 'CanceledError' || signal.aborted) {
+                setIsLoading(false);
+                return;
+            }
             console.warn('COSMIC模块识别失败，将跳过模块脚手架:', e.message);
             setMessages(prev => [...prev, {
                 role: 'system',
@@ -1474,7 +1544,7 @@ function App({ user, token, onLogout }) {
             const res = await axios.post('/api/split-chapters', {
                 documentContent,
                 moduleStructure: recognizedModules || null
-            });
+            }, { signal });
             if (res.data.success) {
                 const chapterList = res.data.chapters;
                 setChapters(chapterList);
@@ -1500,6 +1570,7 @@ function App({ user, token, onLogout }) {
                 setCurrentStep(2); // 等待用户确认
             }
         } catch (error) {
+            if (error.name === 'AbortError' || error.name === 'CanceledError' || signal.aborted) return;
             // 章节识别失败，退回到全文模式
             setMessages(prev => [...prev, {
                 role: 'system',
@@ -1530,6 +1601,7 @@ function App({ user, token, onLogout }) {
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
         const signal = abortControllerRef.current.signal;
+        const extractionRunId = createCosmicRunId('function-extraction');
         const extractionProfile = resolveCosmicConcurrency({
             mode: splitExecutionMode,
             documentChars: documentContent.length,
@@ -1617,7 +1689,7 @@ function App({ user, token, onLogout }) {
                     if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
                         result = { functionList: '', count: 0, skipped: true };
                     } else {
-                        const res = await axios.post('/api/extract-functions', {
+                        const res = await requestFunctionExtraction({
                             documentContent: chapter.content,
                             chapterName: chapter.title,
                             userGuidelines,
@@ -1626,7 +1698,14 @@ function App({ user, token, onLogout }) {
                             moduleStructure: moduleStructure || null,
                             quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
                             targetCount: chapterTargetCount
-                        }, { signal });
+                        }, {
+                            signal,
+                            requestKey: `${extractionRunId}:chapter-${index + 1}`,
+                            onStatus: job => {
+                                const message = job?.progress?.message || job?.message;
+                                if (message) updateAnalysisProgress({ detail: `${chapter.title}: ${message}` });
+                            }
+                        });
 
                         result = {
                             functionList: res.data.success && res.data.functionList
@@ -1729,7 +1808,7 @@ function App({ user, token, onLogout }) {
                         }];
                     });
 
-                    const res = await axios.post('/api/extract-functions', {
+                    const res = await requestFunctionExtraction({
                         documentContent: chapter.content,
                         chapterName: chapter.title,
                         userGuidelines,
@@ -1738,7 +1817,14 @@ function App({ user, token, onLogout }) {
                         moduleStructure: moduleStructure || null,
                         quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
                         targetCount: chapterTargetCount
-                    }, { signal });
+                    }, {
+                        signal,
+                        requestKey: `${extractionRunId}:chapter-${i + 1}`,
+                        onStatus: job => {
+                            const message = job?.progress?.message || job?.message;
+                            if (message) updateAnalysisProgress({ detail: `${chapter.title}: ${message}` });
+                        }
+                    });
 
                     if (res.data.success && res.data.functionList) {
                         // 给每条功能附上章节来源标记
@@ -1862,9 +1948,19 @@ function App({ user, token, onLogout }) {
                     content: `功能过程提取部分完成（已提取 ${parsed.length} 个）。\n错误: ${error.response?.data?.error || error.message}\n\n请点击**「查看/编辑功能列表」**按钮检查。`,
                     showFunctionListActions: true
                 }]);
+                updateAnalysisProgress({
+                    status: 'waiting',
+                    phase: 'Function extraction partially completed',
+                    detail: `已保留 ${parsed.length} 个功能过程，可检查后继续拆分。`
+                });
             } else {
                 setMessages(prev => [...prev, { role: 'assistant', content: `❌ 功能过程提取失败: ${error.response?.data?.error || error.message}` }]);
                 setCurrentStep(0);
+                updateAnalysisProgress({
+                    status: 'error',
+                    phase: 'Function extraction failed',
+                    detail: error.response?.data?.error || error.message || '功能过程提取失败'
+                });
             }
         } finally {
             setIsLoading(false);
@@ -1877,8 +1973,6 @@ function App({ user, token, onLogout }) {
     };
 
     // ═══════════ 两步骤模式：阶段2 - COSMIC分段拆分（批次模式，断网安全） ═══════════
-    const COSMIC_BATCH_SIZE = 2; // 每批拆分2个功能过程（V3.2必须逐个完整输出ERWX，批次越小越可靠）
-
     const startCosmicSplit = async () => {
         // 先同步结构化数据回 text
         let activeFunctions = inheritMissingFunctionLevels(parsedFunctions).filter(f => f.selected !== false);
@@ -1899,6 +1993,9 @@ function App({ user, token, onLogout }) {
             functionCount: activeFunctions.length
         });
         const batchConcurrency = splitProfile.concurrency;
+        // 稳健模式逐功能提交，缩短单个后台任务；快速模式仍保留每批2个。
+        const cosmicBatchSize = batchConcurrency > 1 ? 2 : 1;
+        const splitRunId = createCosmicRunId('full-split');
         const executionModeLabel = splitProfile.autoStabilized
             ? '大文档自动稳健模式（串行）'
             : batchConcurrency > 1
@@ -1926,8 +2023,8 @@ function App({ user, token, onLogout }) {
         // 将功能过程分批
         const totalFunctions = activeFunctions.length;
         const batches = [];
-        for (let i = 0; i < totalFunctions; i += COSMIC_BATCH_SIZE) {
-            const batchFuncs = activeFunctions.slice(i, i + COSMIC_BATCH_SIZE);
+        for (let i = 0; i < totalFunctions; i += cosmicBatchSize) {
+            const batchFuncs = activeFunctions.slice(i, i + cosmicBatchSize);
             // 将每个功能过程转为文本格式
             const batchTexts = batchFuncs.map(f =>
                 `##触发事件：${f.triggerEvent || '用户触发'}\n##功能用户：${f.functionalUser || '发起者：用户 接收者：用户'}\n##功能过程：${f.functionName}\n##功能过程描述：${f.description || ''}`
@@ -1948,7 +2045,7 @@ function App({ user, token, onLogout }) {
         });
         setMessages(prev => [...prev, {
             role: 'system',
-            content: `**阶段2：COSMIC分段拆分**\n共 **${totalFunctions}** 个功能过程，分为 **${totalBatches}** 个批次（每批 ${COSMIC_BATCH_SIZE} 个），正在使用 **${executionModeLabel}** 拆分...\n\n*每个批次携带原始序号，返回后仍按功能清单的提交顺序汇总；已完成批次会即时保留。*`
+            content: `**阶段2：COSMIC后台分段拆分**\n共 **${totalFunctions}** 个功能过程，分为 **${totalBatches}** 个批次（每批 ${cosmicBatchSize} 个），正在使用 **${executionModeLabel}** 拆分...\n\n*每批先提交为后台任务，再通过短请求查询状态；临时 502 或页面连接抖动不会重复启动该批次。已完成批次会即时保留。*`
         }]);
 
         let allTableData = [];
@@ -1985,6 +2082,18 @@ function App({ user, token, onLogout }) {
             };
         };
 
+        const reportBatchJobStatus = (batchIndex) => (job) => {
+            const message = job?.progress?.message || job?.message;
+            if (!message) return;
+            updateAnalysisProgress({
+                phase: 'Background batch processing',
+                current: completedBatches,
+                total: totalBatches,
+                detail: `Batch ${batchIndex + 1}: ${message}`,
+                stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
+            });
+        };
+
         const runCosmicBatch = async (bi, previousResultsSnapshot) => {
             const batch = batches[bi];
             const startedAt = Date.now();
@@ -1992,19 +2101,23 @@ function App({ user, token, onLogout }) {
             const { headingContext, functionLevelMap } = buildBatchContext(batch);
 
             try {
-                const res = await axios.post('/api/cosmic-split-batch', {
+                const res = await requestCosmicSplitBatch({
                     batchFunctions: batch.texts,
                     batchIndex: bi,
                     totalBatches,
                     documentContent: documentContent.substring(0, 6000),
                     userGuidelines,
-                    previousResults: previousResultsSnapshot,
+                    previousFunctionNames: completedFunctionNames(previousResultsSnapshot),
                     userConfig: getUserConfig(),
                     headingContext,
                     functionLevelMap,
                     generateDescription,
                     useEnhancedExperience: useEnhancedCosmicExperience
-                }, { signal });
+                }, {
+                    signal,
+                    requestKey: `${splitRunId}:batch-${bi}`,
+                    onStatus: reportBatchJobStatus(bi)
+                });
 
                 return {
                     ok: true,
@@ -2069,19 +2182,23 @@ function App({ user, token, onLogout }) {
                                 }
                             }
                         });
-                        const res = await axios.post('/api/cosmic-split-batch', {
+                        const res = await requestCosmicSplitBatch({
                             batchFunctions: batch.texts,
                             batchIndex: bi,
                             totalBatches,
                             documentContent: documentContent.substring(0, 6000),
                             userGuidelines,
-                            previousResults: allTableData,
+                            previousFunctionNames: completedFunctionNames(allTableData),
                             userConfig: getUserConfig(),
                             headingContext: batchHeadingCtx,
                             functionLevelMap: Object.keys(batchFunctionLevelMap).length > 0 ? batchFunctionLevelMap : null,
                             generateDescription,
                             useEnhancedExperience: useEnhancedCosmicExperience
-                        }, { signal });
+                        }, {
+                            signal,
+                            requestKey: `${splitRunId}:batch-${bi}`,
+                            onStatus: reportBatchJobStatus(bi)
+                        });
 
                         if (res.data.success) {
                             const newData = res.data.tableData || [];
@@ -2119,6 +2236,7 @@ function App({ user, token, onLogout }) {
                             functions: batch.functions,  // 保存完整的功能过程数据
                             texts: batch.texts            // 保存拆分用文本
                         });
+                        setFailedBatchInfo([...failedBatches]);
                         updateAnalysisProgress({
                             phase: 'Batch skipped',
                             percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
@@ -2128,27 +2246,21 @@ function App({ user, token, onLogout }) {
                             stats: `${failedBatches.length} failed, ${allTableData.length} CFP`
                         });
 
-                        // 如果已有部分数据，继续下一批（容错）
-                        if (allTableData.length > 0) {
-                            setMessages(prev => {
-                                const filtered = prev.filter(m => !m.content.startsWith('**批次'));
-                                return [...filtered, {
-                                    role: 'system',
-                                    content: `**批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已跳过该批次，继续处理剩余批次...`
-                                }];
+                        setMessages(prev => {
+                            const filtered = prev.filter(m => !m.content.startsWith('**批次'));
+                            return [...filtered, {
+                                role: 'system',
+                                content: `**批次 ${bi + 1} 失败**: ${batchErrMsg}\n\n已记录该批次，继续处理剩余批次...`
+                            }];
+                        });
+                        // 第一批失败也继续，确保所有批次都会执行或进入可重试清单。
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const t = setTimeout(resolve, 8000);
+                                signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                             });
-                            // 失败后等更久再尝试下一批
-                            try {
-                                await new Promise((resolve, reject) => {
-                                    const t = setTimeout(resolve, 8000);
-                                    signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
-                                });
-                            } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
-                            continue;
-                        } else {
-                            // 第一批就失败，抛出
-                            throw batchError;
-                        }
+                        } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
+                        continue;
                     }
 
                     // 批次间等待，避免限流（DeepSeek平台限流严格，需要较长间隔）
@@ -2228,6 +2340,7 @@ function App({ user, token, onLogout }) {
                                 functions: result.batch.functions,
                                 texts: result.batch.texts
                             });
+                            setFailedBatchInfo([...failedBatches]);
                             updateAnalysisProgress({
                                 phase: 'Batch skipped',
                                 percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
@@ -2263,8 +2376,27 @@ function App({ user, token, onLogout }) {
 
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
             const missingSplitFunctions = findMissingSplitFunctions(activeFunctions, allTableData);
+            if (missingSplitFunctions.length > 0) {
+                const missingKeys = new Set(missingSplitFunctions.map(f => normalizeProcName(f.functionName)));
+                batches.forEach((batch, index) => {
+                    if (failedBatches.some(item => item.index === index)) return;
+                    const containsMissing = batch.functions.some(f => missingKeys.has(normalizeProcName(f.functionName)));
+                    if (!containsMissing) return;
+                    failedBatches.push({
+                        index,
+                        names: batch.functions.map(f => f.functionName).join('、'),
+                        error: '结果完整性检查发现该批次仍有功能过程未拆分',
+                        functions: batch.functions,
+                        texts: batch.texts
+                    });
+                });
+            }
+            const effectiveCompletedBatches = Math.max(
+                0,
+                totalBatches - new Set(failedBatches.map(item => item.index)).size
+            );
             let summaryContent = `**COSMIC分段拆分完成**\n\n`;
-            summaryContent += `共 **${totalBatches}** 个批次，成功 **${completedBatches}** 个`;
+            summaryContent += `共 **${totalBatches}** 个批次，成功 **${effectiveCompletedBatches}** 个`;
             if (failedBatches.length > 0) {
                 summaryContent += `，失败 **${failedBatches.length}** 个`;
             }
@@ -2302,7 +2434,7 @@ function App({ user, token, onLogout }) {
                 status: failedBatches.length > 0 || missingSplitFunctions.length > 0 ? 'waiting' : 'done',
                 phase: failedBatches.length > 0 || missingSplitFunctions.length > 0 ? 'Partial completion' : 'Completed',
                 percent: 100,
-                current: completedBatches,
+                current: effectiveCompletedBatches,
                 total: totalBatches,
                 detail: failedBatches.length > 0
                     ? 'Some batches failed. You can retry failed batches.'
@@ -2332,6 +2464,11 @@ function App({ user, token, onLogout }) {
                 setMessages(prev => [...prev, { role: 'assistant', content: `❌ COSMIC拆分失败: ${error.response?.data?.error || error.message}` }]);
             }
             setCurrentStep(0);
+            updateAnalysisProgress({
+                status: 'error',
+                phase: 'Split failed',
+                detail: error.response?.data?.error || error.message || 'COSMIC拆分失败'
+            });
         } finally {
             setIsLoading(false);
         }
@@ -2344,20 +2481,55 @@ function App({ user, token, onLogout }) {
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
         const signal = abortControllerRef.current.signal;
+        const retryRunId = createCosmicRunId('retry-split');
 
         setIsLoading(true);
         setCurrentStep(4);
+        updateAnalysisProgress({
+            status: 'running',
+            title: 'COSMIC split retry',
+            phase: 'Retrying failed batches',
+            percent: 70,
+            current: 0,
+            total: failedBatchInfo.length,
+            detail: '正在将失败批次重新提交为后台任务。'
+        });
 
-        // 收集所有失败批次里的功能过程
-        const retryBatches = failedBatchInfo.map((fb, idx) => ({
-            functions: fb.functions,
-            texts: fb.texts,
-            originalIndex: fb.index,
-            names: fb.names
-        }));
+        // 只重试当前仍缺失的功能，避免“同批另一个功能已成功”时重复追加CFP。
+        const completedKeysBeforeRetry = new Set(
+            tableData
+                .filter(row => row.dataMovementType === 'E' && row.functionalProcess)
+                .map(row => normalizeProcName(row.functionalProcess))
+        );
+        const retryBatches = failedBatchInfo.map(fb => {
+            const pendingIndexes = (fb.functions || [])
+                .map((func, index) => ({ func, text: fb.texts?.[index] || '' }))
+                .filter(({ func }) => !completedKeysBeforeRetry.has(normalizeProcName(func.functionName)));
+            return {
+                functions: pendingIndexes.map(item => item.func),
+                texts: pendingIndexes.map(item => item.text),
+                originalIndex: fb.index,
+                names: pendingIndexes.map(item => item.func.functionName).join('、')
+            };
+        }).filter(batch => batch.functions.length > 0);
 
         const totalRetry = retryBatches.length;
         const totalFuncCount = retryBatches.reduce((s, b) => s + b.functions.length, 0);
+
+        if (totalRetry === 0) {
+            setFailedBatchInfo([]);
+            setIsLoading(false);
+            setCurrentStep(0);
+            updateAnalysisProgress({
+                status: 'done',
+                phase: 'Retry completed',
+                percent: 100,
+                current: 0,
+                total: 0,
+                detail: '之前标记失败的功能过程已经存在，无需重复拆分。'
+            });
+            return;
+        }
 
         setMessages(prev => [...prev, {
             role: 'system',
@@ -2397,19 +2569,26 @@ function App({ user, token, onLogout }) {
                             }
                         }
                     });
-                    const res = await axios.post('/api/cosmic-split-batch', {
+                    const res = await requestCosmicSplitBatch({
                         batchFunctions: batch.texts,
                         batchIndex: batch.originalIndex,
                         totalBatches: totalRetry,
                         documentContent: documentContent.substring(0, 6000),
                         userGuidelines,
-                        previousResults: allTableData,
+                        previousFunctionNames: completedFunctionNames(allTableData),
                         userConfig: getUserConfig(),
                         headingContext: retryHeadingCtx,
                         functionLevelMap: Object.keys(retryFunctionLevelMap).length > 0 ? retryFunctionLevelMap : null,
                         generateDescription,
                         useEnhancedExperience: useEnhancedCosmicExperience
-                    }, { signal });
+                    }, {
+                        signal,
+                        requestKey: `${retryRunId}:batch-${batch.originalIndex}`,
+                        onStatus: (job) => {
+                            const detail = job?.progress?.message || job?.message;
+                            if (detail) updateAnalysisProgress({ detail: `Retry batch ${ri + 1}: ${detail}` });
+                        }
+                    });
 
                     if (res.data.success) {
                         const newData = res.data.tableData || [];
@@ -2469,15 +2648,28 @@ function App({ user, token, onLogout }) {
                 }
             }
 
-            // 更新 failedBatchInfo
-            setFailedBatchInfo(stillFailed);
-
             // 汇总
             const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
-            const missingSplitFunctions = findMissingSplitFunctions(extractedFunctions, allTableData);
-            let summaryContent = completedRetry === totalRetry
+            const missingSplitFunctions = findMissingSplitFunctions(parsedFunctions, allTableData);
+            if (missingSplitFunctions.length > 0) {
+                const missingKeys = new Set(missingSplitFunctions.map(f => normalizeProcName(f.functionName)));
+                retryBatches.forEach(batch => {
+                    if (stillFailed.some(item => item.index === batch.originalIndex)) return;
+                    if (!batch.functions.some(f => missingKeys.has(normalizeProcName(f.functionName)))) return;
+                    stillFailed.push({
+                        index: batch.originalIndex,
+                        names: batch.names,
+                        error: '重试后完整性检查仍发现未拆分功能过程',
+                        functions: batch.functions,
+                        texts: batch.texts
+                    });
+                });
+            }
+            setFailedBatchInfo(stillFailed);
+            const successfulRetry = Math.max(0, totalRetry - new Set(stillFailed.map(item => item.index)).size);
+            let summaryContent = stillFailed.length === 0 && missingSplitFunctions.length === 0
                 ? `**失败批次全部重试成功**\n\n`
-                : `**失败批次重试完成**（${completedRetry}/${totalRetry} 成功）\n\n`;
+                : `**失败批次重试完成**（${successfulRetry}/${totalRetry} 成功）\n\n`;
             summaryContent += `当前合计：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP点数）`;
             summaryContent += `\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`;
             if (missingSplitFunctions.length > 0) {
@@ -2500,6 +2692,18 @@ function App({ user, token, onLogout }) {
                 }];
             });
             setCurrentStep(0);
+            updateAnalysisProgress({
+                status: stillFailed.length > 0 || missingSplitFunctions.length > 0 ? 'waiting' : 'done',
+                phase: stillFailed.length > 0 || missingSplitFunctions.length > 0 ? 'Retry partially completed' : 'Retry completed',
+                percent: 100,
+                current: successfulRetry,
+                total: totalRetry,
+                detail: stillFailed.length > 0
+                    ? '仍有批次失败，可再次重试。'
+                    : missingSplitFunctions.length > 0
+                        ? '仍有功能过程未拆分，请检查缺失清单。'
+                        : '全部失败批次已经补齐。'
+            });
         } catch (error) {
             if (error.name === 'AbortError' || error.name === 'CanceledError') return;
             setMessages(prev => [...prev, {
@@ -2507,6 +2711,11 @@ function App({ user, token, onLogout }) {
                 content: `❌ 重试失败: ${error.response?.data?.error || error.message}`
             }]);
             setCurrentStep(0);
+            updateAnalysisProgress({
+                status: 'error',
+                phase: 'Retry failed',
+                detail: error.response?.data?.error || error.message || '失败批次重试失败'
+            });
         } finally {
             setIsLoading(false);
         }
@@ -2519,10 +2728,20 @@ function App({ user, token, onLogout }) {
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
         const signal = abortControllerRef.current.signal;
+        const oneKeyRunId = createCosmicRunId('one-key');
 
         setIsLoading(true);
         setIsWaitingForAnalysis(false);
         setTableData([]);
+        updateAnalysisProgress({
+            status: 'running',
+            title: 'COSMIC one-key analysis',
+            phase: 'Document understanding',
+            percent: 5,
+            current: 0,
+            total: 15,
+            detail: '后台正在理解文档，页面连接中断后会自动恢复。'
+        });
 
         let allTableData = [];
         let round = 1;
@@ -2535,13 +2754,22 @@ function App({ user, token, onLogout }) {
 
             let understanding = null;
             try {
-                const understandRes = await axios.post('/api/understand-document', {
-                    documentContent,
-                    userConfig: getUserConfig()
-                }, { signal });
+                const understandRes = await runDocumentUnderstandingJob({
+                    httpClient: axios,
+                    payload: {
+                        documentContent,
+                        userConfig: getUserConfig()
+                    },
+                    requestKey: `${oneKeyRunId}:understand`,
+                    signal,
+                    onStatus: job => {
+                        const message = job?.progress?.message || job?.message;
+                        if (message) updateAnalysisProgress({ detail: message });
+                    }
+                });
 
-                if (understandRes.data.success) {
-                    understanding = understandRes.data.understanding;
+                if (understandRes.success) {
+                    understanding = understandRes.understanding;
                     const modules = understanding.coreModules || [];
                     const moduleSummary = modules.map((m, i) => {
                         const funcs = m.estimatedFunctions || [];
@@ -2566,6 +2794,7 @@ function App({ user, token, onLogout }) {
             }
 
             // 阶段2: 循环拆分
+            let completedNaturally = false;
             while (round <= maxRounds) {
                 if (signal.aborted) return;
                 const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
@@ -2579,34 +2808,58 @@ function App({ user, token, onLogout }) {
                             : `**第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / ${[...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程`
                     }];
                 });
+                updateAnalysisProgress({
+                    status: 'running',
+                    phase: `One-key split round ${round}`,
+                    percent: Math.min(92, 10 + Math.round((round / maxRounds) * 82)),
+                    current: round,
+                    total: maxRounds,
+                    detail: `第 ${round} 轮已在后台执行；网络短暂中断会自动续查。`,
+                    stats: `${uniqueFunctions.length} functions · ${allTableData.length} CFP`
+                });
 
-                const response = await axios.post('/api/continue-analyze', {
-                    documentContent,
-                    previousResults: allTableData,
-                    round,
-                    targetFunctions: minFunctionCount,
-                    understanding,
-                    userGuidelines,
-                    userConfig: getUserConfig(),
-                    coverageVerification: lastCoverage,
-                    extractionMode,
-                    useEnhancedExperience: useEnhancedCosmicExperience
-                }, { signal });
+                const response = await runContinueAnalysisJob({
+                    httpClient: axios,
+                    payload: {
+                        documentContent,
+                        previousFunctionNames: completedFunctionNames(allTableData),
+                        round,
+                        targetFunctions: minFunctionCount,
+                        understanding,
+                        userGuidelines,
+                        userConfig: getUserConfig(),
+                        coverageVerification: lastCoverage,
+                        extractionMode,
+                        useEnhancedExperience: useEnhancedCosmicExperience
+                    },
+                    requestKey: `${oneKeyRunId}:round-${round}`,
+                    signal,
+                    onStatus: job => {
+                        const message = job?.progress?.message || job?.message;
+                        if (message) updateAnalysisProgress({ detail: message });
+                    }
+                });
 
-                if (response.data.success) {
-                    try {
-                        const tableRes = await axios.post('/api/parse-table', { markdown: response.data.reply });
+                if (response.success) {
+                    const isDoneMarkerOnly = response.isDone && response.reply?.includes('[ALL_DONE]') && !response.reply?.includes('|');
+                    if (!isDoneMarkerOnly) {
+                        const tableRes = await axios.post('/api/parse-table', { markdown: response.reply }, { signal });
                         if (tableRes.data.success && tableRes.data.tableData.length > 0) {
                             const deduped = deduplicateData(allTableData, tableRes.data.tableData);
                             if (deduped.length > 0) {
                                 allTableData = orderCosmicTableData([...allTableData, ...deduped], parsedFunctions, moduleStructure);
                                 setTableData(allTableData);
                             }
+                        } else {
+                            throw new Error(`第 ${round} 轮结果无法解析为COSMIC表格，已停止以避免误报完成`);
                         }
-                    } catch (e) { /* parse error */ }
+                    }
 
-                    if (response.data.isDone) break;
-                    lastCoverage = response.data.coverageVerification || null;
+                    lastCoverage = response.coverageVerification || null;
+                    if (response.isDone) {
+                        completedNaturally = true;
+                        break;
+                    }
                 }
 
                 round++;
@@ -2626,13 +2879,27 @@ function App({ user, token, onLogout }) {
                 const filtered = prev.filter(m => !m.content.startsWith('**第 '));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `**分析完成**\n\n经过 **${round}** 轮分析：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
+                    content: `${completedNaturally ? '**分析完成**' : '**已达到15轮上限，当前结果已保留，请检查是否仍有遗漏**'}\n\n经过 **${Math.min(round, maxRounds)}** 轮分析：\n- **${uniqueFunctions.length}** 个功能过程\n- **${allTableData.length}** 个子过程（CFP）\n- E: ${allTableData.filter(r => r.dataMovementType === 'E').length} | R: ${allTableData.filter(r => r.dataMovementType === 'R').length} | W: ${allTableData.filter(r => r.dataMovementType === 'W').length} | X: ${allTableData.filter(r => r.dataMovementType === 'X').length}`,
                     showActions: true
                 }];
+            });
+            updateAnalysisProgress({
+                status: completedNaturally ? 'done' : 'waiting',
+                phase: completedNaturally ? 'One-key analysis completed' : 'Round limit reached',
+                percent: 100,
+                current: Math.min(round, maxRounds),
+                total: maxRounds,
+                detail: completedNaturally ? '一键拆分及覆盖检查已完成。' : '已保留当前结果；请检查后决定是否继续补充。',
+                stats: `${uniqueFunctions.length} functions · ${allTableData.length} CFP`
             });
         } catch (error) {
             if (error.name === 'AbortError' || error.name === 'CanceledError') return;
             setMessages(prev => [...prev, { role: 'assistant', content: `❌ 分析失败: ${error.response?.data?.error || error.message}` }]);
+            updateAnalysisProgress({
+                status: 'error',
+                phase: 'One-key analysis failed',
+                detail: error.response?.data?.error || error.message || '一键拆分失败'
+            });
         } finally {
             setIsLoading(false);
         }
@@ -2685,7 +2952,8 @@ function App({ user, token, onLogout }) {
         targets,
         nextFunctions,
         nextDocumentContent,
-        baseTableData
+        baseTableData,
+        signal = null
     }) => {
         const allTargets = Array.isArray(targets) ? targets : [];
         if (allTargets.length === 0) return baseTableData;
@@ -2697,6 +2965,7 @@ function App({ user, token, onLogout }) {
             .flatMap(group => group.rows);
         const regenerationTargets = allTargets.filter(target => target.type !== 'delete');
         const batchSize = 2;
+        const conversationRunId = createCosmicRunId('conversation-split');
 
         for (let start = 0; start < regenerationTargets.length; start += batchSize) {
             const batchTargets = regenerationTargets.slice(start, start + batchSize);
@@ -2728,18 +2997,25 @@ function App({ user, token, onLogout }) {
                 };
             });
             const firstLevels = functionLevelMap[batchFunctions[0]?.functionName] || null;
-            const response = await axios.post('/api/cosmic-split-batch', {
+            const response = await requestCosmicSplitBatch({
                 batchFunctions: batchTexts,
                 batchIndex: Math.floor(start / batchSize),
                 totalBatches: Math.ceil(regenerationTargets.length / batchSize),
                 documentContent: String(nextDocumentContent || '').slice(0, 6000),
                 userGuidelines,
-                previousResults: workingRows,
+                previousFunctionNames: completedFunctionNames(workingRows),
                 userConfig: getUserConfig(),
                 headingContext: firstLevels,
                 functionLevelMap,
                 generateDescription,
                 useEnhancedExperience: useEnhancedCosmicExperience
+            }, {
+                signal,
+                requestKey: `${conversationRunId}:batch-${Math.floor(start / batchSize)}`,
+                onStatus: job => {
+                    const message = job?.progress?.message || job?.message;
+                    if (message) setStreamingContent(`正在更新COSMIC表格：${message}`);
+                }
             });
             const generatedRows = response.data?.tableData || [];
             if (!response.data?.success || generatedRows.length === 0) {
@@ -2756,7 +3032,7 @@ function App({ user, token, onLogout }) {
         return orderCosmicTableData(workingRows, nextFunctions, moduleStructure);
     };
 
-    const applyConversationStateUpdate = async (action) => {
+    const applyConversationStateUpdate = async (action, { signal = null } = {}) => {
         const nextDocumentContent = typeof action.documentContent === 'string'
             ? action.documentContent
             : documentContent;
@@ -2768,10 +3044,6 @@ function App({ user, token, onLogout }) {
             }))
         );
 
-        setDocumentContent(nextDocumentContent);
-        setParsedFunctions(nextFunctions);
-        setFunctionListText(action.functionListText || functionsToText(nextFunctions));
-
         let nextTableData = tableData;
         if (Array.isArray(action.cosmicTargets) && action.cosmicTargets.length > 0) {
             setStreamingContent('正在调用原COSMIC拆分流程同步更新表格…');
@@ -2779,8 +3051,16 @@ function App({ user, token, onLogout }) {
                 targets: action.cosmicTargets,
                 nextFunctions,
                 nextDocumentContent,
-                baseTableData: tableData
+                baseTableData: tableData,
+                signal
             });
+        }
+
+        // COSMIC联动成功后一次性提交状态，取消/失败时不留下半更新工作区。
+        setDocumentContent(nextDocumentContent);
+        setParsedFunctions(nextFunctions);
+        setFunctionListText(action.functionListText || functionsToText(nextFunctions));
+        if (Array.isArray(action.cosmicTargets) && action.cosmicTargets.length > 0) {
             setTableData(nextTableData);
         }
 
@@ -2806,6 +3086,9 @@ function App({ user, token, onLogout }) {
         setIsLoading(true);
         setStreamingContent('');
         beginAiActivity();
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
 
         try {
             const response = await fetch('/api/chat/stream', {
@@ -2820,7 +3103,8 @@ function App({ user, token, onLogout }) {
                     tableData,
                     functionListText,
                     parsedFunctions
-                })
+                }),
+                signal
             });
             if (!response.ok) {
                 let errorMessage = `对话请求失败 (${response.status})`;
@@ -2884,7 +3168,7 @@ function App({ user, token, onLogout }) {
                         status: 'running'
                     });
                     try {
-                        const updateStats = await applyConversationStateUpdate(pendingAction);
+                        const updateStats = await applyConversationStateUpdate(pendingAction, { signal });
                         upsertAiActivity({
                             id: 'workspace-sync',
                             sequence: Number.MAX_SAFE_INTEGER - 1,
@@ -2899,6 +3183,12 @@ function App({ user, token, onLogout }) {
                             finalContent += '\n\n✅ 变更已写入当前系统状态，预览、表格和后续导出将使用更新后的内容。';
                         }
                     } catch (updateError) {
+                        if (
+                            signal.aborted
+                            || updateError.name === 'AbortError'
+                            || updateError.name === 'CanceledError'
+                            || updateError.code === 'ERR_CANCELED'
+                        ) throw updateError;
                         upsertAiActivity({
                             id: 'workspace-sync',
                             sequence: Number.MAX_SAFE_INTEGER - 1,
@@ -2922,6 +3212,10 @@ function App({ user, token, onLogout }) {
             }
             setStreamingContent('');
         } catch (error) {
+            if (signal.aborted || error.name === 'AbortError' || error.name === 'CanceledError') {
+                completeAiActivity('error', '已取消');
+                return;
+            }
             const failedActivity = completeAiActivity('error', error.message);
             setMessages(prev => [...prev, {
                 role: 'assistant',
@@ -2933,6 +3227,7 @@ function App({ user, token, onLogout }) {
                 }
             }]);
         } finally {
+            if (abortControllerRef.current?.signal === signal) abortControllerRef.current = null;
             setIsLoading(false);
             setStreamingContent('');
             hideAiActivity();
@@ -3168,8 +3463,15 @@ function App({ user, token, onLogout }) {
     const stopAnalysis = () => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
+            abortControllerRef.current = null;
             setIsLoading(false);
-            showToast('分析已停止');
+            setCurrentStep(failedBatchInfo.length > 0 ? 0 : (parsedFunctions.length > 0 ? 3 : 0));
+            updateAnalysisProgress({
+                status: 'canceled',
+                phase: 'Stopped',
+                detail: '已停止页面等待，并已请求取消当前后台任务。'
+            });
+            showToast('分析已停止，可重新开始或重试失败批次');
         }
     };
 
@@ -3644,6 +3946,10 @@ function App({ user, token, onLogout }) {
         }
 
         const existingFunctions = [...new Set(tableData.map(r => r.functionalProcess).filter(Boolean))];
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
+        const supplementaryRunId = createCosmicRunId('supplementary-split');
 
         setIsLoading(true);
         setMessages(prev => [...prev, {
@@ -3658,11 +3964,20 @@ function App({ user, token, onLogout }) {
                 existingFunctions,
                 missedFunctions: coverageResult.missedFunctions,
                 userConfig: getUserConfig()
-            });
+            }, { signal });
 
             if (extractRes.data.success && extractRes.data.functions && extractRes.data.functions.length > 0) {
-                const newFunctions = extractRes.data.functions;
-                const newFuncListText = extractRes.data.functionList;
+                const existingFunctionKeys = new Set(existingFunctions.map(normalizeProcName));
+                const newFunctions = deduplicateFunctionObjects(
+                    extractRes.data.functions.filter(func => (
+                        func?.functionName
+                        && !existingFunctionKeys.has(normalizeProcName(func.functionName))
+                    )),
+                    { semantic: extractionMode !== 'quantity' }
+                );
+                if (newFunctions.length === 0) {
+                    throw new Error('补充提取结果与已有功能重复，没有可新增的功能过程');
+                }
 
                 setMessages(prev => {
                     const filtered = prev.filter(m => !m.content.startsWith('**补充提取中'));
@@ -3672,27 +3987,78 @@ function App({ user, token, onLogout }) {
                     }];
                 });
 
-                // 第二步：对补充的功能进行COSMIC拆分
-                const splitRes = await axios.post('/api/cosmic-split', {
-                    functionList: newFuncListText,
-                    documentContent: documentContent.substring(0, 8000),
-                    userGuidelines,
-                    previousResults: tableData,
-                    batchIndex: 0,
-                    totalBatches: 1,
-                    userConfig: getUserConfig(),
-                    useEnhancedExperience: useEnhancedCosmicExperience
-                });
+                // 第二步：逐功能使用后台job拆分，避免补充入口重新落回长同步请求。
+                let supplementaryRows = [];
+                for (let index = 0; index < newFunctions.length; index++) {
+                    const func = newFunctions[index];
+                    const functionText = `##触发事件：${func.triggerEvent || '用户触发'}\n`
+                        + `##功能用户：${func.functionalUser || '发起者：用户 接收者：用户'}\n`
+                        + `##功能过程：${func.functionName}\n`
+                        + `##功能过程描述：${func.description || ''}`;
+                    const batchResult = await requestCosmicSplitBatch({
+                        batchFunctions: [functionText],
+                        batchIndex: index,
+                        totalBatches: newFunctions.length,
+                        documentContent: documentContent.substring(0, 6000),
+                        userGuidelines,
+                        previousFunctionNames: completedFunctionNames([...tableData, ...supplementaryRows]),
+                        userConfig: getUserConfig(),
+                        generateDescription,
+                        useEnhancedExperience: useEnhancedCosmicExperience
+                    }, {
+                        signal,
+                        requestKey: `${supplementaryRunId}:batch-${index}`,
+                        onStatus: job => {
+                            const detail = job?.progress?.message || job?.message;
+                            if (detail) {
+                                setMessages(prev => {
+                                    const filtered = prev.filter(m => !m.content.startsWith('补充拆分进度'));
+                                    return [...filtered, {
+                                        role: 'system',
+                                        content: `补充拆分进度 ${index + 1}/${newFunctions.length}：${detail}`
+                                    }];
+                                });
+                            }
+                        }
+                    });
+                    const batchRows = batchResult.data?.tableData || [];
+                    if (!batchResult.data?.success || batchRows.length === 0) {
+                        throw new Error(`补充功能“${func.functionName}”未返回有效拆分结果`);
+                    }
+                    const expectedNames = new Set([
+                        func.functionName.toLowerCase().trim(),
+                        normalizeProcName(func.functionName)
+                    ]);
+                    const dedupedBatch = deduplicateData([...tableData, ...supplementaryRows], batchRows, expectedNames);
+                    supplementaryRows = [...supplementaryRows, ...dedupedBatch];
+                }
+                const splitRes = { data: { success: true, tableData: supplementaryRows } };
 
                 if (splitRes.data.success && splitRes.data.tableData && splitRes.data.tableData.length > 0) {
                     const deduped = deduplicateData(tableData, splitRes.data.tableData);
                     if (deduped.length > 0) {
-                        const newTableData = orderCosmicTableData([...tableData, ...deduped], parsedFunctions, moduleStructure);
+                        const mergedFunctions = deduplicateFunctionObjects(
+                            inheritMissingFunctionLevels([
+                                ...parsedFunctions,
+                                ...newFunctions.map(func => ({
+                                    ...func,
+                                    id: func.id || generateId(),
+                                    selected: func.selected !== false
+                                }))
+                            ]),
+                            { semantic: extractionMode !== 'quantity' }
+                        );
+                        const newTableData = orderCosmicTableData([...tableData, ...deduped], mergedFunctions, moduleStructure);
                         setTableData(newTableData);
+                        setParsedFunctions(mergedFunctions);
+                        setFunctionListText(functionsToText(mergedFunctions));
 
                         const newTotalFuncs = [...new Set(newTableData.map(r => r.functionalProcess).filter(Boolean))].length;
                         setMessages(prev => {
-                            const filtered = prev.filter(m => !m.content.startsWith('补充提取到'));
+                            const filtered = prev.filter(m => (
+                                !m.content.startsWith('补充提取到')
+                                && !m.content.startsWith('补充拆分进度')
+                            ));
                             return [...filtered, {
                                 role: 'assistant',
                                 content: `**补充拆分完成**\n\n- 新增 **${deduped.filter(r => r.dataMovementType === 'E').length}** 个功能过程\n- 新增 **${deduped.length}** 个子过程（CFP）\n- 总计 **${newTotalFuncs}** 个功能过程 / **${newTableData.length}** CFP\n\n可继续点击 **「覆盖度验证」** 再次检查完整度。`,
@@ -3722,11 +4088,13 @@ function App({ user, token, onLogout }) {
                 });
             }
         } catch (error) {
+            if (signal.aborted || error.name === 'AbortError' || error.name === 'CanceledError') return;
             setMessages(prev => [...prev, {
                 role: 'assistant',
                 content: `❌ 补充提取失败: ${error.response?.data?.error || error.message}`
             }]);
         } finally {
+            if (abortControllerRef.current?.signal === signal) abortControllerRef.current = null;
             setIsLoading(false);
         }
     };

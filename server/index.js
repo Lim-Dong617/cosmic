@@ -68,6 +68,7 @@ const {
     createConversationPlan
 } = require('./conversation-orchestrator');
 const { registerOfficeDocumentRoutes } = require('./office-document-service');
+const { createAsyncJobManager, createHttpError } = require('./async-job-manager');
 
 
 const app = express();
@@ -512,6 +513,34 @@ function isCosmicProcessIncomplete(functionName, hasR, hasW, hasX, useEnhancedEx
     return (requirements.requireR && !hasR)
         || (requirements.requireW && !hasW)
         || (requirements.requireX && !hasX);
+}
+
+function findIncompleteCosmicProcesses(tableData = [], useEnhancedExperience = false) {
+    const incomplete = [];
+    let currentName = '';
+    let movements = new Set();
+    const finishCurrent = () => {
+        if (!currentName) return;
+        if (isCosmicProcessIncomplete(
+            currentName,
+            movements.has('R'),
+            movements.has('W'),
+            movements.has('X'),
+            useEnhancedExperience
+        )) incomplete.push(currentName);
+    };
+
+    for (const row of tableData) {
+        if (row?.dataMovementType === 'E' && row?.functionalProcess) {
+            finishCurrent();
+            currentName = row.functionalProcess;
+            movements = new Set(['E']);
+        } else if (currentName && row?.dataMovementType) {
+            movements.add(row.dataMovementType);
+        }
+    }
+    finishCurrent();
+    return [...new Set(incomplete)];
 }
 
 function getCosmicRepairPolicy(functionName, useEnhancedExperience = false) {
@@ -2297,7 +2326,16 @@ app.get('/api/health', (req, res) => {
         platform: '火山引擎',
         availableModels: Array.from(new Set(Object.values(MODEL_MAP))),
         aiRequestTimeoutMs: AI_REQUEST_TIMEOUT_MS,
-        aiConcurrency: getAIConcurrencyState()
+        aiConcurrency: getAIConcurrencyState(),
+        backgroundJobs: {
+            cosmicSplit: cosmicSplitJobManager.getStats(),
+            moduleRecognition: cosmicModuleRecognitionJobManager.getStats(),
+            functionExtraction: functionExtractionJobManager.getStats(),
+            documentUnderstanding: documentUnderstandingJobManager.getStats(),
+            continueAnalysis: continueAnalysisJobManager.getStats()
+        },
+        // 兼容已有健康检查消费者。
+        cosmicSplitJobs: cosmicSplitJobManager.getStats()
     });
 });
 
@@ -2686,11 +2724,11 @@ app.post('/api/parse-cosmic-excel', upload.single('file'), handleMulterError, as
 
 // ═══════════════════════ 文档理解 ═══════════════════════
 
-app.post('/api/understand-document', async (req, res) => {
+async function executeDocumentUnderstanding(requestPayload, { signal } = {}) {
     try {
-        const { documentContent, userConfig = null } = req.body;
+        const { documentContent, userConfig = null } = requestPayload || {};
         if (!documentContent) {
-            return res.status(400).json({ error: '缺少文档内容' });
+            throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
         }
 
         console.log('🔍 开始深度理解文档...');
@@ -2703,12 +2741,13 @@ app.post('/api/understand-document', async (req, res) => {
             ],
             model: modelName,
             temperature: 0.1,
-            max_tokens: 8000
+            max_tokens: 8000,
+            signal
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
-            return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
+            throw createHttpError('AI返回了空响应，请重试或切换模型', 502, 'EMPTY_AI_RESPONSE');
         }
         const reply = completion.choices[0].message.content;
 
@@ -2730,11 +2769,86 @@ app.post('/api/understand-document', async (req, res) => {
         }
 
         console.log('✅ 文档理解完成');
-        res.json({ success: true, understanding });
+        return { success: true, understanding };
     } catch (error) {
         console.error('文档理解失败:', error);
-        res.status(500).json({ error: '文档理解失败: ' + error.message });
+        if (!error.status || error.status >= 500) {
+            error.message = '文档理解失败: ' + error.message;
+        }
+        throw error;
     }
+}
+
+const documentUnderstandingJobManager = createAsyncJobManager({
+    name: 'document-understanding',
+    ttlMs: 2 * 60 * 60 * 1000,
+    maxJobs: 200,
+    maxConcurrent: 2,
+    jobTimeoutMs: 20 * 60 * 1000,
+    processor: (payload, updateProgress, signal) => {
+        updateProgress({ phase: 'understanding', message: '正在理解文档结构与业务内容' });
+        return executeDocumentUnderstanding(payload, { signal });
+    }
+});
+
+// 兼容旧客户端，并在浏览器断开时取消上游模型调用。
+app.post('/api/understand-document', async (req, res) => {
+    const controller = new AbortController();
+    const abortOnDisconnect = () => {
+        if (!res.writableEnded && !controller.signal.aborted) controller.abort();
+    };
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
+    try {
+        const result = await executeDocumentUnderstanding(req.body, { signal: controller.signal });
+        if (!res.destroyed) res.json(result);
+    } catch (error) {
+        if (controller.signal.aborted || res.destroyed) return;
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '文档理解失败', code: error.code || null });
+    } finally {
+        req.removeListener('aborted', abortOnDisconnect);
+        res.removeListener('close', abortOnDisconnect);
+    }
+});
+
+app.post('/api/understand-document-jobs', (req, res) => {
+    try {
+        const payload = req.body?.payload;
+        if (!payload?.documentContent) {
+            throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
+        }
+        const { job, deduplicated } = documentUnderstandingJobManager.submit(payload, {
+            requestKey: req.body?.requestKey
+        });
+        res.status(202).json({
+            success: true,
+            jobId: job.id,
+            status: job.status,
+            deduplicated,
+            statusUrl: `/api/understand-document-jobs/${job.id}`
+        });
+    } catch (error) {
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '无法创建文档理解任务', code: error.code || null });
+    }
+});
+
+app.get('/api/understand-document-jobs/:jobId', (req, res) => {
+    const job = documentUnderstandingJobManager.get(req.params.jobId);
+    if (!job) {
+        return res.status(404).json({
+            error: '文档理解任务不存在或服务已重启',
+            code: 'JOB_NOT_FOUND'
+        });
+    }
+    return res.json({ success: true, job });
+});
+
+app.delete('/api/understand-document-jobs/:jobId', (req, res) => {
+    const job = documentUnderstandingJobManager.cancel(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '任务不存在', code: 'JOB_NOT_FOUND' });
+    return res.json({ success: true, job });
 });
 
 // ═══════════════════════ 章节识别 ═══════════════════════
@@ -3189,7 +3303,7 @@ function normalizeModuleData(moduleData) {
     };
 }
 
-async function retryCompactModuleRecognition({ documentContent, modelName, methodLabel }) {
+async function retryCompactModuleRecognition({ documentContent, modelName, methodLabel, signal = null }) {
     const compactPrompt = `你是${methodLabel}需求模块识别专家。请从需求文档中识别“页面/面板/流程/业务域”级三级模块，输出紧凑 JSON。
 
 硬性规则：
@@ -3210,7 +3324,8 @@ JSON 格式：
         model: modelName,
         temperature: 0.05,
         max_tokens: 12000,
-        requestTimeoutMs: AI_MODULE_REQUEST_TIMEOUT_MS
+        requestTimeoutMs: AI_MODULE_REQUEST_TIMEOUT_MS,
+        signal
     }, AI_MODULE_MAX_ATTEMPTS);
 
     return parseModuleRecognitionContent(completion?.choices?.[0]?.message?.content);
@@ -3260,7 +3375,7 @@ function build5GPlanningFallbackModules(documentContent) {
     };
 }
 
-async function recoverModuleData({ moduleData, documentContent, modelName, methodLabel }) {
+async function recoverModuleData({ moduleData, documentContent, modelName, methodLabel, signal = null }) {
     let recovered = normalizeModuleData(moduleData);
     if (recovered.modules.length > 0 && recovered.modules.length <= 30) {
         return collapseOverDetailedModules(recovered);
@@ -3271,8 +3386,9 @@ async function recoverModuleData({ moduleData, documentContent, modelName, metho
             ? `过细(${recovered.modules.length}个)`
             : '为空';
         console.warn(`${methodLabel}模块识别${reason}，尝试紧凑重试...`);
-        recovered = normalizeModuleData(await retryCompactModuleRecognition({ documentContent, modelName, methodLabel }));
+        recovered = normalizeModuleData(await retryCompactModuleRecognition({ documentContent, modelName, methodLabel, signal }));
     } catch (retryErr) {
+        if (signal?.aborted || retryErr?.name === 'AbortError') throw retryErr;
         console.warn(`${methodLabel}模块紧凑重试失败:`, retryErr.message);
     }
     if (recovered.modules.length > 0 && recovered.modules.length <= 30) {
@@ -3544,20 +3660,20 @@ app.post('/api/split-chapters', (req, res) => {
 
 // ═══════════════════════ 功能过程提取（阶段1） ═══════════════════════
 
-app.post('/api/extract-functions', async (req, res) => {
+async function executeFunctionExtraction(requestPayload, { signal, onProgress = () => {} } = {}) {
     try {
-        const { documentContent, chapterName = '', userGuidelines = '', userConfig = null, extractionMode = 'precise', moduleStructure = null, quantityPlan = null, targetCount = 0 } = req.body;
+        const { documentContent, chapterName = '', userGuidelines = '', userConfig = null, extractionMode = 'precise', moduleStructure = null, quantityPlan = null, targetCount = 0 } = requestPayload || {};
         if (!documentContent) {
-            return res.status(400).json({ error: '缺少文档内容' });
+            throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
         }
         if (extractionMode === 'quantity' && (Number(targetCount) || 0) <= 0) {
-            return res.json({
+            return {
                 success: true,
                 functionList: '',
                 functions: [],
                 count: 0,
                 skipped: true
-            });
+            };
         }
 
         const chapterInfo = chapterName ? `【${chapterName}】章节的` : '';
@@ -3571,7 +3687,7 @@ app.post('/api/extract-functions', async (req, res) => {
 
         // 构建理解上下文（如果有文档理解结果）
         let understandingHint = '';
-        const understanding = req.body.understanding || null;
+        const understanding = requestPayload.understanding || null;
         if (understanding) {
             const parts = [];
 
@@ -3709,6 +3825,7 @@ app.post('/api/extract-functions', async (req, res) => {
             userPrompt += `\n\n【V4 Flash 专用校准】\n- 你必须优先避免重复和过细拆分。\n- 同一业务对象的配置、新增、修改、删除、查看列表，如果业务目的相同，应合并为一个维护/配置/查询功能过程。\n- 不要为了达到数量目标而重复输出近似功能过程；功能过程名称必须唯一。\n- 合并重复项后必须从原文中按其他真实业务对象、触发事件、接口方向、状态变化或统计维度补位，最终数量仍须精确等于目标。`;
         }
 
+        onProgress({ phase: 'extracting', message: `正在提取${chapterName ? `“${chapterName}”` : '当前章节'}的功能过程` });
         const completion = await callAIWithRetry({
             messages: [
                 { role: 'system', content: activePrompt },
@@ -3716,12 +3833,13 @@ app.post('/api/extract-functions', async (req, res) => {
             ],
             model: modelName,
             temperature: extractionMode === 'quantity' ? 0 : 0.3,
-            max_tokens: 16000
+            max_tokens: 16000,
+            signal
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
-            return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
+            throw createHttpError('AI返回了空响应，请重试或切换模型', 502, 'EMPTY_AI_RESPONSE');
         }
         let reply = completion.choices[0].message.content;
         const extractedFunctions = extractFunctionsFromText(reply);
@@ -3753,6 +3871,10 @@ app.post('/api/extract-functions', async (req, res) => {
             while (functions.length < requestedTarget && supplementAttempts < 2) {
                 supplementAttempts++;
                 const missingCount = requestedTarget - functions.length;
+                onProgress({
+                    phase: 'supplementing',
+                    message: `功能数量不足，正在补充第 ${supplementAttempts} 轮（还差 ${missingCount} 个）`
+                });
                 const existingNames = functions.map(func => func.functionName);
                 const supplementPrompt = `请为以下章节补充恰好 ${missingCount} 个新的COSMIC功能过程，使最终总数达到 ${requestedTarget} 个。
 
@@ -3777,7 +3899,8 @@ ${existingNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}
                         ],
                         model: modelName,
                         temperature: 0,
-                        max_tokens: Math.min(12000, Math.max(3000, missingCount * 700))
+                        max_tokens: Math.min(12000, Math.max(3000, missingCount * 700)),
+                        signal
                     });
                     const supplementReply = supplementCompletion?.choices?.[0]?.message?.content || '';
                     const supplemental = qualifyFunctionNames(
@@ -3792,6 +3915,7 @@ ${existingNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}
                     console.log(`🧩 数量补位第 ${supplementAttempts} 轮: 新增 ${functions.length - beforeMerge} 个，当前 ${functions.length}/${requestedTarget}`);
                     if (functions.length === beforeMerge) break;
                 } catch (supplementError) {
+                    if (signal?.aborted || supplementError?.name === 'AbortError') throw supplementError;
                     console.warn(`⚠️ 数量补位第 ${supplementAttempts} 轮失败: ${supplementError.message}`);
                     break;
                 }
@@ -3813,17 +3937,88 @@ ${existingNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}
         };
 
         console.log(`✅ 提取到 ${functions.length} 个功能过程`);
-        res.json({
+        onProgress({ phase: 'finalizing', message: `已提取 ${functions.length} 个功能过程` });
+        return {
             success: true,
             functionList: reply,
             functions,
             count: functions.length,
             countDiagnostics
-        });
+        };
     } catch (error) {
         console.error('功能过程提取失败:', error);
-        res.status(500).json({ error: '功能过程提取失败: ' + error.message });
+        if (!error.status || error.status >= 500) {
+            error.message = '功能过程提取失败: ' + error.message;
+        }
+        throw error;
     }
+}
+
+const functionExtractionJobManager = createAsyncJobManager({
+    name: 'function-extraction',
+    ttlMs: 2 * 60 * 60 * 1000,
+    maxJobs: 400,
+    maxConcurrent: 2,
+    jobTimeoutMs: 35 * 60 * 1000,
+    processor: (payload, updateProgress, signal) => executeFunctionExtraction(payload, {
+        signal,
+        onProgress: updateProgress
+    })
+});
+
+// 兼容旧客户端；断开同步请求时取消上游模型调用。
+app.post('/api/extract-functions', async (req, res) => {
+    const controller = new AbortController();
+    const abortOnDisconnect = () => {
+        if (!res.writableEnded && !controller.signal.aborted) controller.abort();
+    };
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
+    try {
+        const result = await executeFunctionExtraction(req.body, { signal: controller.signal });
+        if (!res.destroyed) res.json(result);
+    } catch (error) {
+        if (controller.signal.aborted || res.destroyed) return;
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '功能过程提取失败', code: error.code || null });
+    } finally {
+        req.removeListener('aborted', abortOnDisconnect);
+        res.removeListener('close', abortOnDisconnect);
+    }
+});
+
+app.post('/api/extract-functions-jobs', (req, res) => {
+    try {
+        const payload = req.body?.payload;
+        if (!payload?.documentContent) {
+            throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
+        }
+        const { job, deduplicated } = functionExtractionJobManager.submit(payload, {
+            requestKey: req.body?.requestKey
+        });
+        res.status(202).json({
+            success: true,
+            jobId: job.id,
+            status: job.status,
+            deduplicated,
+            statusUrl: `/api/extract-functions-jobs/${job.id}`
+        });
+    } catch (error) {
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '无法创建功能提取任务', code: error.code || null });
+    }
+});
+
+app.get('/api/extract-functions-jobs/:jobId', (req, res) => {
+    const job = functionExtractionJobManager.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '功能提取任务不存在或服务已重启', code: 'JOB_NOT_FOUND' });
+    return res.json({ success: true, job });
+});
+
+app.delete('/api/extract-functions-jobs/:jobId', (req, res) => {
+    const job = functionExtractionJobManager.cancel(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '任务不存在', code: 'JOB_NOT_FOUND' });
+    return res.json({ success: true, job });
 });
 
 // ═══════════════════════ COSMIC拆分（阶段2） ═══════════════════════
@@ -3842,11 +4037,12 @@ app.post('/api/cosmic-split', async (req, res) => {
         const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
         const activeSplitPrompt = getCosmicSplitPrompt(modelName, requestedModel, { useEnhancedExperience });
         const completenessRule = getCosmicCompletenessRule(useEnhancedExperience);
+        const completedFunctions = [...new Set(previousResults.map(r => r?.functionalProcess).filter(Boolean))];
+        const completedFunctionKeys = new Set(completedFunctions.map(normalizeProcessName));
 
         // 构建已完成的提示
         let userPrompt = '';
         if (previousResults.length > 0) {
-            const completedFunctions = [...new Set(previousResults.map(r => r.functionalProcess).filter(Boolean))];
             userPrompt = `请对以下功能过程列表中【尚未拆分】的功能进行COSMIC拆分。
 
 ## 功能过程列表
@@ -3890,7 +4086,7 @@ ${completenessRule}
 
         // V3.2 截断检测与自动续传
         const finishReason = completion.choices[0].finish_reason;
-        if (finishReason === 'length') {
+        if (['length', 'max_tokens'].includes(finishReason)) {
             console.warn('⚠️ COSMIC拆分输出被截断，尝试续传...');
             try {
                 const continueCompletion = await callAIWithRetry({
@@ -3914,7 +4110,9 @@ ${completenessRule}
         }
 
         // 从functionList中提取标准功能过程名作为对齐参考
-        const refFunctions = extractFunctionsFromText(functionList);
+        const refFunctions = extractFunctionsFromText(functionList).filter(func => (
+            !completedFunctionKeys.has(normalizeProcessName(func.functionName))
+        ));
         const refNames = refFunctions.map(f => f.functionName).filter(Boolean);
         // 解析表格数据（含名称对齐 + 按功能过程独立层级注入）
         // 所有模型都优先按输入顺序对齐。E行数量不一致时，alignProcessNamesByOrder
@@ -4110,7 +4308,14 @@ ${completenessRule}
 
 // ═══════════════════════ COSMIC分段拆分（批次模式） ═══════════════════════
 
-app.post('/api/cosmic-split-batch', async (req, res) => {
+function isAbortError(error) {
+    return error?.name === 'AbortError'
+        || error?.code === 'ABORT_ERR'
+        || error?.code === 'ERR_CANCELED';
+}
+
+async function executeCosmicSplitBatch(payload, { signal = null, onProgress = () => {} } = {}) {
+    const requestPayload = payload || {};
     try {
         const {
             batchFunctions = [],       // 本批次要拆分的功能过程文本列表
@@ -4119,18 +4324,25 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
             documentContent = '',      // 参考文档
             userGuidelines = '',       // 用户特殊要求
             previousResults = [],      // 之前批次已完成的结果（用于避免重复）
+            previousFunctionNames = [], // 新版只传过程名，避免累计表格随批次不断膨胀
             userConfig = null,
             headingContext = null,     // 当前章节的层级上下文 {level1, level2, level3}（兼容旧版）
             functionLevelMap = null,   // 每个功能过程独立的层级映射 {funcName: {level1, level2, level3}}
             generateDescription = true, // 是否生成功能描述
             useEnhancedExperience = false // 是否使用COSMIC拆分经验增强版
-        } = req.body;
+        } = requestPayload;
 
         if (!batchFunctions || batchFunctions.length === 0) {
-            return res.status(400).json({ error: '缺少本批次的功能过程列表' });
+            throw createHttpError('缺少本批次的功能过程列表', 400, 'EMPTY_BATCH');
         }
 
         console.log(`🔄 COSMIC分段拆分 (批次 ${batchIndex + 1}/${totalBatches}): ${batchFunctions.length} 个功能过程...${generateDescription ? ' [含功能描述]' : ' [不含功能描述]'}${useEnhancedExperience ? ' [经验增强版]' : ''}`);
+        onProgress({
+            phase: 'generating',
+            message: `正在生成批次 ${batchIndex + 1}/${totalBatches}`,
+            batchIndex,
+            totalBatches
+        });
         const modelName = getModelName(userConfig);
         const requestedModel = userConfig?.model || null;
         const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
@@ -4138,6 +4350,10 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
             ? buildSensenovaV4CosmicSplitPrompt(generateDescription, useEnhancedExperience)
             : buildCosmicSplitPrompt(generateDescription, useEnhancedExperience);
         const completenessRule = getCosmicCompletenessRule(useEnhancedExperience);
+        const callBatchAI = (options, maxAttempts) => callAIWithRetry({
+            ...options,
+            signal
+        }, maxAttempts);
 
         // 将本批次功能过程组成文本
         const batchFunctionText = batchFunctions.join('\n\n');
@@ -4156,13 +4372,14 @@ app.post('/api/cosmic-split-batch', async (req, res) => {
 ${batchFunctionText}`;
 
         // 如果有之前批次的结果，作为"背景参考"提示，不再作为禁止条件
-        if (previousResults.length > 0) {
-            const completedFunctions = [...new Set(previousResults.map(r => r.functionalProcess).filter(Boolean))];
-            if (completedFunctions.length > 0) {
-                userPrompt += `\n\n## 背景参考（仅供避免完全相同子过程描述，不影响本批次输出）
+        const completedFunctions = [...new Set([
+            ...previousFunctionNames,
+            ...previousResults.map(r => r?.functionalProcess)
+        ].filter(Boolean))];
+        if (completedFunctions.length > 0) {
+            userPrompt += `\n\n## 背景参考（仅供避免完全相同子过程描述，不影响本批次输出）
 以下功能过程在之前批次已拆分，它们的子过程描述名称请避免重复，但**不代表本批次功能过程可以跳过**：
 ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${completedFunctions.length > 25 ? `\n...（共${completedFunctions.length}个）` : ''}`;
-            }
         }
 
         if (documentContent) {
@@ -4187,28 +4404,31 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
         userPrompt += `\n- 只输出Markdown表格，不要其他说明`;
 
-        const completion = await callAIWithRetry({
+        const primaryMaxTokens = Math.min(16000, Math.max(8000, batchFunctions.length * 6000));
+        const continuationMaxTokens = Math.min(8000, Math.max(4000, batchFunctions.length * 3500));
+        const completion = await callBatchAI({
             messages: [
                 { role: 'system', content: activeSplitPrompt },
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
             temperature: 0.3,
-            max_tokens: 32000
+            max_tokens: primaryMaxTokens
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
-            return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
+            throw createHttpError('AI返回了空响应，请重试或切换模型', 502, 'EMPTY_AI_RESPONSE');
         }
         let reply = completion.choices[0].message.content;
 
         // V3.2 截断检测与自动续传
         const finishReason = completion.choices[0].finish_reason;
-        if (finishReason === 'length') {
+        if (['length', 'max_tokens'].includes(finishReason)) {
             console.warn(`⚠️ 批次 ${batchIndex + 1} 输出被截断，尝试续传...`);
+            onProgress({ phase: 'continuing', message: '首轮输出被截断，正在自动续传' });
             try {
-                const continueCompletion = await callAIWithRetry({
+                const continueCompletion = await callBatchAI({
                     messages: [
                         { role: 'system', content: activeSplitPrompt },
                         { role: 'user', content: userPrompt },
@@ -4217,13 +4437,14 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                     ],
                     model: modelName,
                     temperature: 0.3,
-                    max_tokens: 16000
+                    max_tokens: continuationMaxTokens
                 });
                 if (continueCompletion?.choices?.[0]?.message?.content) {
                     reply += '\n' + continueCompletion.choices[0].message.content;
                     console.log(`✅ 批次 ${batchIndex + 1} 续传成功`);
                 }
             } catch (continueErr) {
+                if (isAbortError(continueErr)) throw continueErr;
                 console.warn('⚠️ 续传失败，使用已有内容:', continueErr.message);
             }
         }
@@ -4258,13 +4479,18 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
         if (incompleteFuncs.length > 0) {
             console.warn(`⚠️ 批次 ${batchIndex + 1}: 检测到 ${incompleteFuncs.length} 个功能过程缺少必要数据移动，逐个JSON补拆中...`);
+            onProgress({
+                phase: 'repairing',
+                message: `正在补齐 ${incompleteFuncs.length} 个不完整功能过程`,
+                repairCount: incompleteFuncs.length
+            });
             
             for (const funcName of incompleteFuncs) {
                 try {
                     // 使用JSON格式输出，彻底绕过Markdown表格解析问题
                     const { prompt: singleRepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
-                    const singleRepair = await callAIWithRetry({
+                    const singleRepair = await callBatchAI({
                         messages: [
                             { role: 'user', content: singleRepairPrompt }
                         ],
@@ -4332,6 +4558,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                         }
                     }
                 } catch (singleErr) {
+                    if (isAbortError(singleErr)) throw singleErr;
                     console.warn(`  ⚠️ "${funcName}" 补拆失败: ${singleErr.message}`);
                 }
             }
@@ -4349,6 +4576,11 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
 
             if (skippedProcesses.length > 0) {
                 console.warn(`⚠️ 数量守恒检测 (批次${batchIndex + 1}): 模型跳过了 ${skippedProcesses.length} 个功能过程，自动补拆: ${skippedProcesses.join('、')}`);
+                onProgress({
+                    phase: 'recovering-missing',
+                    message: `正在补拆 ${skippedProcesses.length} 个遗漏功能过程`,
+                    missingCount: skippedProcesses.length
+                });
 
                 // 从batchFunctions文本中解析每个功能过程的触发事件和功能用户
                 const batchFuncInfoMap = {};
@@ -4368,7 +4600,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                     try {
                         const { prompt: missingRepairPrompt, policy: repairPolicy } = buildCosmicRepairPrompt(funcName, useEnhancedExperience);
 
-                        const missingRepair = await callAIWithRetry({
+                        const missingRepair = await callBatchAI({
                             messages: [{ role: 'user', content: missingRepairPrompt }],
                             model: modelName,
                             temperature: 0.3,
@@ -4406,6 +4638,7 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                             }
                         }
                     } catch (err) {
+                        if (isAbortError(err)) throw err;
                         console.warn(`  ⚠️ 补拆 "${funcName}" 失败: ${err.message}`);
                     }
                 }
@@ -4419,9 +4652,18 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
             throw new Error(`COSMIC分段拆分缺少功能过程：${processReconciliation.missing.join('、')}`);
         }
         tableData = processReconciliation.tableData;
+        const remainingIncomplete = findIncompleteCosmicProcesses(tableData, useEnhancedExperience);
+        if (remainingIncomplete.length > 0) {
+            throw createHttpError(
+                `COSMIC分段拆分仍缺少必要数据移动：${remainingIncomplete.join('、')}`,
+                502,
+                'INCOMPLETE_COSMIC_PROCESS'
+            );
+        }
 
         console.log(`✅ 批次 ${batchIndex + 1}/${totalBatches} 完成: ${tableData.length} 条子过程` + (headingContext?.level1 ? `，层级: ${headingContext.level1}` : ''));
-        res.json({
+        onProgress({ phase: 'finalizing', message: '拆分完成，正在整理结果' });
+        return {
             success: true,
             reply,
             tableData,
@@ -4435,21 +4677,104 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
                 unexpectedProcessCount: processReconciliation.unexpectedProcessCount,
                 missingProcessNames: processReconciliation.missing
             }
+        };
+    } catch (error) {
+        const batchNumber = (requestPayload.batchIndex || 0) + 1;
+        console.error(`COSMIC分段拆分失败 (批次 ${batchNumber}):`, error.message);
+        if (!error.status || error.status >= 500) {
+            error.message = `COSMIC分段拆分失败 (批次 ${batchNumber}): ${error.message || '未知错误'}`;
+        }
+        throw error;
+    }
+}
+
+const cosmicSplitJobManager = createAsyncJobManager({
+    name: 'cosmic-split-batch',
+    ttlMs: 2 * 60 * 60 * 1000,
+    maxJobs: 500,
+    maxConcurrent: 2,
+    jobTimeoutMs: 40 * 60 * 1000,
+    processor: (payload, updateProgress, signal) => executeCosmicSplitBatch(payload, {
+        signal,
+        onProgress: updateProgress
+    })
+});
+
+// 兼容旧客户端的同步入口。连接一旦断开就取消上游流，避免僵尸请求继续占用 AI 并发槽。
+app.post('/api/cosmic-split-batch', async (req, res) => {
+    const controller = new AbortController();
+    const abortOnDisconnect = () => {
+        if (!res.writableEnded && !controller.signal.aborted) controller.abort();
+    };
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
+
+    try {
+        const result = await executeCosmicSplitBatch(req.body, { signal: controller.signal });
+        if (!res.destroyed) res.json(result);
+    } catch (error) {
+        if (controller.signal.aborted || res.destroyed) return;
+        const status = error.status >= 400 && error.status < 500 ? error.status : 500;
+        res.status(status).json({ error: error.message || 'COSMIC分段拆分失败' });
+    } finally {
+        req.removeListener('aborted', abortOnDisconnect);
+        res.removeListener('close', abortOnDisconnect);
+    }
+});
+
+// 新客户端只用短请求提交后台任务。requestKey 保证 POST 响应丢失后重试不会重复启动 AI。
+app.post('/api/cosmic-split-jobs', (req, res) => {
+    try {
+        const payload = req.body?.payload;
+        if (!payload || !Array.isArray(payload.batchFunctions) || payload.batchFunctions.length === 0) {
+            throw createHttpError('缺少本批次的功能过程列表', 400, 'EMPTY_BATCH');
+        }
+        const { job, deduplicated } = cosmicSplitJobManager.submit(payload, {
+            requestKey: req.body?.requestKey
+        });
+        res.status(202).json({
+            success: true,
+            jobId: job.id,
+            status: job.status,
+            deduplicated,
+            statusUrl: `/api/cosmic-split-jobs/${job.id}`
         });
     } catch (error) {
-        console.error(`COSMIC分段拆分失败 (批次 ${req.body.batchIndex + 1}):`, error.message);
-        const errMsg = error.message || '未知错误';
-        res.status(500).json({ error: `COSMIC分段拆分失败 (批次 ${(req.body.batchIndex || 0) + 1}): ` + errMsg });
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '无法创建COSMIC拆分任务' });
     }
+});
+
+app.get('/api/cosmic-split-jobs/:jobId', (req, res) => {
+    const job = cosmicSplitJobManager.get(req.params.jobId);
+    if (!job) {
+        return res.status(404).json({
+            error: '拆分任务不存在或服务已重启',
+            code: 'JOB_NOT_FOUND'
+        });
+    }
+    return res.json({ success: true, job });
+});
+
+app.delete('/api/cosmic-split-jobs/:jobId', (req, res) => {
+    const job = cosmicSplitJobManager.cancel(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '任务不存在', code: 'JOB_NOT_FOUND' });
+    return res.json({ success: true, job });
 });
 
 // ═══════════════════════ 循环分析（一键完成模式） ═══════════════════════
 
-app.post('/api/continue-analyze', async (req, res) => {
+async function executeContinueAnalysis(requestPayload, { signal, onProgress = () => {} } = {}) {
     try {
-        const { documentContent, previousResults = [], round = 1, targetFunctions = 30, understanding = null, userGuidelines = '', userConfig = null, coverageVerification: prevCoverage = null, extractionMode = 'precise', useEnhancedExperience = false } = req.body;
+        const { documentContent, previousResults = [], previousFunctionNames = [], round = 1, targetFunctions = 30, understanding = null, userGuidelines = '', userConfig = null, coverageVerification: prevCoverage = null, extractionMode = 'precise', useEnhancedExperience = false } = requestPayload || {};
 
-        const completedFunctions = [...new Set(previousResults.map(r => r.functionalProcess).filter(Boolean))];
+        if (!documentContent) {
+            throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
+        }
+        const completedFunctions = [...new Set([
+            ...previousFunctionNames,
+            ...previousResults.map(r => r.functionalProcess)
+        ].filter(Boolean))];
         const modelName = getModelName(userConfig);
         const isQuantityMode = extractionMode === 'quantity';
         const completenessRule = getCosmicCompletenessRule(useEnhancedExperience);
@@ -4571,6 +4896,7 @@ ${targetRequirement}
         }
 
         console.log(`📊 第 ${round} 轮分析，已完成 ${completedFunctions.length} 个功能过程...`);
+        onProgress({ phase: 'generating', message: `正在执行第 ${round} 轮一键拆分` });
         const activeSplitPrompt = getCosmicSplitPrompt(modelName, userConfig?.model || null, { useEnhancedExperience });
 
         const completion = await callAIWithRetry({
@@ -4580,18 +4906,20 @@ ${targetRequirement}
             ],
             model: modelName,
             temperature: 0.3,
-            max_tokens: 32000
+            max_tokens: 16000,
+            signal
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
-            return res.status(500).json({ error: 'AI返回了空响应，请重试或切换模型' });
+            throw createHttpError('AI返回了空响应，请重试或切换模型', 502, 'EMPTY_AI_RESPONSE');
         }
         let reply = completion.choices[0].message.content;
 
         // V3.2 截断检测与自动续传
-        if (completion.choices[0].finish_reason === 'length') {
+        if (['length', 'max_tokens'].includes(completion.choices[0].finish_reason)) {
             console.warn(`⚠️ 第 ${round} 轮输出被截断，尝试续传...`);
+            onProgress({ phase: 'continuing', message: `第 ${round} 轮输出较长，正在续写` });
             try {
                 const continueCompletion = await callAIWithRetry({
                     messages: [
@@ -4602,35 +4930,55 @@ ${targetRequirement}
                     ],
                     model: modelName,
                     temperature: 0.3,
-                    max_tokens: 16000
+                    max_tokens: 8000,
+                    signal
                 });
                 if (continueCompletion?.choices?.[0]?.message?.content) {
                     reply += '\n' + continueCompletion.choices[0].message.content;
                     console.log('✅ 续传成功');
                 }
             } catch (continueErr) {
+                if (signal?.aborted || continueErr?.name === 'AbortError') throw continueErr;
                 console.warn('⚠️ 续传失败:', continueErr.message);
             }
         }
 
         // 判断是否完成
-        let isDone = false;
-        if (reply.includes('[ALL_DONE]') || reply.includes('已完成') || reply.includes('全部拆分')) {
-            isDone = true;
-        }
+        let isDone = reply.includes('[ALL_DONE]');
         // V3.2 兼容：检测表格中是否有有效的 DMT 标记（E/R/W/X 及其变体）
         const hasValidTable = reply.includes('|') && (/\|\s*[ERWX]\s*\|/i.test(reply) || /\|\s*(Entry|Read|Write|Exit|输入|读|写|输出)\s*\|/i.test(reply));
-        if (!hasValidTable && round > 1) isDone = true;
+        if (!hasValidTable && !isDone) {
+            throw createHttpError(`第 ${round} 轮未返回有效的COSMIC表格`, 502, 'INVALID_COSMIC_TABLE');
+        }
+        if (isDone && !hasValidTable && completedFunctions.length === 0) {
+            throw createHttpError('模型在尚无任何拆分结果时提前返回完成标记', 502, 'EMPTY_ONE_KEY_RESULT');
+        }
+        if (hasValidTable) {
+            const currentRoundData = parseMarkdownTable(reply);
+            if (!currentRoundData.some(row => row?.dataMovementType === 'E' && row?.functionalProcess)) {
+                throw createHttpError(
+                    `第 ${round} 轮表格没有可识别的功能过程`,
+                    502,
+                    'INVALID_COSMIC_TABLE'
+                );
+            }
+            const incompleteProcesses = findIncompleteCosmicProcesses(currentRoundData, useEnhancedExperience);
+            if (incompleteProcesses.length > 0) {
+                throw createHttpError(
+                    `第 ${round} 轮存在不完整的COSMIC功能过程: ${incompleteProcesses.join('、')}`,
+                    502,
+                    'INCOMPLETE_ONE_KEY_ROUND'
+                );
+            }
+        }
         // 仅数量优先模式才检查目标数
         if (isQuantityMode && effectiveTarget && completedFunctions.length >= effectiveTarget && !isDone) {
             console.log(`📊 已达到目标数 ${effectiveTarget}，但继续检查是否有遗漏...`);
         }
-        if (round >= 15) isDone = true;
-        if (reply.length < 100 && round > 1) isDone = true;
-
         // ═══ 自动覆盖度验证（分析即将结束时自动检查遗漏） ═══
         let coverageResult = null;
         if (isDone && round > 1 && documentContent) {
+            onProgress({ phase: 'verifying', message: `正在验证第 ${round} 轮后的整体覆盖度` });
             const currentRoundData = parseMarkdownTable(reply);
             const currentRoundFunctions = [...new Set(currentRoundData.map(r => r.functionalProcess).filter(Boolean))];
             const allFunctions = [...new Set([...completedFunctions, ...currentRoundFunctions])];
@@ -4645,47 +4993,132 @@ ${targetRequirement}
                         ],
                         model: modelName,
                         temperature: 0.1,
-                        max_tokens: 8000
+                        max_tokens: 8000,
+                        signal
                     });
 
                     if (verifyCompletion?.choices?.[0]?.message?.content) {
                         const verifyReply = verifyCompletion.choices[0].message.content;
+                        let verificationParsed = false;
                         try {
                             const jsonMatch = verifyReply.match(/\{[\s\S]*\}/);
                             if (jsonMatch) {
                                 coverageResult = JSON.parse(jsonMatch[0]);
+                                verificationParsed = true;
                                 if (!coverageResult.vagueFunctions) coverageResult.vagueFunctions = [];
                                 const missedCount = coverageResult.missedFunctions?.length || 0;
                                 const vagueCount = coverageResult.vagueFunctions?.length || 0;
                                 console.log(`📊 覆盖度验证: ${coverageResult.coverageScore}分, 遗漏${missedCount}个, 笼统${vagueCount}个`);
 
-                                if (coverageResult.coverageScore < 85 && missedCount > 0 && round < 14) {
-                                    console.log('⚠️ 覆盖度不足，将继续补充分析...');
+                                if (Number(coverageResult.coverageScore) < 85 || missedCount > 0) {
                                     isDone = false;
+                                    console.log(round < 15
+                                        ? '⚠️ 覆盖度不足，将继续补充分析...'
+                                        : '⚠️ 覆盖度不足且已达到轮次上限，保留当前结果供人工检查');
                                 } else {
                                     console.log('✅ 覆盖度验证通过');
                                 }
                             }
                         } catch (e) {
                             console.warn('覆盖度验证JSON解析失败:', e.message);
+                            isDone = false;
                         }
+                        if (!verificationParsed) isDone = false;
+                    } else {
+                        isDone = false;
                     }
                 } catch (e) {
+                    if (signal?.aborted || e?.name === 'AbortError') throw e;
                     console.warn('自动覆盖度验证调用失败, 跳过:', e.message);
+                    isDone = false;
                 }
             }
         }
 
-        res.json({
-            success: true, reply, round, isDone,
+        const reachedRoundLimit = round >= 15 && !isDone;
+        onProgress({ phase: 'finalizing', message: `第 ${round} 轮结果已生成` });
+        return {
+            success: true, reply, round, isDone, reachedRoundLimit,
             completedFunctions: completedFunctions.length,
             targetFunctions: effectiveTarget,
             coverageVerification: coverageResult
-        });
+        };
     } catch (error) {
         console.error('分析失败:', error);
-        res.status(500).json({ error: '分析失败: ' + error.message });
+        if (!error.status || error.status >= 500) {
+            error.message = '分析失败: ' + error.message;
+        }
+        throw error;
     }
+}
+
+const continueAnalysisJobManager = createAsyncJobManager({
+    name: 'continue-analysis',
+    ttlMs: 2 * 60 * 60 * 1000,
+    maxJobs: 300,
+    maxConcurrent: 2,
+    jobTimeoutMs: 40 * 60 * 1000,
+    processor: (payload, updateProgress, signal) => executeContinueAnalysis(payload, {
+        signal,
+        onProgress: updateProgress
+    })
+});
+
+// 兼容旧客户端；断连时立即释放 AI 资源。
+app.post('/api/continue-analyze', async (req, res) => {
+    const controller = new AbortController();
+    const abortOnDisconnect = () => {
+        if (!res.writableEnded && !controller.signal.aborted) controller.abort();
+    };
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
+    try {
+        const result = await executeContinueAnalysis(req.body, { signal: controller.signal });
+        if (!res.destroyed) res.json(result);
+    } catch (error) {
+        if (controller.signal.aborted || res.destroyed) return;
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '分析失败', code: error.code || null });
+    } finally {
+        req.removeListener('aborted', abortOnDisconnect);
+        res.removeListener('close', abortOnDisconnect);
+    }
+});
+
+app.post('/api/continue-analyze-jobs', (req, res) => {
+    try {
+        const payload = req.body?.payload;
+        if (!payload?.documentContent) {
+            throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
+        }
+        const { job, deduplicated } = continueAnalysisJobManager.submit(payload, {
+            requestKey: req.body?.requestKey
+        });
+        res.status(202).json({
+            success: true,
+            jobId: job.id,
+            status: job.status,
+            deduplicated,
+            statusUrl: `/api/continue-analyze-jobs/${job.id}`
+        });
+    } catch (error) {
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '无法创建一键拆分任务', code: error.code || null });
+    }
+});
+
+app.get('/api/continue-analyze-jobs/:jobId', (req, res) => {
+    const job = continueAnalysisJobManager.get(req.params.jobId);
+    if (!job) {
+        return res.status(404).json({ error: '一键拆分任务不存在或服务已重启', code: 'JOB_NOT_FOUND' });
+    }
+    return res.json({ success: true, job });
+});
+
+app.delete('/api/continue-analyze-jobs/:jobId', (req, res) => {
+    const job = continueAnalysisJobManager.cancel(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '任务不存在', code: 'JOB_NOT_FOUND' });
+    return res.json({ success: true, job });
 });
 
 // ═══════════════════════ 覆盖度验证 ═══════════════════════
@@ -4857,6 +5290,12 @@ app.post('/api/parse-table', (req, res) => {
 app.post('/api/chat/stream', async (req, res) => {
     let heartbeatTimer = null;
     let streamStarted = false;
+    const controller = new AbortController();
+    const abortOnDisconnect = () => {
+        if (!res.writableEnded && !controller.signal.aborted) controller.abort();
+    };
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
     try {
         const {
             messages = [],
@@ -4907,6 +5346,11 @@ app.post('/api/chat/stream', async (req, res) => {
             const characters = Array.from(String(text || ''));
             const chunkSize = Math.max(24, Math.ceil(characters.length / 60));
             for (let index = 0; index < characters.length; index += chunkSize) {
+                if (controller.signal.aborted) {
+                    const abortError = new Error('对话请求已取消');
+                    abortError.name = 'AbortError';
+                    throw abortError;
+                }
                 sendEvent({
                     type: 'content',
                     content: characters.slice(index, index + chunkSize).join('')
@@ -4953,7 +5397,8 @@ app.post('/api/chat/stream', async (req, res) => {
             userGuidelines,
             userConfig,
             modelName,
-            callAIWithRetry
+            callAIWithRetry,
+            signal: controller.signal
         });
         const plannedChangeCount = plan.documentPatches.length
             + plan.functionChanges.length
@@ -5070,6 +5515,7 @@ app.post('/api/chat/stream', async (req, res) => {
         res.write('data: [DONE]\n\n');
         res.end();
     } catch (error) {
+        if (controller.signal.aborted || res.destroyed) return;
         console.error('流式对话失败:', error.message);
         if (!streamStarted && !res.headersSent) {
             return res.status(500).json({ error: '调用AI失败: ' + error.message });
@@ -5089,6 +5535,8 @@ app.post('/api/chat/stream', async (req, res) => {
         }
     } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
+        req.removeListener('aborted', abortOnDisconnect);
+        res.removeListener('close', abortOnDisconnect);
     }
 });
 
@@ -5977,14 +6425,15 @@ app.post('/api/export-word', async (req, res) => {
 
 // ═══════════════════════ COSMIC 模块识别 ═══════════════════════
 
-app.post('/api/cosmic/recognize-modules', async (req, res) => {
+async function executeCosmicModuleRecognition(requestPayload, { signal, onProgress = () => {} } = {}) {
     try {
-        const { documentContent, userConfig = null } = req.body;
+        const { documentContent, userConfig = null } = requestPayload || {};
         if (!documentContent) {
-            return res.status(400).json({ error: '缺少文档内容' });
+            throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
         }
 
         console.log('📑 开始COSMIC模块层级识别...');
+        onProgress({ phase: 'recognizing', message: '正在识别文档的三级模块结构' });
         const modelName = getModelName(userConfig);
 
         const completion = await callAIWithRetry({
@@ -5995,11 +6444,12 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
             model: modelName,
             temperature: 0.1,
             max_tokens: 8000,
-            requestTimeoutMs: AI_MODULE_REQUEST_TIMEOUT_MS
+            requestTimeoutMs: AI_MODULE_REQUEST_TIMEOUT_MS,
+            signal
         }, AI_MODULE_MAX_ATTEMPTS);
 
         if (!completion?.choices?.[0]?.message?.content) {
-            return res.status(500).json({ error: 'AI返回了空响应，请重试' });
+            throw createHttpError('AI返回了空响应，请重试', 502, 'EMPTY_AI_RESPONSE');
         }
         const reply = completion.choices[0].message.content;
 
@@ -6017,22 +6467,25 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
             moduleData,
             documentContent,
             modelName,
-            methodLabel: 'COSMIC'
+            methodLabel: 'COSMIC',
+            signal
         });
         if (moduleData?.collapsedFrom) {
             console.log(`   folded overly detailed modules: ${moduleData.collapsedFrom} -> ${moduleData.modules.length}`);
         }
 
         console.log(`✅ COSMIC模块识别完成: ${moduleData?.modules?.length || 0} 个模块节点`);
-        res.json({ success: true, moduleData });
+        onProgress({ phase: 'finalizing', message: `已识别 ${moduleData?.modules?.length || 0} 个模块节点` });
+        return { success: true, moduleData };
     } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error;
         const upstreamStatus = getAIErrorStatus(error);
-        const requestId = req.requestId || 'unknown-request';
+        const requestId = requestPayload?.requestId || 'background-job';
         console.error(`COSMIC模块识别失败 [${requestId}]${upstreamStatus ? ` 上游状态=${upstreamStatus}` : ''}:`, error);
 
         let fallbackModuleData;
         try {
-            fallbackModuleData = buildDocumentHeadingFallbackModules(req.body?.documentContent || '');
+            fallbackModuleData = buildDocumentHeadingFallbackModules(requestPayload?.documentContent || '');
         } catch (fallbackError) {
             console.error(`COSMIC模块标题兜底失败 [${requestId}]:`, fallbackError);
             fallbackModuleData = { modules: [], totalEstimated: 0, summary: '模块脚手架兜底失败', fallback: true };
@@ -6042,8 +6495,7 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
             upstreamStatus ? `上游状态 ${upstreamStatus}` : '',
             error?.code ? `错误码 ${error.code}` : ''
         ].filter(Boolean).join('，');
-        res.setHeader('X-AI-Degraded', 'module-fallback');
-        return res.status(200).json({
+        return {
             success: true,
             degraded: true,
             warning: `AI模块识别失败${diagnostic ? `（${diagnostic}）` : ''}，已根据文档标题生成模块脚手架`,
@@ -6053,8 +6505,77 @@ app.post('/api/cosmic/recognize-modules', async (req, res) => {
                 code: error?.code || null
             },
             moduleData: fallbackModuleData
-        });
+        };
     }
+}
+
+const cosmicModuleRecognitionJobManager = createAsyncJobManager({
+    name: 'cosmic-module-recognition',
+    ttlMs: 2 * 60 * 60 * 1000,
+    maxJobs: 200,
+    maxConcurrent: 2,
+    jobTimeoutMs: 15 * 60 * 1000,
+    processor: (payload, updateProgress, signal) => executeCosmicModuleRecognition(payload, {
+        signal,
+        onProgress: updateProgress
+    })
+});
+
+app.post('/api/cosmic/recognize-modules', async (req, res) => {
+    const controller = new AbortController();
+    const abortOnDisconnect = () => {
+        if (!res.writableEnded && !controller.signal.aborted) controller.abort();
+    };
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
+    try {
+        const result = await executeCosmicModuleRecognition({ ...req.body, requestId: req.requestId }, {
+            signal: controller.signal
+        });
+        if (!res.destroyed) {
+            if (result.degraded) res.setHeader('X-AI-Degraded', 'module-fallback');
+            res.json(result);
+        }
+    } catch (error) {
+        if (controller.signal.aborted || res.destroyed) return;
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '模块识别失败', code: error.code || null });
+    } finally {
+        req.removeListener('aborted', abortOnDisconnect);
+        res.removeListener('close', abortOnDisconnect);
+    }
+});
+
+app.post('/api/cosmic/recognize-modules-jobs', (req, res) => {
+    try {
+        const payload = req.body?.payload;
+        if (!payload?.documentContent) throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
+        const { job, deduplicated } = cosmicModuleRecognitionJobManager.submit(payload, {
+            requestKey: req.body?.requestKey
+        });
+        res.status(202).json({
+            success: true,
+            jobId: job.id,
+            status: job.status,
+            deduplicated,
+            statusUrl: `/api/cosmic/recognize-modules-jobs/${job.id}`
+        });
+    } catch (error) {
+        const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+        res.status(status).json({ error: error.message || '无法创建模块识别任务', code: error.code || null });
+    }
+});
+
+app.get('/api/cosmic/recognize-modules-jobs/:jobId', (req, res) => {
+    const job = cosmicModuleRecognitionJobManager.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '模块识别任务不存在或服务已重启', code: 'JOB_NOT_FOUND' });
+    return res.json({ success: true, job });
+});
+
+app.delete('/api/cosmic/recognize-modules-jobs/:jobId', (req, res) => {
+    const job = cosmicModuleRecognitionJobManager.cancel(req.params.jobId);
+    if (!job) return res.status(404).json({ error: '任务不存在', code: 'JOB_NOT_FOUND' });
+    return res.json({ success: true, job });
 });
 
 // ═══════════════════════ NESMA 模块识别 ═══════════════════════

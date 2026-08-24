@@ -45,6 +45,9 @@ services:
         value: 4
       - key: AI_REQUEST_TIMEOUT_MS
         value: 480000
+      # Pro 模型使用流式响应；连续2分钟无任何分片即判定卡流并释放并发槽
+      - key: AI_STREAM_IDLE_TIMEOUT_MS
+        value: 120000
       - key: AI_QUEUE_TIMEOUT_MS
         value: 600000
       # 模块脚手架阶段快速失败并走标题兜底，避免界面长时间停在 40%

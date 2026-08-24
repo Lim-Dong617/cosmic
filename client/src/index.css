@@ -2010,6 +2010,16 @@ textarea.setting-input {
     background: linear-gradient(180deg, rgba(236, 253, 245, 0.98), rgba(255, 255, 255, 0.98));
 }
 
+.analysis-progress-panel.error {
+    border-color: rgba(239, 68, 68, 0.32);
+    background: linear-gradient(180deg, rgba(254, 242, 242, 0.98), rgba(255, 255, 255, 0.98));
+}
+
+.analysis-progress-panel.canceled {
+    border-color: rgba(100, 116, 139, 0.28);
+    background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.98));
+}
+
 .analysis-progress-head,
 .analysis-progress-title,
 .analysis-progress-meta,
