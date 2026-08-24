@@ -38,21 +38,26 @@ import {
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
-// 与服务端 AI_MAX_CONCURRENCY=2 对齐，避免 Render 上快速模式同时压入过多长请求。
+// 与服务端 AI_MAX_CONCURRENCY 对齐，避免 Render 上快速模式同时压入过多长请求。
 const COSMIC_FAST_CONCURRENCY = 2;
+// UnlimitDS 使用独立 API Key/端点，可支持更高并发。
+const COSMIC_FAST_CONCURRENCY_UNLIMITDS = 3;
 const COSMIC_LARGE_DOCUMENT_CHARS = 12000;
 const COSMIC_LARGE_FUNCTION_COUNT = 40;
 const COSMIC_MANY_CHAPTERS = 8;
 const UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
 
-const resolveCosmicConcurrency = ({ mode, documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
+const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
     const autoStabilized = mode === 'fast' && (
         documentChars >= COSMIC_LARGE_DOCUMENT_CHARS
         || functionCount >= COSMIC_LARGE_FUNCTION_COUNT
         || chapterCount >= COSMIC_MANY_CHAPTERS
     );
+    const baseConcurrency = model === UNLIMITDS_MODEL_ALIAS
+        ? COSMIC_FAST_CONCURRENCY_UNLIMITDS
+        : COSMIC_FAST_CONCURRENCY;
     return {
-        concurrency: mode === 'fast' && !autoStabilized ? COSMIC_FAST_CONCURRENCY : 1,
+        concurrency: mode === 'fast' && !autoStabilized ? baseConcurrency : 1,
         autoStabilized
     };
 };
@@ -1611,6 +1616,7 @@ function App({ user, token, onLogout }) {
         const extractionRunId = createCosmicRunId('function-extraction');
         const extractionProfile = resolveCosmicConcurrency({
             mode: splitExecutionMode,
+            model: selectedModel,
             documentChars: documentContent.length,
             chapterCount: selectedChapters.length
         });
@@ -1996,6 +2002,7 @@ function App({ user, token, onLogout }) {
         // the user previously selected fast mode.
         const splitProfile = resolveCosmicConcurrency({
             mode: splitExecutionMode,
+            model: selectedModel,
             documentChars: documentContent.length,
             functionCount: activeFunctions.length
         });
@@ -3414,7 +3421,7 @@ function App({ user, token, onLogout }) {
             role="group"
             aria-label="COSMIC 执行模式"
             title={splitExecutionMode === 'fast'
-                ? `短文档最多 ${COSMIC_FAST_CONCURRENCY} 路并发；大文档、40个以上功能或多章节会自动改为串行`
+                ? `短文档最多 ${selectedModel === UNLIMITDS_MODEL_ALIAS ? COSMIC_FAST_CONCURRENCY_UNLIMITDS : COSMIC_FAST_CONCURRENCY} 路并发；大文档、40个以上功能或多章节会自动改为串行`
                 : '功能提取和COSMIC拆分均串行执行，适合容易限流或更看重稳定性的模型'}
         >
             <span className="split-execution-label">执行模式</span>

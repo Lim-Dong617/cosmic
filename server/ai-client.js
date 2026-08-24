@@ -42,7 +42,7 @@ const AI_REQUEST_TIMEOUT_MS = readBoundedInteger(
     30 * 1000,
     20 * 60 * 1000
 );
-const AI_MAX_CONCURRENCY = readBoundedInteger(process.env.AI_MAX_CONCURRENCY, 2, 1, 8);
+const AI_MAX_CONCURRENCY = readBoundedInteger(process.env.AI_MAX_CONCURRENCY, 3, 1, 8);
 const AI_QUEUE_TIMEOUT_MS = readBoundedInteger(
     process.env.AI_QUEUE_TIMEOUT_MS,
     10 * 60 * 1000,
