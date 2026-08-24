@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+    resolveContinueAnalysisRound,
     runContinueAnalysisJob,
     runCosmicModuleRecognitionJob,
     runCosmicSplitJob,
@@ -256,6 +257,76 @@ async function testJobWrappersUseTheirOwnEndpoints() {
     }
 }
 
+function testContinueAnalysisRoundResolution() {
+    const coverageVerification = {
+        coverageScore: 70,
+        missedFunctions: ['补充功能'],
+        vagueFunctions: []
+    };
+
+    const completed = resolveContinueAnalysisRound({
+        reply: '[ALL_DONE]',
+        doneMarker: true,
+        isDone: true,
+        resultKind: 'done_marker',
+        tableData: []
+    });
+    assert.equal(completed.isValid, true);
+    assert.equal(completed.shouldMerge, false);
+    assert.equal(completed.shouldFinish, true);
+    assert.equal(completed.needsLegacyParse, false);
+
+    const continueAfterCoverage = resolveContinueAnalysisRound({
+        reply: '[ALL_DONE]',
+        doneMarker: true,
+        isDone: false,
+        resultKind: 'done_marker',
+        tableData: [],
+        coverageVerification
+    });
+    assert.equal(continueAfterCoverage.isValid, true);
+    assert.equal(continueAfterCoverage.shouldFinish, false);
+    assert.equal(continueAfterCoverage.shouldContinue, true);
+    assert.deepEqual(continueAfterCoverage.coverageVerification, coverageVerification);
+
+    const legacyContinueAfterCoverage = resolveContinueAnalysisRound({
+        reply: '[ALL_DONE]',
+        isDone: false,
+        coverageVerification
+    });
+    assert.equal(legacyContinueAfterCoverage.needsLegacyParse, false);
+    assert.equal(legacyContinueAfterCoverage.isValid, true);
+    assert.equal(legacyContinueAfterCoverage.shouldContinue, true);
+    assert.deepEqual(legacyContinueAfterCoverage.coverageVerification, coverageVerification);
+
+    const legacyEmptyTable = {
+        reply: '[ALL_DONE]\n|功能用户|功能过程|数据移动类型|\n|:---|:---|:---|',
+        isDone: true
+    };
+    const legacyBeforeParse = resolveContinueAnalysisRound(legacyEmptyTable);
+    assert.equal(legacyBeforeParse.needsLegacyParse, true);
+    const legacyAfterParse = resolveContinueAnalysisRound(legacyEmptyTable, []);
+    assert.equal(legacyAfterParse.needsLegacyParse, false);
+    assert.equal(legacyAfterParse.isValid, true);
+    assert.equal(legacyAfterParse.shouldFinish, true);
+
+    const finalTable = [{ functionalProcess: '查询工单', dataMovementType: 'E' }];
+    const markerWithRows = resolveContinueAnalysisRound({
+        reply: '[ALL_DONE]',
+        doneMarker: true,
+        isDone: true,
+        resultKind: 'table_and_done_marker',
+        tableData: finalTable
+    });
+    assert.equal(markerWithRows.shouldMerge, true);
+    assert.equal(markerWithRows.shouldFinish, true);
+    assert.deepEqual(markerWithRows.tableData, finalTable);
+
+    const invalid = resolveContinueAnalysisRound({ reply: '', isDone: false, tableData: [] });
+    assert.equal(invalid.isValid, false);
+    assert.equal(invalid.shouldContinue, false);
+}
+
 await testNormalLifecycle();
 await testPolling502DoesNotResubmit();
 await testPostTimeoutRetriesSameRequestKey();
@@ -263,5 +334,6 @@ await testJobNotFoundResubmitsSameAttempt();
 await testFailed500UsesNewAttemptKey();
 await testCancellationStopsPolling();
 await testJobWrappersUseTheirOwnEndpoints();
+testContinueAnalysisRoundResolution();
 
 console.log('cosmic split job client tests passed');

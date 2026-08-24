@@ -26,6 +26,7 @@ import {
 import {
     completedFunctionNames,
     createCosmicRunId,
+    resolveContinueAnalysisRound,
     runContinueAnalysisJob,
     runCosmicModuleRecognitionJob,
     runCosmicSplitJob,
@@ -2840,26 +2841,37 @@ function App({ user, token, onLogout }) {
                     }
                 });
 
-                if (response.success) {
-                    const isDoneMarkerOnly = response.isDone && response.reply?.includes('[ALL_DONE]') && !response.reply?.includes('|');
-                    if (!isDoneMarkerOnly) {
-                        const tableRes = await axios.post('/api/parse-table', { markdown: response.reply }, { signal });
-                        if (tableRes.data.success && tableRes.data.tableData.length > 0) {
-                            const deduped = deduplicateData(allTableData, tableRes.data.tableData);
-                            if (deduped.length > 0) {
-                                allTableData = orderCosmicTableData([...allTableData, ...deduped], parsedFunctions, moduleStructure);
-                                setTableData(allTableData);
-                            }
-                        } else {
-                            throw new Error(`第 ${round} 轮结果无法解析为COSMIC表格，已停止以避免误报完成`);
-                        }
-                    }
+                if (!response?.success) {
+                    throw new Error(`第 ${round} 轮未返回可用的分析结果`);
+                }
 
-                    lastCoverage = response.coverageVerification || null;
-                    if (response.isDone) {
-                        completedNaturally = true;
-                        break;
+                let roundResult = resolveContinueAnalysisRound(response);
+                // 兼容尚未返回结构化 tableData 的旧服务端；新服务端不再二次解析。
+                if (roundResult.needsLegacyParse) {
+                    const tableRes = await axios.post('/api/parse-table', { markdown: response.reply }, { signal });
+                    if (!tableRes.data?.success) {
+                        throw new Error(`第 ${round} 轮结果无法解析为COSMIC表格，已停止以避免误报完成`);
                     }
+                    roundResult = resolveContinueAnalysisRound(response, tableRes.data.tableData);
+                }
+
+                if (!roundResult.isValid) {
+                    throw new Error(`第 ${round} 轮结果无法解析为COSMIC表格，已停止以避免误报完成`);
+                }
+
+                if (roundResult.shouldMerge) {
+                    const deduped = deduplicateData(allTableData, roundResult.tableData);
+                    if (deduped.length > 0) {
+                        allTableData = orderCosmicTableData([...allTableData, ...deduped], parsedFunctions, moduleStructure);
+                        setTableData(allTableData);
+                    }
+                }
+
+                // 覆盖不足时，完成标记是合法的“无新增行控制帧”；保存审查结果并进入下一轮。
+                lastCoverage = roundResult.coverageVerification;
+                if (roundResult.shouldFinish) {
+                    completedNaturally = true;
+                    break;
                 }
 
                 round++;

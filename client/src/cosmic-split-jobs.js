@@ -16,6 +16,34 @@ export const completedFunctionNames = (rows = []) => [...new Set(
     rows.map(row => row?.functionalProcess).filter(Boolean)
 )];
 
+export const resolveContinueAnalysisRound = (response = {}, legacyTableData = null) => {
+    const reply = String(response?.reply || '');
+    const hasServerTableData = Array.isArray(response?.tableData);
+    const hasLegacyTableData = Array.isArray(legacyTableData);
+    const tableData = hasServerTableData
+        ? response.tableData
+        : (hasLegacyTableData ? legacyTableData : []);
+    const doneMarker = response?.doneMarker === true || reply.includes('[ALL_DONE]');
+    const resultKind = String(response?.resultKind || '');
+    const hasTable = tableData.length > 0;
+    const isStatusOnlyResult = doneMarker || resultKind === 'done_marker';
+    const isValid = hasTable || isStatusOnlyResult;
+
+    return {
+        tableData,
+        hasTable,
+        doneMarker,
+        resultKind,
+        hasServerTableData,
+        needsLegacyParse: !hasServerTableData && !hasLegacyTableData && reply.includes('|'),
+        isValid,
+        shouldMerge: hasTable,
+        shouldFinish: isValid && Boolean(response?.isDone),
+        shouldContinue: isValid && !response?.isDone,
+        coverageVerification: response?.coverageVerification || null
+    };
+};
+
 export const isCanceledRequest = (error, signal = null) => (
     signal?.aborted
     || error?.name === 'AbortError'

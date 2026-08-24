@@ -69,6 +69,7 @@ const {
 } = require('./conversation-orchestrator');
 const { registerOfficeDocumentRoutes } = require('./office-document-service');
 const { createAsyncJobManager, createHttpError } = require('./async-job-manager');
+const { describeContinueAnalysisRound } = require('./cosmic-round-result');
 
 
 const app = express();
@@ -4891,8 +4892,9 @@ ${targetRequirement}
 - 请仔细逐段阅读文档，找出上面"已完成"列表中未覆盖的功能
 - ${completenessRule}
 - 输出表格必须包含"功能描述"列，功能描述只在E行填写，内容要描述业务处理过程
-- 只输出Markdown表格，不要其他说明
-- 如果文档中的所有功能确实都已完成，回复"[ALL_DONE]"`;
+- 如果仍有未覆盖功能：只输出Markdown表格，不要其他说明，也不要输出完成标记
+- 如果文档中的所有功能确实都已完成：只回复一行"[ALL_DONE]"，不要附加表格、代码围栏或任何说明
+- 不得在同一次回复中同时输出COSMIC表格和"[ALL_DONE]"`;
         }
 
         console.log(`📊 第 ${round} 轮分析，已完成 ${completedFunctions.length} 个功能过程...`);
@@ -4943,26 +4945,21 @@ ${targetRequirement}
             }
         }
 
-        // 判断是否完成
+        // 本轮载荷（表格/完成标记）与覆盖审查后的最终流程决策是两个独立状态。
+        // 只在服务端解析一次，随后把规范化行直接返回给客户端，避免前后端二次解析产生分歧。
         let isDone = reply.includes('[ALL_DONE]');
-        // V3.2 兼容：检测表格中是否有有效的 DMT 标记（E/R/W/X 及其变体）
-        const hasValidTable = reply.includes('|') && (/\|\s*[ERWX]\s*\|/i.test(reply) || /\|\s*(Entry|Read|Write|Exit|输入|读|写|输出)\s*\|/i.test(reply));
-        if (!hasValidTable && !isDone) {
-            throw createHttpError(`第 ${round} 轮未返回有效的COSMIC表格`, 502, 'INVALID_COSMIC_TABLE');
-        }
-        if (isDone && !hasValidTable && completedFunctions.length === 0) {
-            throw createHttpError('模型在尚无任何拆分结果时提前返回完成标记', 502, 'EMPTY_ONE_KEY_RESULT');
-        }
-        if (hasValidTable) {
-            const currentRoundData = parseMarkdownTable(reply);
-            if (!currentRoundData.some(row => row?.dataMovementType === 'E' && row?.functionalProcess)) {
-                throw createHttpError(
-                    `第 ${round} 轮表格没有可识别的功能过程`,
-                    502,
-                    'INVALID_COSMIC_TABLE'
-                );
-            }
-            const incompleteProcesses = findIncompleteCosmicProcesses(currentRoundData, useEnhancedExperience);
+        const roundTableData = limitSubprocessesPerFunction(
+            ensureFunctionDescriptions(parseMarkdownTable(reply))
+        );
+        const initialRoundResult = describeContinueAnalysisRound({
+            reply,
+            tableData: roundTableData,
+            completedFunctionCount: completedFunctions.length,
+            isDone,
+            round
+        });
+        if (initialRoundResult.hasTable) {
+            const incompleteProcesses = findIncompleteCosmicProcesses(roundTableData, useEnhancedExperience);
             if (incompleteProcesses.length > 0) {
                 throw createHttpError(
                     `第 ${round} 轮存在不完整的COSMIC功能过程: ${incompleteProcesses.join('、')}`,
@@ -4979,8 +4976,7 @@ ${targetRequirement}
         let coverageResult = null;
         if (isDone && round > 1 && documentContent) {
             onProgress({ phase: 'verifying', message: `正在验证第 ${round} 轮后的整体覆盖度` });
-            const currentRoundData = parseMarkdownTable(reply);
-            const currentRoundFunctions = [...new Set(currentRoundData.map(r => r.functionalProcess).filter(Boolean))];
+            const currentRoundFunctions = [...new Set(roundTableData.map(r => r.functionalProcess).filter(Boolean))];
             const allFunctions = [...new Set([...completedFunctions, ...currentRoundFunctions])];
 
             if (allFunctions.length > 0) {
@@ -5036,9 +5032,22 @@ ${targetRequirement}
         }
 
         const reachedRoundLimit = round >= 15 && !isDone;
+        const finalRoundResult = describeContinueAnalysisRound({
+            reply,
+            tableData: roundTableData,
+            completedFunctionCount: completedFunctions.length,
+            isDone,
+            round
+        });
         onProgress({ phase: 'finalizing', message: `第 ${round} 轮结果已生成` });
         return {
             success: true, reply, round, isDone, reachedRoundLimit,
+            tableData: finalRoundResult.tableData,
+            hasTable: finalRoundResult.hasTable,
+            doneMarker: finalRoundResult.doneMarker,
+            resultKind: finalRoundResult.resultKind,
+            roundAction: finalRoundResult.action,
+            shouldContinue: !isDone && !reachedRoundLimit,
             completedFunctions: completedFunctions.length,
             targetFunctions: effectiveTarget,
             coverageVerification: coverageResult
