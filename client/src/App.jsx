@@ -40,12 +40,16 @@ const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 // 与服务端 AI_MAX_CONCURRENCY 对齐，避免 Render 上快速模式同时压入过多长请求。
 const COSMIC_FAST_CONCURRENCY = 2;
-// UnlimitDS 使用独立 API Key/端点，可支持更高并发。
-const COSMIC_FAST_CONCURRENCY_UNLIMITDS = 3;
+// NVIDIA 免费原型端点先固定单路，避免长任务触发试用配额限流。
+const COSMIC_FAST_CONCURRENCY_NVIDIA = 1;
+// 内网网关的上游存在公平使用与资源包限制，固定单路以避免并发放大限流。
+const COSMIC_FAST_CONCURRENCY_GLM = 1;
 const COSMIC_LARGE_DOCUMENT_CHARS = 12000;
 const COSMIC_LARGE_FUNCTION_COUNT = 40;
 const COSMIC_MANY_CHAPTERS = 8;
-const UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
+const NVIDIA_MODEL_ALIAS = 'nvidia-deepseek-v4-pro';
+const LEGACY_UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
+const INTRANET_GLM_MODEL_ALIAS = 'intranet-glm';
 
 const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
     const autoStabilized = mode === 'fast' && (
@@ -53,9 +57,11 @@ const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functio
         || functionCount >= COSMIC_LARGE_FUNCTION_COUNT
         || chapterCount >= COSMIC_MANY_CHAPTERS
     );
-    const baseConcurrency = model === UNLIMITDS_MODEL_ALIAS
-        ? COSMIC_FAST_CONCURRENCY_UNLIMITDS
-        : COSMIC_FAST_CONCURRENCY;
+    const baseConcurrency = model === NVIDIA_MODEL_ALIAS
+        ? COSMIC_FAST_CONCURRENCY_NVIDIA
+        : model === INTRANET_GLM_MODEL_ALIAS
+            ? COSMIC_FAST_CONCURRENCY_GLM
+            : COSMIC_FAST_CONCURRENCY;
     return {
         concurrency: mode === 'fast' && !autoStabilized ? baseConcurrency : 1,
         autoStabilized
@@ -402,7 +408,7 @@ function App({ user, token, onLogout }) {
         return 'cosmic';
     });
 
-    // 模型选择（统一火山引擎四个模型）
+    // 模型选择（多提供商统一别名）
     const [selectedModel, setSelectedModel] = useState(() => {
         if (typeof window !== 'undefined') {
             const savedModel = window.localStorage.getItem('selectedModel');
@@ -413,9 +419,11 @@ function App({ user, token, onLogout }) {
                 'deepseek-r1': 'deepseek-v4-pro-ga',
                 'glm-5.2': 'deepseek-v4-flash-ga',
                 'company-glm-5.2': 'deepseek-v4-flash-ga',
-                'deepseek-v4-flash': UNLIMITDS_MODEL_ALIAS,
-                'sensenova-6.8-flash-lite': UNLIMITDS_MODEL_ALIAS,
-                'qwen3-coder': UNLIMITDS_MODEL_ALIAS,
+                'deepseek-v4-flash': NVIDIA_MODEL_ALIAS,
+                'deepseek-v4-pro': 'deepseek-v4-pro-ga',
+                'sensenova-6.8-flash-lite': NVIDIA_MODEL_ALIAS,
+                'qwen3-coder': NVIDIA_MODEL_ALIAS,
+                [LEGACY_UNLIMITDS_MODEL_ALIAS]: NVIDIA_MODEL_ALIAS,
                 'gpt-5.1-codex-mini': 'deepseek-v4-pro-ga'
             };
             return migrationMap[savedModel] || savedModel || 'deepseek-v4-pro-ga';
@@ -522,8 +530,11 @@ function App({ user, token, onLogout }) {
         try {
             const res = await axios.get('/api/health');
             setApiStatus(res.data);
-            if (!res.data.hasUnlimitdsApiKey) {
-                setSelectedModel(model => model === UNLIMITDS_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
+            if (!res.data.hasNvidiaApiKey) {
+                setSelectedModel(model => model === NVIDIA_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
+            }
+            if (!res.data.hasIntranetGlmApiKey) {
+                setSelectedModel(model => model === INTRANET_GLM_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
             }
         } catch (error) {
             console.error('检查API状态失败:', error);
@@ -537,8 +548,8 @@ function App({ user, token, onLogout }) {
             const labels = {
                 'deepseek-v4-pro-ga': 'DeepSeek-V4-Pro正式版',
                 'deepseek-v4-flash-ga': 'DeepSeek-V4-Flash正式版',
-                'deepseek-v4-pro': 'DeepSeek-V4-pro',
-                [UNLIMITDS_MODEL_ALIAS]: 'DeepSeek-V4-Pro（UnlimitDS）'
+                [INTRANET_GLM_MODEL_ALIAS]: '内网GLM',
+                [NVIDIA_MODEL_ALIAS]: 'DeepSeek-V4-Pro（NVIDIA）'
             };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
@@ -551,7 +562,9 @@ function App({ user, token, onLogout }) {
             apiKey: null,
             baseUrl: null,
             model: selectedModel,
-            provider: selectedModel === UNLIMITDS_MODEL_ALIAS ? 'unlimitds' : 'volcengine'
+            provider: selectedModel === NVIDIA_MODEL_ALIAS ? 'nvidia'
+                : selectedModel === INTRANET_GLM_MODEL_ALIAS ? 'intranet-glm'
+                : 'volcengine'
         };
     };
 
@@ -3421,7 +3434,7 @@ function App({ user, token, onLogout }) {
             role="group"
             aria-label="COSMIC 执行模式"
             title={splitExecutionMode === 'fast'
-                ? `短文档最多 ${selectedModel === UNLIMITDS_MODEL_ALIAS ? COSMIC_FAST_CONCURRENCY_UNLIMITDS : COSMIC_FAST_CONCURRENCY} 路并发；大文档、40个以上功能或多章节会自动改为串行`
+                ? `短文档最多 ${selectedModel === NVIDIA_MODEL_ALIAS ? COSMIC_FAST_CONCURRENCY_NVIDIA : selectedModel === INTRANET_GLM_MODEL_ALIAS ? COSMIC_FAST_CONCURRENCY_GLM : COSMIC_FAST_CONCURRENCY} 路并发；大文档、40个以上功能或多章节会自动改为串行`
                 : '功能提取和COSMIC拆分均串行执行，适合容易限流或更看重稳定性的模型'}
         >
             <span className="split-execution-label">执行模式</span>
@@ -4373,30 +4386,36 @@ function App({ user, token, onLogout }) {
                                 </div>
                             </button>
                             <button
-                                className={`model-option ${selectedModel === 'deepseek-v4-pro' ? 'active' : ''}`}
-                                onClick={() => handleModelChange('deepseek-v4-pro')}
-                                style={selectedModel === 'deepseek-v4-pro' ? { borderColor: '#a855f7', background: 'rgba(168,85,247,0.12)' } : {}}
+                                className={`model-option ${selectedModel === INTRANET_GLM_MODEL_ALIAS ? 'active' : ''}`}
+                                onClick={() => handleModelChange(INTRANET_GLM_MODEL_ALIAS)}
+                                disabled={apiStatus.status === 'ok' && !apiStatus.hasIntranetGlmApiKey}
+                                title={apiStatus.status === 'ok' && !apiStatus.hasIntranetGlmApiKey ? '服务器尚未配置 INTRANET_GLM_API_KEY' : '使用内网 GLM 模型'}
+                                style={selectedModel === INTRANET_GLM_MODEL_ALIAS ? { borderColor: '#10b981', background: 'rgba(16,185,129,0.12)' } : {}}
                             >
-                                <span className="model-option-dot" style={{ background: '#a855f7' }} />
+                                <span className="model-option-dot" style={{ background: '#10b981' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-pro</div>
-                                    <div style={{ fontSize: 11, opacity: 0.6 }}>预览版 · 高质量</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>内网GLM</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>
+                                        {apiStatus.status === 'ok' && !apiStatus.hasIntranetGlmApiKey
+                                            ? '内网 · 需配置 API Key'
+                                            : '内网 · 5.2 失败自动切 5.1'}
+                                    </div>
                                 </div>
                             </button>
                             <button
-                                className={`model-option ${selectedModel === UNLIMITDS_MODEL_ALIAS ? 'active' : ''}`}
-                                onClick={() => handleModelChange(UNLIMITDS_MODEL_ALIAS)}
-                                disabled={apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey}
-                                title={apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey ? '服务器尚未配置 UNLIMITDS_API_KEY' : '使用 UnlimitDS DeepSeek V4 Pro'}
-                                style={selectedModel === UNLIMITDS_MODEL_ALIAS ? { borderColor: '#06b6d4', background: 'rgba(6,182,212,0.12)' } : {}}
+                                className={`model-option ${selectedModel === NVIDIA_MODEL_ALIAS ? 'active' : ''}`}
+                                onClick={() => handleModelChange(NVIDIA_MODEL_ALIAS)}
+                                disabled={apiStatus.status === 'ok' && !apiStatus.hasNvidiaApiKey}
+                                title={apiStatus.status === 'ok' && !apiStatus.hasNvidiaApiKey ? '服务器尚未配置 NVIDIA_API_KEY' : '使用 NVIDIA NIM DeepSeek V4 Pro'}
+                                style={selectedModel === NVIDIA_MODEL_ALIAS ? { borderColor: '#76b900', background: 'rgba(118,185,0,0.12)' } : {}}
                             >
-                                <span className="model-option-dot" style={{ background: '#06b6d4' }} />
+                                <span className="model-option-dot" style={{ background: '#76b900' }} />
                                 <div>
                                     <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-Pro</div>
                                     <div style={{ fontSize: 11, opacity: 0.6 }}>
-                                        {apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey
-                                            ? 'UnlimitDS · 需配置 API Key'
-                                            : 'UnlimitDS · 第三方 API'}
+                                        {apiStatus.status === 'ok' && !apiStatus.hasNvidiaApiKey
+                                            ? 'NVIDIA NIM · 需配置 API Key'
+                                            : 'NVIDIA NIM · 免费原型端点'}
                                     </div>
                                 </div>
                             </button>

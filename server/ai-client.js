@@ -20,12 +20,20 @@ const VOLCENGINE_API_KEY = process.env.VOLCENGINE_API_KEY;
 const VOLCENGINE_BASE_URL = process.env.VOLCENGINE_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
 const VOLCENGINE_CODING_BASE_URL = process.env.VOLCENGINE_CODING_BASE_URL || 'https://ark.cn-beijing.volces.com/api/coding';
 
-// UnlimitDS OpenAI 兼容配置。使用独立内部别名，避免与火山引擎
+// NVIDIA NIM OpenAI 兼容配置。使用独立内部别名，避免与火山引擎
 // `deepseek-v4-pro` UI 别名发生二次映射冲突。
-const UNLIMITDS_V4_PRO_ALIAS = 'unlimitds-deepseek-v4-pro';
-const UNLIMITDS_V4_PRO_MODEL = process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro';
-const UNLIMITDS_API_KEY = process.env.UNLIMITDS_API_KEY || null;
-const UNLIMITDS_BASE_URL = process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1';
+const NVIDIA_V4_PRO_ALIAS = 'nvidia-deepseek-v4-pro';
+const LEGACY_UNLIMITDS_V4_PRO_ALIAS = 'unlimitds-deepseek-v4-pro';
+const NVIDIA_V4_PRO_MODEL = process.env.NVIDIA_V4_PRO_MODEL || 'deepseek-ai/deepseek-v4-pro-0813';
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || null;
+const NVIDIA_BASE_URL = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+
+// 内网 GLM OpenAI 兼容配置
+const INTRANET_GLM_ALIAS = 'intranet-glm';
+const INTRANET_GLM_MODEL = process.env.INTRANET_GLM_MODEL || 'glm-5.2';
+const INTRANET_GLM_FALLBACK_MODEL = process.env.INTRANET_GLM_FALLBACK_MODEL || 'glm-5.1';
+const INTRANET_GLM_API_KEY = process.env.INTRANET_GLM_API_KEY || null;
+const INTRANET_GLM_BASE_URL = process.env.INTRANET_GLM_BASE_URL || 'http://10.110.63.81:13000';
 
 function readBoundedInteger(value, fallback, min, max) {
     const parsed = Number.parseInt(value, 10);
@@ -148,7 +156,9 @@ const MODEL_MAP = {
     'deepseek-v4-flash-ga': VOLCENGINE_V4_FLASH_GA,     // DeepSeek-V4-Flash正式版
     'deepseek-v4-pro': VOLCENGINE_V4_PRO,               // DeepSeek-V4-pro
     'deepseek-v4-flash': VOLCENGINE_V4_FLASH,           // DeepSeek-V4-flash
-    [UNLIMITDS_V4_PRO_ALIAS]: UNLIMITDS_V4_PRO_ALIAS,    // UnlimitDS DeepSeek-V4-Pro
+    [NVIDIA_V4_PRO_ALIAS]: NVIDIA_V4_PRO_ALIAS,          // NVIDIA NIM DeepSeek-V4-Pro
+    [LEGACY_UNLIMITDS_V4_PRO_ALIAS]: NVIDIA_V4_PRO_ALIAS, // 旧第四路缓存 → NVIDIA NIM
+    [INTRANET_GLM_ALIAS]: INTRANET_GLM_ALIAS,            // 内网 GLM
     // 兼容旧入口 → 统一映射到新模型
     'deepseek-v4-flash-free': VOLCENGINE_V4_FLASH_GA,   // 旧Flash → Flash正式版
     'deepseek-v4-flash:free': VOLCENGINE_V4_FLASH_GA,
@@ -168,14 +178,15 @@ const MODEL_MAP = {
     'Qwen3-Coder-Plus': VOLCENGINE_V4_FLASH
 };
 
-// 所有模型统一走火山引擎
+// 火山引擎模型集合
 const VOLCENGINE_MODELS = new Set([
     VOLCENGINE_V4_PRO_GA,
     VOLCENGINE_V4_FLASH_GA,
     VOLCENGINE_V4_PRO,
     VOLCENGINE_V4_FLASH
 ]);
-const UNLIMITDS_MODELS = new Set([UNLIMITDS_V4_PRO_ALIAS]);
+const NVIDIA_MODELS = new Set([NVIDIA_V4_PRO_ALIAS]);
+const INTRANET_GLM_MODELS = new Set([INTRANET_GLM_ALIAS]);
 
 // 已废弃的平台列表（保留变量以兼容其他模块引用）
 const GPT_MODELS = new Set([]);
@@ -187,18 +198,27 @@ const KRILL_MODELS = new Set([]);
 const STREAM_ONLY_MODELS = new Set([
     VOLCENGINE_V4_PRO_GA,
     VOLCENGINE_V4_PRO,
-    UNLIMITDS_V4_PRO_ALIAS
+    NVIDIA_V4_PRO_ALIAS
 ]);
 
 function resolveModelRoute(model, apiKey = null, baseUrl = null) {
     const modelName = MODEL_MAP[model] || model || DEFAULT_MODEL_ALIAS;
-    if (UNLIMITDS_MODELS.has(modelName)) {
+    if (NVIDIA_MODELS.has(modelName)) {
         return {
-            provider: 'unlimitds',
+            provider: 'nvidia',
             modelName,
-            requestModelName: UNLIMITDS_V4_PRO_MODEL,
-            apiKey: apiKey || UNLIMITDS_API_KEY,
-            baseUrl: baseUrl || UNLIMITDS_BASE_URL
+            requestModelName: NVIDIA_V4_PRO_MODEL,
+            apiKey: apiKey || NVIDIA_API_KEY,
+            baseUrl: baseUrl || NVIDIA_BASE_URL
+        };
+    }
+    if (INTRANET_GLM_MODELS.has(modelName)) {
+        return {
+            provider: 'intranet-glm',
+            modelName,
+            requestModelName: INTRANET_GLM_MODEL,
+            apiKey: apiKey || INTRANET_GLM_API_KEY,
+            baseUrl: baseUrl || INTRANET_GLM_BASE_URL
         };
     }
     return {
@@ -216,7 +236,9 @@ function resolveModelRoute(model, apiKey = null, baseUrl = null) {
 function createClient(apiKey, baseUrl, model, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
     const route = resolveModelRoute(model, apiKey, baseUrl);
     if (!route.apiKey) {
-        const envName = route.provider === 'unlimitds' ? 'UNLIMITDS_API_KEY' : 'VOLCENGINE_API_KEY';
+        const envName = route.provider === 'nvidia' ? 'NVIDIA_API_KEY'
+            : route.provider === 'intranet-glm' ? 'INTRANET_GLM_API_KEY'
+            : 'VOLCENGINE_API_KEY';
         const error = new Error(`缺少 ${envName}`);
         error.code = 'MISSING_AI_API_KEY';
         error.status = 503;
@@ -318,10 +340,26 @@ async function callCompanyGlmAI() {
     throw new Error('公司 GLM 通道已废弃，请使用火山引擎模型');
 }
 
-async function callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey, baseUrl, timeoutMs = AI_REQUEST_TIMEOUT_MS, signal = null }) {
-    const key = apiKey || VOLCENGINE_API_KEY;
+async function callAnthropicMessagesAI({
+    messages,
+    modelName,
+    temperature,
+    max_tokens,
+    stream,
+    res,
+    apiKey,
+    baseUrl,
+    providerLabel = '火山引擎 Coding API',
+    apiKeyEnv = 'VOLCENGINE_API_KEY',
+    timeoutMs = AI_REQUEST_TIMEOUT_MS,
+    signal = null
+}) {
+    const key = apiKey;
     if (!key) {
-        throw new Error('缺少 VOLCENGINE_API_KEY');
+        const error = new Error(`缺少 ${apiKeyEnv}`);
+        error.code = 'MISSING_AI_API_KEY';
+        error.status = 503;
+        throw error;
     }
 
     const normalized = normalizeAnthropicMessages(messages);
@@ -355,7 +393,7 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
     } catch (error) {
         if (controller.signal.aborted) {
             if (signal?.aborted) throw createAbortError();
-            const timeoutError = new Error(`火山引擎 Coding API调用超时（${Math.round(timeoutMs / 1000)}秒）`);
+            const timeoutError = new Error(`${providerLabel}调用超时（${Math.round(timeoutMs / 1000)}秒）`);
             timeoutError.code = 'ETIMEDOUT';
             timeoutError.status = 504;
             throw timeoutError;
@@ -370,13 +408,15 @@ async function callVolcengineCodingAI({ messages, modelName, temperature, max_to
     try {
         data = raw ? JSON.parse(raw) : null;
     } catch (error) {
-        throw new Error(`火山引擎 Coding 响应不是JSON: ${raw.slice(0, 300)}`);
+        throw new Error(`${providerLabel}响应不是JSON: ${raw.slice(0, 300)}`);
     }
 
     if (!response.ok) {
         const message = data?.error?.message || data?.message || data?.msg || raw;
-        const error = new Error(`火山引擎 Coding API错误 [${response.status}]: ${message}`);
+        const error = new Error(`${providerLabel}错误 [${response.status}]: ${message}`);
         error.status = response.status;
+        error.provider = providerLabel;
+        error.upstreamCode = data?.error?.code || data?.code || null;
         throw error;
     }
 
@@ -433,11 +473,25 @@ async function callAI(options) {
     const isStreamOnly = STREAM_ONLY_MODELS.has(modelName);
     const isVolcengineModel = VOLCENGINE_MODELS.has(modelName);
     const activeBaseUrl = route.baseUrl;
+    console.log(`   🔍 callAI: input model="${model}", resolved provider="${route.provider}", modelName="${modelName}", requestModel="${requestModelName}", baseUrl="${activeBaseUrl}"`);
 
     // 尝试 Coding 端点（如果配置了 coding URL）
     if (isVolcengineModel && /\/api\/coding\/?$/i.test(activeBaseUrl || '')) {
         try {
-            return await callVolcengineCodingAI({ messages, modelName, temperature, max_tokens, stream, res, apiKey: route.apiKey, baseUrl: activeBaseUrl, timeoutMs: requestTimeoutMs, signal });
+            return await callAnthropicMessagesAI({
+                messages,
+                modelName,
+                temperature,
+                max_tokens,
+                stream,
+                res,
+                apiKey: route.apiKey,
+                baseUrl: activeBaseUrl,
+                providerLabel: '火山引擎 Coding API',
+                apiKeyEnv: 'VOLCENGINE_API_KEY',
+                timeoutMs: requestTimeoutMs,
+                signal
+            });
         } catch (error) {
             if (!isCodingPlanUnavailableError(error)) throw error;
             const standardBaseUrl = getVolcengineStandardBaseUrl(activeBaseUrl);
@@ -451,7 +505,56 @@ async function callAI(options) {
         }
     }
 
+    // 内网 GLM 使用 Anthropic 兼容接口（/v1/messages）
+    if (route.provider === 'intranet-glm') {
+        const intranetOptions = {
+            messages,
+            modelName: requestModelName,
+            temperature,
+            max_tokens,
+            stream,
+            res,
+            apiKey: route.apiKey,
+            baseUrl: activeBaseUrl,
+            providerLabel: '内网 GLM API',
+            apiKeyEnv: 'INTRANET_GLM_API_KEY',
+            timeoutMs: requestTimeoutMs,
+            signal
+        };
+        try {
+            return await callAnthropicMessagesAI(intranetOptions);
+        } catch (primaryError) {
+            const fallbackModel = String(INTRANET_GLM_FALLBACK_MODEL || '').trim();
+            if (!fallbackModel
+                || fallbackModel === requestModelName
+                || !isIntranetModelFallbackError(primaryError)) {
+                throw primaryError;
+            }
+
+            const status = getAIErrorStatus(primaryError) || primaryError.code || '?';
+            console.warn(`   ↪️ 内网 GLM ${requestModelName} 不可用 [${status}]，自动切换备用模型 ${fallbackModel}`);
+            try {
+                return await callAnthropicMessagesAI({
+                    ...intranetOptions,
+                    modelName: fallbackModel
+                });
+            } catch (fallbackError) {
+                fallbackError.message = `内网 GLM 主模型 ${requestModelName} 不可用，已自动切换 ${fallbackModel}，但备用模型也调用失败：${fallbackError.message}`;
+                fallbackError.primaryModel = requestModelName;
+                fallbackError.fallbackModel = fallbackModel;
+                fallbackError.primaryError = String(primaryError?.message || primaryError || '');
+                throw fallbackError;
+            }
+        }
+    }
+
     const client = createClient(route.apiKey, route.baseUrl, modelName, requestTimeoutMs);
+    const effectiveMaxTokens = route.provider === 'nvidia'
+        ? Math.min(max_tokens, 16384)
+        : max_tokens;
+    const providerRequestOptions = route.provider === 'nvidia'
+        ? { chat_template_kwargs: { thinking: false } }
+        : {};
 
     if (stream && res) {
         // 流式调用（直接输出给客户端）
@@ -462,7 +565,8 @@ async function callAI(options) {
                 model: requestModelName,
                 messages,
                 temperature,
-                max_tokens,
+                max_tokens: effectiveMaxTokens,
+                ...providerRequestOptions,
                 stream: true
             }, { signal: guard.signal });
 
@@ -491,7 +595,8 @@ async function callAI(options) {
                 model: requestModelName,
                 messages,
                 temperature,
-                max_tokens,
+                max_tokens: effectiveMaxTokens,
+                ...providerRequestOptions,
                 stream: true
             }, { signal: guard.signal });
 
@@ -500,7 +605,7 @@ async function callAI(options) {
             let finishReason = 'stop';
             const isProModel = modelName === VOLCENGINE_V4_PRO_GA
                 || modelName === VOLCENGINE_V4_PRO
-                || UNLIMITDS_MODELS.has(modelName);
+                || NVIDIA_MODELS.has(modelName);
             for await (const chunk of completion) {
                 guard.touch();
                 const delta = chunk.choices[0]?.delta;
@@ -517,7 +622,7 @@ async function callAI(options) {
                 console.log(`   🧠 DeepSeek V4 Pro 思考链长度: ${thinkingChars} 字符`);
             }
             if (finishReason === 'length') {
-                console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${max_tokens}`);
+                console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${effectiveMaxTokens}`);
             }
 
             return {
@@ -542,7 +647,8 @@ async function callAI(options) {
                 model: requestModelName,
                 messages,
                 temperature,
-                max_tokens,
+                max_tokens: effectiveMaxTokens,
+                ...providerRequestOptions,
                 stream: false
             }, { signal: guard.signal });
         } catch (error) {
@@ -558,7 +664,7 @@ async function callAI(options) {
 
         // 检测截断
         if (completion?.choices?.[0]?.finish_reason === 'length') {
-            console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${max_tokens}`);
+            console.warn(`   ⚠️ 输出被截断 (finish_reason=length)，已用完 max_tokens=${effectiveMaxTokens}`);
         }
 
         return completion;
@@ -578,8 +684,16 @@ function isRateLimitError(error) {
 
 function isPermanentRateLimitError(error) {
     if (!isRateLimitError(error)) return false;
-    return /SetLimitExceeded|service has been paused|Safe Experience Mode|inference limit|insufficient quota|billing quota|quota (?:is )?(?:exhausted|depleted)|weekly (?:usage )?limit|monthly (?:usage )?limit|周期额度|额度(?:已)?用完|注册限制/i
+    return /SetLimitExceeded|service has been paused|Safe Experience Mode|fair use|inference limit|insufficient quota|billing quota|quota (?:is )?(?:exhausted|depleted)|no available resource pack|weekly (?:usage )?limit|monthly (?:usage )?limit|公平使用策略|请求频率已受到限制|周期额度|额度(?:已)?用完|余额不足|无可用资源包|请充值|注册限制|\[(?:1113|1313)\]/i
         .test(String(error?.message || ''));
+}
+
+function isIntranetModelFallbackError(error) {
+    if (isRateLimitError(error)) return true;
+    const status = getAIErrorStatus(error);
+    const message = String(error?.message || '');
+    return [400, 403, 404].includes(status)
+        && /model|模型|available|可用|access|权限|resource|资源/i.test(message);
 }
 
 function isRetryableAIError(error) {
@@ -691,7 +805,7 @@ async function callAIWithRetry(options, maxAttempts = AI_MAX_ATTEMPTS) {
                 console.warn(`   ⚠️ AI调用失败 (尝试 ${attempt + 1}/${attempts}): [${status || error.code || '?'}] ${String(error.message || '').substring(0, 200)}`);
 
                 if (permanentLimit) {
-                    console.warn('   ⛔ 检测到已暂停或用尽的模型额度，停止无效重试');
+                    console.warn('   ⛔ 检测到额度、资源包或公平使用限制，停止无效重试');
                 }
                 if (!retryable || attempt >= attempts - 1) throw error;
 
@@ -733,10 +847,19 @@ module.exports = {
     VOLCENGINE_BASE_URL,
     VOLCENGINE_CODING_BASE_URL,
     VOLCENGINE_MODELS,
-    UNLIMITDS_V4_PRO_ALIAS,
-    UNLIMITDS_V4_PRO_MODEL,
-    UNLIMITDS_BASE_URL,
-    UNLIMITDS_MODELS,
+    NVIDIA_V4_PRO_ALIAS,
+    LEGACY_UNLIMITDS_V4_PRO_ALIAS,
+    NVIDIA_V4_PRO_MODEL,
+    NVIDIA_BASE_URL,
+    NVIDIA_MODELS,
+    // 内网 GLM
+    INTRANET_GLM_ALIAS,
+    INTRANET_GLM_MODEL,
+    INTRANET_GLM_FALLBACK_MODEL,
+    INTRANET_GLM_API_KEY,
+    INTRANET_GLM_BASE_URL,
+    INTRANET_GLM_MODELS,
+    isIntranetModelFallbackError,
     resolveModelRoute,
     getVolcengineStandardBaseUrl,
     isCodingPlanUnavailableError,

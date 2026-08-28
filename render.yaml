@@ -19,7 +19,7 @@ services:
         fromDatabase:
           name: cosmic-db
           property: connectionString
-      # 火山引擎（唯一 AI 平台）
+      # 火山引擎模型
       - key: VOLCENGINE_API_KEY
         sync: false
       - key: VOLCENGINE_BASE_URL
@@ -35,13 +35,13 @@ services:
         value: deepseek-v4-pro-260425
       - key: VOLCENGINE_V4_FLASH_MODEL
         value: deepseek-v4-flash-260425
-      # UnlimitDS DeepSeek V4 Pro（OpenAI 兼容接口）
-      - key: UNLIMITDS_API_KEY
+      # NVIDIA NIM DeepSeek V4 Pro（OpenAI 兼容接口）
+      - key: NVIDIA_API_KEY
         sync: false
-      - key: UNLIMITDS_BASE_URL
-        value: https://unlimitds.chat/v1
-      - key: UNLIMITDS_V4_PRO_MODEL
-        value: deepseek-v4-pro
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: NVIDIA_V4_PRO_MODEL
+        value: deepseek-ai/deepseek-v4-pro-0813
       # 默认模型
       - key: DEFAULT_MODEL
         value: deepseek-v4-pro-ga
