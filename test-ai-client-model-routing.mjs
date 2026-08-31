@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
+import { spawnSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
 const {
@@ -11,10 +12,13 @@ const {
     VOLCENGINE_V4_FLASH,
     VOLCENGINE_MODELS,
     NVIDIA_V4_PRO_ALIAS,
-    LEGACY_UNLIMITDS_V4_PRO_ALIAS,
     NVIDIA_V4_PRO_MODEL,
     NVIDIA_BASE_URL,
     NVIDIA_MODELS,
+    UNLIMITDS_V4_PRO_ALIAS,
+    UNLIMITDS_V4_PRO_MODEL,
+    UNLIMITDS_BASE_URL,
+    UNLIMITDS_MODELS,
     INTRANET_GLM_ALIAS,
     INTRANET_GLM_MODEL,
     INTRANET_GLM_FALLBACK_MODEL,
@@ -39,9 +43,11 @@ assert.equal(VOLCENGINE_V4_FLASH_GA, process.env.VOLCENGINE_V4_FLASH_GA_MODEL ||
 assert.equal(VOLCENGINE_V4_PRO, process.env.VOLCENGINE_V4_PRO_MODEL || 'deepseek-v4-pro-260425');
 assert.equal(VOLCENGINE_V4_FLASH, process.env.VOLCENGINE_V4_FLASH_MODEL || 'deepseek-v4-flash-260425');
 assert.equal(NVIDIA_V4_PRO_ALIAS, 'nvidia-deepseek-v4-pro');
-assert.equal(LEGACY_UNLIMITDS_V4_PRO_ALIAS, 'unlimitds-deepseek-v4-pro');
 assert.equal(NVIDIA_V4_PRO_MODEL, process.env.NVIDIA_V4_PRO_MODEL || 'deepseek-ai/deepseek-v4-pro-0813');
 assert.equal(NVIDIA_BASE_URL, process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1');
+assert.equal(UNLIMITDS_V4_PRO_ALIAS, 'unlimitds-deepseek-v4-pro');
+assert.equal(UNLIMITDS_V4_PRO_MODEL, process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro');
+assert.equal(UNLIMITDS_BASE_URL, process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1');
 assert.equal(INTRANET_GLM_ALIAS, 'intranet-glm');
 assert.equal(INTRANET_GLM_MODEL, process.env.INTRANET_GLM_MODEL || 'glm-5.2');
 assert.equal(INTRANET_GLM_FALLBACK_MODEL, process.env.INTRANET_GLM_FALLBACK_MODEL || 'glm-5.1');
@@ -53,7 +59,7 @@ assert.equal(MODEL_MAP['deepseek-v4-flash-ga'], VOLCENGINE_V4_FLASH_GA);
 assert.equal(MODEL_MAP['deepseek-v4-pro'], VOLCENGINE_V4_PRO);
 assert.equal(MODEL_MAP['deepseek-v4-flash'], VOLCENGINE_V4_FLASH);
 assert.equal(MODEL_MAP[NVIDIA_V4_PRO_ALIAS], NVIDIA_V4_PRO_ALIAS);
-assert.equal(MODEL_MAP[LEGACY_UNLIMITDS_V4_PRO_ALIAS], NVIDIA_V4_PRO_ALIAS);
+assert.equal(MODEL_MAP[UNLIMITDS_V4_PRO_ALIAS], UNLIMITDS_V4_PRO_ALIAS);
 
 // VOLCENGINE_MODELS 包含所有四个模型
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_PRO_GA));
@@ -61,6 +67,10 @@ assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_FLASH_GA));
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_PRO));
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_FLASH));
 assert.ok(NVIDIA_MODELS.has(NVIDIA_V4_PRO_ALIAS));
+assert.deepEqual([...UNLIMITDS_MODELS], [UNLIMITDS_V4_PRO_ALIAS]);
+assert.equal(NVIDIA_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
+assert.equal(VOLCENGINE_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
+assert.equal(UNLIMITDS_MODELS.has(NVIDIA_V4_PRO_ALIAS), false);
 assert.ok(INTRANET_GLM_MODELS.has(INTRANET_GLM_ALIAS));
 
 // 同名模型必须通过独立内部别名路由，不能二次映射回火山引擎预览版。
@@ -70,9 +80,6 @@ assert.equal(nvidiaRoute.modelName, NVIDIA_V4_PRO_ALIAS);
 assert.equal(nvidiaRoute.requestModelName, NVIDIA_V4_PRO_MODEL);
 assert.equal(nvidiaRoute.apiKey, 'nvidia_test_key');
 assert.equal(nvidiaRoute.baseUrl, NVIDIA_BASE_URL);
-const legacyNvidiaRoute = resolveModelRoute(LEGACY_UNLIMITDS_V4_PRO_ALIAS, 'legacy_test_key');
-assert.equal(legacyNvidiaRoute.provider, 'nvidia');
-assert.equal(legacyNvidiaRoute.modelName, NVIDIA_V4_PRO_ALIAS);
 const overriddenNvidiaRoute = resolveModelRoute(
     NVIDIA_V4_PRO_ALIAS,
     'nvidia_override_key',
@@ -80,6 +87,24 @@ const overriddenNvidiaRoute = resolveModelRoute(
 );
 assert.equal(overriddenNvidiaRoute.apiKey, 'nvidia_override_key');
 assert.equal(overriddenNvidiaRoute.baseUrl, 'https://gateway.example/v1');
+const unlimitdsRoute = resolveModelRoute(UNLIMITDS_V4_PRO_ALIAS, 'uds_unlimitds_test_key');
+assert.equal(unlimitdsRoute.provider, 'unlimitds');
+assert.equal(unlimitdsRoute.modelName, UNLIMITDS_V4_PRO_ALIAS);
+assert.equal(unlimitdsRoute.requestModelName, UNLIMITDS_V4_PRO_MODEL);
+assert.equal(unlimitdsRoute.apiKey, 'uds_unlimitds_test_key');
+assert.equal(unlimitdsRoute.baseUrl, UNLIMITDS_BASE_URL);
+const overriddenUnlimitdsRoute = resolveModelRoute(
+    UNLIMITDS_V4_PRO_ALIAS,
+    'uds_unlimitds_override_key',
+    'https://unlimitds-gateway.example/v1'
+);
+assert.equal(overriddenUnlimitdsRoute.provider, 'unlimitds');
+assert.equal(overriddenUnlimitdsRoute.apiKey, 'uds_unlimitds_override_key');
+assert.equal(overriddenUnlimitdsRoute.baseUrl, 'https://unlimitds-gateway.example/v1');
+assert.deepEqual(
+    resolveModelRoute(unlimitdsRoute.modelName, unlimitdsRoute.apiKey, unlimitdsRoute.baseUrl),
+    unlimitdsRoute
+);
 assert.equal(resolveModelRoute('deepseek-v4-pro').modelName, VOLCENGINE_V4_PRO);
 const intranetRoute = resolveModelRoute(INTRANET_GLM_ALIAS, 'intranet_test_key');
 assert.equal(intranetRoute.provider, 'intranet-glm');
@@ -88,10 +113,77 @@ assert.equal(intranetRoute.requestModelName, INTRANET_GLM_MODEL);
 assert.equal(intranetRoute.apiKey, 'intranet_test_key');
 assert.equal(intranetRoute.baseUrl, INTRANET_GLM_BASE_URL);
 
+// 独立子进程只注入假密钥，不继承真实密钥或读取 .env，并禁止网络请求。
+const aiClientModulePath = require.resolve('./server/ai-client');
+function checkIsolatedUnlimitdsConfig(source, extraEnv = {}) {
+    const result = spawnSync(process.execPath, ['-e', `
+        const assert = require('node:assert/strict');
+        for (const transport of ['node:http', 'node:https']) {
+            require(transport).request = () => { throw new Error('Unexpected network request in configuration test'); };
+        }
+        globalThis.fetch = async () => { throw new Error('Unexpected fetch in configuration test'); };
+        const ai = require(process.argv[1]);
+        (async () => { ${source} })().catch(error => {
+            console.error(error);
+            process.exitCode = 1;
+        });
+    `, aiClientModulePath], {
+        encoding: 'utf8',
+        timeout: 10000,
+        env: {
+            ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+            VOLCENGINE_API_KEY: 'volcengine_env_test_key',
+            VOLCENGINE_BASE_URL: 'http://127.0.0.1:9/volcengine/v1',
+            NVIDIA_API_KEY: 'nvidia_env_test_key',
+            NVIDIA_BASE_URL: 'http://127.0.0.1:9/nvidia/v1',
+            ...extraEnv
+        }
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, `${result.stdout || ''}${result.stderr || ''}`);
+}
+
+checkIsolatedUnlimitdsConfig(`
+    const route = ai.resolveModelRoute(ai.UNLIMITDS_V4_PRO_ALIAS);
+    assert.equal(route.provider, 'unlimitds');
+    assert.equal(route.apiKey, null);
+    assert.equal(route.baseUrl, 'https://unlimitds.chat/v1');
+    assert.equal(route.requestModelName, 'deepseek-v4-pro');
+    await assert.rejects(ai.callAI({
+        model: ai.UNLIMITDS_V4_PRO_ALIAS,
+        messages: [{ role: 'user', content: 'ping' }],
+        requestTimeoutMs: 1000
+    }), error => error.code === 'MISSING_AI_API_KEY'
+        && error.status === 503
+        && /UNLIMITDS_API_KEY/.test(error.message)
+        && !ai.isRetryableAIError(error));
+`);
+
+checkIsolatedUnlimitdsConfig(`
+    assert.equal(ai.UNLIMITDS_V4_PRO_MODEL, 'unlimitds-custom-model');
+    assert.equal(ai.UNLIMITDS_BASE_URL, 'http://127.0.0.1:9/unlimitds/v1');
+    assert.deepEqual(ai.resolveModelRoute(ai.UNLIMITDS_V4_PRO_ALIAS), {
+        provider: 'unlimitds',
+        modelName: ai.UNLIMITDS_V4_PRO_ALIAS,
+        requestModelName: 'unlimitds-custom-model',
+        apiKey: 'uds_unlimitds_env_test_key',
+        baseUrl: 'http://127.0.0.1:9/unlimitds/v1'
+    });
+    assert.equal(ai.resolveModelRoute(ai.NVIDIA_V4_PRO_ALIAS).apiKey, 'nvidia_env_test_key');
+    assert.equal(ai.resolveModelRoute(ai.NVIDIA_V4_PRO_ALIAS).baseUrl, 'http://127.0.0.1:9/nvidia/v1');
+    assert.equal(ai.resolveModelRoute('deepseek-v4-pro').apiKey, 'volcengine_env_test_key');
+    assert.equal(ai.resolveModelRoute('deepseek-v4-pro').baseUrl, 'http://127.0.0.1:9/volcengine/v1');
+`, {
+    UNLIMITDS_API_KEY: 'uds_unlimitds_env_test_key',
+    UNLIMITDS_BASE_URL: 'http://127.0.0.1:9/unlimitds/v1',
+    UNLIMITDS_V4_PRO_MODEL: 'unlimitds-custom-model'
+});
+
 // NVIDIA 分支必须请求 OpenAI Chat Completions、强制流式，并锁定非思考模式。
 const originalFetch = globalThis.fetch;
 try {
     let nvidiaRequestedPath = '';
+    let nvidiaAuthorization = '';
     let nvidiaRequestBody = null;
     const nvidiaServer = createServer((req, res) => {
         let body = '';
@@ -99,6 +191,7 @@ try {
         req.on('data', chunk => { body += chunk; });
         req.on('end', () => {
             nvidiaRequestedPath = req.url;
+            nvidiaAuthorization = req.headers.authorization;
             nvidiaRequestBody = JSON.parse(body);
             const streamBody = [
                 'data: {"id":"test","object":"chat.completion.chunk","created":1,"model":"deepseek-ai/deepseek-v4-pro-0813","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}',
@@ -126,6 +219,7 @@ try {
             max_tokens: 20000
         });
         assert.equal(nvidiaRequestedPath, '/v1/chat/completions');
+        assert.equal(nvidiaAuthorization, 'Bearer nvidia_test_key');
         assert.equal(nvidiaRequestBody.model, NVIDIA_V4_PRO_MODEL);
         assert.equal(nvidiaRequestBody.max_tokens, 16384);
         assert.equal(nvidiaRequestBody.stream, true);
@@ -133,6 +227,82 @@ try {
         assert.equal(nvidiaCompletion.choices[0].message.content, 'OK');
     } finally {
         await new Promise((resolve, reject) => nvidiaServer.close(error => error ? reject(error) : resolve()));
+    }
+
+    // 第五路 UnlimitDS 独立鉴权、强制 SSE；不得沿用 NVIDIA 的参数或合并思考链。
+    const unlimitdsRequests = [];
+    const unlimitdsServer = createServer((req, res) => {
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            unlimitdsRequests.push({
+                method: req.method,
+                path: req.url,
+                authorization: req.headers.authorization,
+                body: JSON.parse(body)
+            });
+            const chunks = [
+                { role: 'assistant', reasoning_content: 'PRIVATE_REASONING_ONLY' },
+                { content: 'UNLIMIT', reasoning_content: 'MORE_PRIVATE_REASONING' },
+                { content: 'DS_OK' },
+                {}
+            ].map((delta, index) => `data: ${JSON.stringify({
+                id: 'unlimitds-test',
+                object: 'chat.completion.chunk',
+                created: 1,
+                model: UNLIMITDS_V4_PRO_MODEL,
+                choices: [{ index: 0, delta, finish_reason: index === 3 ? 'stop' : null }]
+            })}`);
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'close' });
+            res.end(`${[...chunks, 'data: [DONE]'].join('\n\n')}\n\n`);
+        });
+    });
+    await new Promise((resolve, reject) => {
+        unlimitdsServer.once('error', reject);
+        unlimitdsServer.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+        const { port } = unlimitdsServer.address();
+        const unlimitdsOptions = {
+            model: UNLIMITDS_V4_PRO_ALIAS,
+            apiKey: 'uds_unlimitds_test_key',
+            baseUrl: `http://127.0.0.1:${port}/v1`,
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 20000,
+            requestTimeoutMs: 5000
+        };
+        const unlimitdsCompletion = await callAI(unlimitdsOptions);
+        assert.equal(unlimitdsCompletion.model, UNLIMITDS_V4_PRO_MODEL);
+        assert.deepEqual(unlimitdsCompletion.choices, [{
+            message: { role: 'assistant', content: 'UNLIMITDS_OK' },
+            finish_reason: 'stop'
+        }]);
+
+        const forwardedChunks = [];
+        const streamedCompletion = await callAI({
+            ...unlimitdsOptions,
+            stream: true,
+            res: { write: chunk => forwardedChunks.push(chunk) }
+        });
+        assert.equal(streamedCompletion, null);
+        assert.deepEqual(forwardedChunks.map(chunk => JSON.parse(chunk.slice('data: '.length))), [
+            { content: 'UNLIMIT' },
+            { content: 'DS_OK' }
+        ]);
+        assert.equal(unlimitdsRequests.length, 2);
+        for (const request of unlimitdsRequests) {
+            assert.equal(request.method, 'POST');
+            assert.equal(request.path, '/v1/chat/completions');
+            assert.equal(request.authorization, 'Bearer uds_unlimitds_test_key');
+            assert.equal(request.body.model, UNLIMITDS_V4_PRO_MODEL);
+            assert.equal(request.body.stream, true);
+            assert.equal(request.body.max_tokens, 20000);
+            assert.equal(Object.hasOwn(request.body, 'chat_template_kwargs'), false);
+            assert.deepEqual(request.body.messages, unlimitdsOptions.messages);
+        }
+    } finally {
+        await new Promise((resolve, reject) => unlimitdsServer.close(error => error ? reject(error) : resolve()));
     }
 
     // 内网分支必须请求内网 /v1/messages，并使用内网错误标签。

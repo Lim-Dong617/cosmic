@@ -42,6 +42,13 @@ services:
         value: https://integrate.api.nvidia.com/v1
       - key: NVIDIA_V4_PRO_MODEL
         value: deepseek-ai/deepseek-v4-pro-0813
+      # 第五路：UnlimitDS DeepSeek V4 Pro（与 NVIDIA 独立）
+      - key: UNLIMITDS_API_KEY
+        sync: false
+      - key: UNLIMITDS_BASE_URL
+        value: https://unlimitds.chat/v1
+      - key: UNLIMITDS_V4_PRO_MODEL
+        value: deepseek-v4-pro
       # 默认模型
       - key: DEFAULT_MODEL
         value: deepseek-v4-pro-ga

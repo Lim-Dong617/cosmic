@@ -26,6 +26,8 @@ const {
     VOLCENGINE_V4_FLASH,
     NVIDIA_V4_PRO_ALIAS,
     NVIDIA_MODELS,
+    UNLIMITDS_V4_PRO_ALIAS,
+    UNLIMITDS_MODELS,
     INTRANET_GLM_ALIAS,
     INTRANET_GLM_MODELS,
     getAIErrorStatus,
@@ -437,7 +439,8 @@ const SENSENOVA_V4_MODEL_ALIASES = new Set([
     VOLCENGINE_V4_FLASH_GA,
     VOLCENGINE_V4_PRO,
     VOLCENGINE_V4_FLASH,
-    NVIDIA_V4_PRO_ALIAS
+    NVIDIA_V4_PRO_ALIAS,
+    UNLIMITDS_V4_PRO_ALIAS
 ]);
 
 function isSenseNovaV4Model(modelName, requestedModel = null) {
@@ -2325,19 +2328,19 @@ function buildFunctionListText(functions) {
 app.get('/api/health', (req, res) => {
     const hasVolcengineApiKey = Boolean(process.env.VOLCENGINE_API_KEY);
     const hasNvidiaApiKey = Boolean(process.env.NVIDIA_API_KEY);
+    const hasUnlimitdsApiKey = Boolean(process.env.UNLIMITDS_API_KEY);
     const hasIntranetGlmApiKey = Boolean(process.env.INTRANET_GLM_API_KEY);
     res.json({
         status: 'ok',
-        hasApiKey: hasVolcengineApiKey || hasNvidiaApiKey || hasIntranetGlmApiKey,
+        hasApiKey: hasVolcengineApiKey || hasNvidiaApiKey || hasUnlimitdsApiKey || hasIntranetGlmApiKey,
         hasVolcengineApiKey,
         hasNvidiaApiKey,
-        // 兼容部署切换期间仍缓存旧前端资源的浏览器。
-        hasUnlimitdsApiKey: hasNvidiaApiKey,
+        hasUnlimitdsApiKey,
         hasIntranetGlmApiKey,
         codeAnalysisModel: MODEL_MAP['deepseek-v4-pro-ga'] || VOLCENGINE_V4_PRO_GA,
         currentModel: currentModel,
         model: currentModel,
-        platform: '火山引擎 / NVIDIA NIM / 内网GLM',
+        platform: '火山引擎 / NVIDIA NIM / UnlimitDS / 内网GLM',
         availableModels: Array.from(new Set(Object.values(MODEL_MAP))),
         aiRequestTimeoutMs: AI_REQUEST_TIMEOUT_MS,
         aiConcurrency: getAIConcurrencyState(),
@@ -2360,6 +2363,12 @@ app.post('/api/switch-model', (req, res) => {
     if (NVIDIA_MODELS.has(modelName) && !process.env.NVIDIA_API_KEY) {
         return res.status(503).json({
             error: '服务器尚未配置 NVIDIA_API_KEY',
+            code: 'MISSING_AI_API_KEY'
+        });
+    }
+    if (UNLIMITDS_MODELS.has(modelName) && !process.env.UNLIMITDS_API_KEY) {
+        return res.status(503).json({
+            error: '服务器尚未配置 UNLIMITDS_API_KEY，请在 Render 环境变量中添加',
             code: 'MISSING_AI_API_KEY'
         });
     }

@@ -42,13 +42,15 @@ const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 const COSMIC_FAST_CONCURRENCY = 2;
 // NVIDIA 免费原型端点先固定单路，避免长任务触发试用配额限流。
 const COSMIC_FAST_CONCURRENCY_NVIDIA = 1;
+// UnlimitDS 长任务先固定单路，降低连接中断与配额限流的风险。
+const COSMIC_FAST_CONCURRENCY_UNLIMITDS = 1;
 // 内网网关的上游存在公平使用与资源包限制，固定单路以避免并发放大限流。
 const COSMIC_FAST_CONCURRENCY_GLM = 1;
 const COSMIC_LARGE_DOCUMENT_CHARS = 12000;
 const COSMIC_LARGE_FUNCTION_COUNT = 40;
 const COSMIC_MANY_CHAPTERS = 8;
 const NVIDIA_MODEL_ALIAS = 'nvidia-deepseek-v4-pro';
-const LEGACY_UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
+const UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
 const INTRANET_GLM_MODEL_ALIAS = 'intranet-glm';
 
 const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
@@ -59,9 +61,11 @@ const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functio
     );
     const baseConcurrency = model === NVIDIA_MODEL_ALIAS
         ? COSMIC_FAST_CONCURRENCY_NVIDIA
-        : model === INTRANET_GLM_MODEL_ALIAS
-            ? COSMIC_FAST_CONCURRENCY_GLM
-            : COSMIC_FAST_CONCURRENCY;
+        : model === UNLIMITDS_MODEL_ALIAS
+            ? COSMIC_FAST_CONCURRENCY_UNLIMITDS
+            : model === INTRANET_GLM_MODEL_ALIAS
+                ? COSMIC_FAST_CONCURRENCY_GLM
+                : COSMIC_FAST_CONCURRENCY;
     return {
         concurrency: mode === 'fast' && !autoStabilized ? baseConcurrency : 1,
         autoStabilized
@@ -351,7 +355,7 @@ function App({ user, token, onLogout }) {
     const [isLoading, setIsLoading] = useState(false);
     const [documentContent, setDocumentContent] = useState('');
     const [documentName, setDocumentName] = useState('');
-    const [apiStatus, setApiStatus] = useState({ hasApiKey: false });
+    const [apiStatus, setApiStatus] = useState({ hasApiKey: false, hasUnlimitdsApiKey: false });
     const [tableData, setTableData] = useState([]);
     const [streamingContent, setStreamingContent] = useState('');
     const [aiActivity, setAiActivity] = useState(initialAiActivity);
@@ -423,7 +427,6 @@ function App({ user, token, onLogout }) {
                 'deepseek-v4-pro': 'deepseek-v4-pro-ga',
                 'sensenova-6.8-flash-lite': NVIDIA_MODEL_ALIAS,
                 'qwen3-coder': NVIDIA_MODEL_ALIAS,
-                [LEGACY_UNLIMITDS_MODEL_ALIAS]: NVIDIA_MODEL_ALIAS,
                 'gpt-5.1-codex-mini': 'deepseek-v4-pro-ga'
             };
             return migrationMap[savedModel] || savedModel || 'deepseek-v4-pro-ga';
@@ -533,6 +536,9 @@ function App({ user, token, onLogout }) {
             if (!res.data.hasNvidiaApiKey) {
                 setSelectedModel(model => model === NVIDIA_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
             }
+            if (!res.data.hasUnlimitdsApiKey) {
+                setSelectedModel(model => model === UNLIMITDS_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
+            }
             if (!res.data.hasIntranetGlmApiKey) {
                 setSelectedModel(model => model === INTRANET_GLM_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
             }
@@ -549,7 +555,8 @@ function App({ user, token, onLogout }) {
                 'deepseek-v4-pro-ga': 'DeepSeek-V4-Pro正式版',
                 'deepseek-v4-flash-ga': 'DeepSeek-V4-Flash正式版',
                 [INTRANET_GLM_MODEL_ALIAS]: '内网GLM',
-                [NVIDIA_MODEL_ALIAS]: 'DeepSeek-V4-Pro（NVIDIA）'
+                [NVIDIA_MODEL_ALIAS]: 'DeepSeek-V4-Pro（NVIDIA）',
+                [UNLIMITDS_MODEL_ALIAS]: 'DeepSeek-V4-Pro（UnlimitDS）'
             };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
@@ -563,6 +570,7 @@ function App({ user, token, onLogout }) {
             baseUrl: null,
             model: selectedModel,
             provider: selectedModel === NVIDIA_MODEL_ALIAS ? 'nvidia'
+                : selectedModel === UNLIMITDS_MODEL_ALIAS ? 'unlimitds'
                 : selectedModel === INTRANET_GLM_MODEL_ALIAS ? 'intranet-glm'
                 : 'volcengine'
         };
@@ -3434,7 +3442,7 @@ function App({ user, token, onLogout }) {
             role="group"
             aria-label="COSMIC 执行模式"
             title={splitExecutionMode === 'fast'
-                ? `短文档最多 ${selectedModel === NVIDIA_MODEL_ALIAS ? COSMIC_FAST_CONCURRENCY_NVIDIA : selectedModel === INTRANET_GLM_MODEL_ALIAS ? COSMIC_FAST_CONCURRENCY_GLM : COSMIC_FAST_CONCURRENCY} 路并发；大文档、40个以上功能或多章节会自动改为串行`
+                ? `短文档最多 ${resolveCosmicConcurrency({ mode: 'fast', model: selectedModel }).concurrency} 路并发；大文档、40个以上功能或多章节会自动改为串行`
                 : '功能提取和COSMIC拆分均串行执行，适合容易限流或更看重稳定性的模型'}
         >
             <span className="split-execution-label">执行模式</span>
@@ -4416,6 +4424,23 @@ function App({ user, token, onLogout }) {
                                         {apiStatus.status === 'ok' && !apiStatus.hasNvidiaApiKey
                                             ? 'NVIDIA NIM · 需配置 API Key'
                                             : 'NVIDIA NIM · 免费原型端点'}
+                                    </div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option ${selectedModel === UNLIMITDS_MODEL_ALIAS ? 'active' : ''}`}
+                                onClick={() => handleModelChange(UNLIMITDS_MODEL_ALIAS)}
+                                disabled={apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey}
+                                title={apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey ? '服务器尚未配置 UNLIMITDS_API_KEY' : '使用 UnlimitDS DeepSeek V4 Pro（https://unlimitds.chat/v1）'}
+                                style={selectedModel === UNLIMITDS_MODEL_ALIAS ? { borderColor: '#f59e0b', background: 'rgba(245,158,11,0.12)' } : {}}
+                            >
+                                <span className="model-option-dot" style={{ background: '#f59e0b' }} />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-Pro</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>
+                                        {apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey
+                                            ? 'UnlimitDS · 需配置 API Key'
+                                            : 'UnlimitDS · 稳健单路'}
                                     </div>
                                 </div>
                             </button>

@@ -23,10 +23,16 @@ const VOLCENGINE_CODING_BASE_URL = process.env.VOLCENGINE_CODING_BASE_URL || 'ht
 // NVIDIA NIM OpenAI 兼容配置。使用独立内部别名，避免与火山引擎
 // `deepseek-v4-pro` UI 别名发生二次映射冲突。
 const NVIDIA_V4_PRO_ALIAS = 'nvidia-deepseek-v4-pro';
-const LEGACY_UNLIMITDS_V4_PRO_ALIAS = 'unlimitds-deepseek-v4-pro';
 const NVIDIA_V4_PRO_MODEL = process.env.NVIDIA_V4_PRO_MODEL || 'deepseek-ai/deepseek-v4-pro-0813';
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || null;
 const NVIDIA_BASE_URL = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+
+// 第五路 UnlimitDS 独立配置。内部别名保持到请求发出前，实际模型名
+// `deepseek-v4-pro` 不能再次参与 MODEL_MAP 映射或借用其他提供商密钥。
+const UNLIMITDS_V4_PRO_ALIAS = 'unlimitds-deepseek-v4-pro';
+const UNLIMITDS_V4_PRO_MODEL = process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro';
+const UNLIMITDS_API_KEY = process.env.UNLIMITDS_API_KEY || null;
+const UNLIMITDS_BASE_URL = process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1';
 
 // 内网 GLM OpenAI 兼容配置
 const INTRANET_GLM_ALIAS = 'intranet-glm';
@@ -157,7 +163,7 @@ const MODEL_MAP = {
     'deepseek-v4-pro': VOLCENGINE_V4_PRO,               // DeepSeek-V4-pro
     'deepseek-v4-flash': VOLCENGINE_V4_FLASH,           // DeepSeek-V4-flash
     [NVIDIA_V4_PRO_ALIAS]: NVIDIA_V4_PRO_ALIAS,          // NVIDIA NIM DeepSeek-V4-Pro
-    [LEGACY_UNLIMITDS_V4_PRO_ALIAS]: NVIDIA_V4_PRO_ALIAS, // 旧第四路缓存 → NVIDIA NIM
+    [UNLIMITDS_V4_PRO_ALIAS]: UNLIMITDS_V4_PRO_ALIAS,    // UnlimitDS DeepSeek-V4-Pro
     [INTRANET_GLM_ALIAS]: INTRANET_GLM_ALIAS,            // 内网 GLM
     // 兼容旧入口 → 统一映射到新模型
     'deepseek-v4-flash-free': VOLCENGINE_V4_FLASH_GA,   // 旧Flash → Flash正式版
@@ -186,6 +192,7 @@ const VOLCENGINE_MODELS = new Set([
     VOLCENGINE_V4_FLASH
 ]);
 const NVIDIA_MODELS = new Set([NVIDIA_V4_PRO_ALIAS]);
+const UNLIMITDS_MODELS = new Set([UNLIMITDS_V4_PRO_ALIAS]);
 const INTRANET_GLM_MODELS = new Set([INTRANET_GLM_ALIAS]);
 
 // 已废弃的平台列表（保留变量以兼容其他模块引用）
@@ -198,7 +205,8 @@ const KRILL_MODELS = new Set([]);
 const STREAM_ONLY_MODELS = new Set([
     VOLCENGINE_V4_PRO_GA,
     VOLCENGINE_V4_PRO,
-    NVIDIA_V4_PRO_ALIAS
+    NVIDIA_V4_PRO_ALIAS,
+    UNLIMITDS_V4_PRO_ALIAS
 ]);
 
 function resolveModelRoute(model, apiKey = null, baseUrl = null) {
@@ -210,6 +218,15 @@ function resolveModelRoute(model, apiKey = null, baseUrl = null) {
             requestModelName: NVIDIA_V4_PRO_MODEL,
             apiKey: apiKey || NVIDIA_API_KEY,
             baseUrl: baseUrl || NVIDIA_BASE_URL
+        };
+    }
+    if (UNLIMITDS_MODELS.has(modelName)) {
+        return {
+            provider: 'unlimitds',
+            modelName,
+            requestModelName: UNLIMITDS_V4_PRO_MODEL,
+            apiKey: apiKey || UNLIMITDS_API_KEY,
+            baseUrl: baseUrl || UNLIMITDS_BASE_URL
         };
     }
     if (INTRANET_GLM_MODELS.has(modelName)) {
@@ -237,6 +254,7 @@ function createClient(apiKey, baseUrl, model, timeoutMs = AI_REQUEST_TIMEOUT_MS)
     const route = resolveModelRoute(model, apiKey, baseUrl);
     if (!route.apiKey) {
         const envName = route.provider === 'nvidia' ? 'NVIDIA_API_KEY'
+            : route.provider === 'unlimitds' ? 'UNLIMITDS_API_KEY'
             : route.provider === 'intranet-glm' ? 'INTRANET_GLM_API_KEY'
             : 'VOLCENGINE_API_KEY';
         const error = new Error(`缺少 ${envName}`);
@@ -605,7 +623,8 @@ async function callAI(options) {
             let finishReason = 'stop';
             const isProModel = modelName === VOLCENGINE_V4_PRO_GA
                 || modelName === VOLCENGINE_V4_PRO
-                || NVIDIA_MODELS.has(modelName);
+                || NVIDIA_MODELS.has(modelName)
+                || UNLIMITDS_MODELS.has(modelName);
             for await (const chunk of completion) {
                 guard.touch();
                 const delta = chunk.choices[0]?.delta;
@@ -848,10 +867,13 @@ module.exports = {
     VOLCENGINE_CODING_BASE_URL,
     VOLCENGINE_MODELS,
     NVIDIA_V4_PRO_ALIAS,
-    LEGACY_UNLIMITDS_V4_PRO_ALIAS,
     NVIDIA_V4_PRO_MODEL,
     NVIDIA_BASE_URL,
     NVIDIA_MODELS,
+    UNLIMITDS_V4_PRO_ALIAS,
+    UNLIMITDS_V4_PRO_MODEL,
+    UNLIMITDS_BASE_URL,
+    UNLIMITDS_MODELS,
     // 内网 GLM
     INTRANET_GLM_ALIAS,
     INTRANET_GLM_MODEL,
