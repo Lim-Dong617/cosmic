@@ -19,6 +19,10 @@ const {
     UNLIMITDS_V4_PRO_MODEL,
     UNLIMITDS_BASE_URL,
     UNLIMITDS_MODELS,
+    SILICONFLOW_V4_FLASH_ALIAS,
+    SILICONFLOW_V4_FLASH_MODEL,
+    SILICONFLOW_BASE_URL,
+    SILICONFLOW_MODELS,
     INTRANET_GLM_ALIAS,
     INTRANET_GLM_MODEL,
     INTRANET_GLM_FALLBACK_MODEL,
@@ -48,6 +52,9 @@ assert.equal(NVIDIA_BASE_URL, process.env.NVIDIA_BASE_URL || 'https://integrate.
 assert.equal(UNLIMITDS_V4_PRO_ALIAS, 'unlimitds-deepseek-v4-pro');
 assert.equal(UNLIMITDS_V4_PRO_MODEL, process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro');
 assert.equal(UNLIMITDS_BASE_URL, process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1');
+assert.equal(SILICONFLOW_V4_FLASH_ALIAS, 'siliconflow-deepseek-v4-flash');
+assert.equal(SILICONFLOW_V4_FLASH_MODEL, process.env.SILICONFLOW_V4_FLASH_MODEL || 'deepseek-ai/DeepSeek-V4-Flash');
+assert.equal(SILICONFLOW_BASE_URL, process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1');
 assert.equal(INTRANET_GLM_ALIAS, 'intranet-glm');
 assert.equal(INTRANET_GLM_MODEL, process.env.INTRANET_GLM_MODEL || 'glm-5.2');
 assert.equal(INTRANET_GLM_FALLBACK_MODEL, process.env.INTRANET_GLM_FALLBACK_MODEL || 'glm-5.1');
@@ -60,6 +67,7 @@ assert.equal(MODEL_MAP['deepseek-v4-pro'], VOLCENGINE_V4_PRO);
 assert.equal(MODEL_MAP['deepseek-v4-flash'], VOLCENGINE_V4_FLASH);
 assert.equal(MODEL_MAP[NVIDIA_V4_PRO_ALIAS], NVIDIA_V4_PRO_ALIAS);
 assert.equal(MODEL_MAP[UNLIMITDS_V4_PRO_ALIAS], UNLIMITDS_V4_PRO_ALIAS);
+assert.equal(MODEL_MAP[SILICONFLOW_V4_FLASH_ALIAS], SILICONFLOW_V4_FLASH_ALIAS);
 
 // VOLCENGINE_MODELS 包含所有四个模型
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_PRO_GA));
@@ -68,9 +76,12 @@ assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_PRO));
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_FLASH));
 assert.ok(NVIDIA_MODELS.has(NVIDIA_V4_PRO_ALIAS));
 assert.deepEqual([...UNLIMITDS_MODELS], [UNLIMITDS_V4_PRO_ALIAS]);
+assert.deepEqual([...SILICONFLOW_MODELS], [SILICONFLOW_V4_FLASH_ALIAS]);
 assert.equal(NVIDIA_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
 assert.equal(VOLCENGINE_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
 assert.equal(UNLIMITDS_MODELS.has(NVIDIA_V4_PRO_ALIAS), false);
+assert.equal(VOLCENGINE_MODELS.has(SILICONFLOW_V4_FLASH_ALIAS), false);
+assert.equal(SILICONFLOW_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
 assert.ok(INTRANET_GLM_MODELS.has(INTRANET_GLM_ALIAS));
 
 // 同名模型必须通过独立内部别名路由，不能二次映射回火山引擎预览版。
@@ -104,6 +115,16 @@ assert.equal(overriddenUnlimitdsRoute.baseUrl, 'https://unlimitds-gateway.exampl
 assert.deepEqual(
     resolveModelRoute(unlimitdsRoute.modelName, unlimitdsRoute.apiKey, unlimitdsRoute.baseUrl),
     unlimitdsRoute
+);
+const siliconflowRoute = resolveModelRoute(SILICONFLOW_V4_FLASH_ALIAS, 'siliconflow_test_key');
+assert.equal(siliconflowRoute.provider, 'siliconflow');
+assert.equal(siliconflowRoute.modelName, SILICONFLOW_V4_FLASH_ALIAS);
+assert.equal(siliconflowRoute.requestModelName, SILICONFLOW_V4_FLASH_MODEL);
+assert.equal(siliconflowRoute.apiKey, 'siliconflow_test_key');
+assert.equal(siliconflowRoute.baseUrl, SILICONFLOW_BASE_URL);
+assert.deepEqual(
+    resolveModelRoute(siliconflowRoute.modelName, siliconflowRoute.apiKey, siliconflowRoute.baseUrl),
+    siliconflowRoute
 );
 assert.equal(resolveModelRoute('deepseek-v4-pro').modelName, VOLCENGINE_V4_PRO);
 const intranetRoute = resolveModelRoute(INTRANET_GLM_ALIAS, 'intranet_test_key');
@@ -160,6 +181,22 @@ checkIsolatedUnlimitdsConfig(`
 `);
 
 checkIsolatedUnlimitdsConfig(`
+    const route = ai.resolveModelRoute(ai.SILICONFLOW_V4_FLASH_ALIAS);
+    assert.equal(route.provider, 'siliconflow');
+    assert.equal(route.apiKey, null);
+    assert.equal(route.baseUrl, 'https://api.siliconflow.cn/v1');
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4-Flash');
+    await assert.rejects(ai.callAI({
+        model: ai.SILICONFLOW_V4_FLASH_ALIAS,
+        messages: [{ role: 'user', content: 'ping' }],
+        requestTimeoutMs: 1000
+    }), error => error.code === 'MISSING_AI_API_KEY'
+        && error.status === 503
+        && /SILICONFLOW_API_KEY/.test(error.message)
+        && !ai.isRetryableAIError(error));
+`);
+
+checkIsolatedUnlimitdsConfig(`
     assert.equal(ai.UNLIMITDS_V4_PRO_MODEL, 'unlimitds-custom-model');
     assert.equal(ai.UNLIMITDS_BASE_URL, 'http://127.0.0.1:9/unlimitds/v1');
     assert.deepEqual(ai.resolveModelRoute(ai.UNLIMITDS_V4_PRO_ALIAS), {
@@ -173,10 +210,22 @@ checkIsolatedUnlimitdsConfig(`
     assert.equal(ai.resolveModelRoute(ai.NVIDIA_V4_PRO_ALIAS).baseUrl, 'http://127.0.0.1:9/nvidia/v1');
     assert.equal(ai.resolveModelRoute('deepseek-v4-pro').apiKey, 'volcengine_env_test_key');
     assert.equal(ai.resolveModelRoute('deepseek-v4-pro').baseUrl, 'http://127.0.0.1:9/volcengine/v1');
+    assert.equal(ai.SILICONFLOW_V4_FLASH_MODEL, 'siliconflow-custom-model');
+    assert.equal(ai.SILICONFLOW_BASE_URL, 'http://127.0.0.1:9/siliconflow/v1');
+    assert.deepEqual(ai.resolveModelRoute(ai.SILICONFLOW_V4_FLASH_ALIAS), {
+        provider: 'siliconflow',
+        modelName: ai.SILICONFLOW_V4_FLASH_ALIAS,
+        requestModelName: 'siliconflow-custom-model',
+        apiKey: 'siliconflow_env_test_key',
+        baseUrl: 'http://127.0.0.1:9/siliconflow/v1'
+    });
 `, {
     UNLIMITDS_API_KEY: 'uds_unlimitds_env_test_key',
     UNLIMITDS_BASE_URL: 'http://127.0.0.1:9/unlimitds/v1',
-    UNLIMITDS_V4_PRO_MODEL: 'unlimitds-custom-model'
+    UNLIMITDS_V4_PRO_MODEL: 'unlimitds-custom-model',
+    SILICONFLOW_API_KEY: 'siliconflow_env_test_key',
+    SILICONFLOW_BASE_URL: 'http://127.0.0.1:9/siliconflow/v1',
+    SILICONFLOW_V4_FLASH_MODEL: 'siliconflow-custom-model'
 });
 
 // NVIDIA 分支必须请求 OpenAI Chat Completions、强制流式，并锁定非思考模式。
@@ -303,6 +352,62 @@ try {
         }
     } finally {
         await new Promise((resolve, reject) => unlimitdsServer.close(error => error ? reject(error) : resolve()));
+    }
+
+    // 硅基流动使用独立鉴权，并按标准 OpenAI Chat Completions 非流式调用。
+    let siliconflowRequest = null;
+    const siliconflowServer = createServer((req, res) => {
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            siliconflowRequest = {
+                method: req.method,
+                path: req.url,
+                authorization: req.headers.authorization,
+                body: JSON.parse(body)
+            };
+            res.writeHead(200, { 'Content-Type': 'application/json', Connection: 'close' });
+            res.end(JSON.stringify({
+                id: 'siliconflow-test',
+                object: 'chat.completion',
+                created: 1,
+                model: SILICONFLOW_V4_FLASH_MODEL,
+                choices: [{
+                    index: 0,
+                    message: { role: 'assistant', content: 'SILICONFLOW_OK' },
+                    finish_reason: 'stop'
+                }],
+                usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+            }));
+        });
+    });
+    await new Promise((resolve, reject) => {
+        siliconflowServer.once('error', reject);
+        siliconflowServer.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+        const { port } = siliconflowServer.address();
+        const messages = [{ role: 'user', content: 'ping' }];
+        const siliconflowCompletion = await callAI({
+            model: SILICONFLOW_V4_FLASH_ALIAS,
+            apiKey: 'siliconflow_test_key',
+            baseUrl: `http://127.0.0.1:${port}/v1`,
+            messages,
+            max_tokens: 1234,
+            requestTimeoutMs: 5000
+        });
+        assert.equal(siliconflowRequest.method, 'POST');
+        assert.equal(siliconflowRequest.path, '/v1/chat/completions');
+        assert.equal(siliconflowRequest.authorization, 'Bearer siliconflow_test_key');
+        assert.equal(siliconflowRequest.body.model, SILICONFLOW_V4_FLASH_MODEL);
+        assert.equal(siliconflowRequest.body.stream, false);
+        assert.equal(siliconflowRequest.body.max_tokens, 1234);
+        assert.deepEqual(siliconflowRequest.body.messages, messages);
+        assert.equal(Object.hasOwn(siliconflowRequest.body, 'chat_template_kwargs'), false);
+        assert.equal(siliconflowCompletion.choices[0].message.content, 'SILICONFLOW_OK');
+    } finally {
+        await new Promise((resolve, reject) => siliconflowServer.close(error => error ? reject(error) : resolve()));
     }
 
     // 内网分支必须请求内网 /v1/messages，并使用内网错误标签。

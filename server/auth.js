@@ -5,6 +5,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { timingSafeEqual } = require('crypto');
 const { userOps, conversationOps } = require('./database');
 
 const router = express.Router();
@@ -12,6 +13,18 @@ const router = express.Router();
 // JWT 密钥（生产环境应从环境变量读取）
 const JWT_SECRET = process.env.JWT_SECRET || 'cosmic-split-system-jwt-secret-2024';
 const JWT_EXPIRES_IN = '7d'; // 7天有效期
+const REGISTRATION_INVITE_CODE = String(process.env.REGISTRATION_INVITE_CODE || '').trim();
+
+if (!REGISTRATION_INVITE_CODE) {
+    console.warn('⚠️ 未配置 REGISTRATION_INVITE_CODE，新用户注册已关闭');
+}
+
+function isValidRegistrationInviteCode(value) {
+    if (!REGISTRATION_INVITE_CODE || typeof value !== 'string') return false;
+    const received = Buffer.from(value.trim(), 'utf8');
+    const expected = Buffer.from(REGISTRATION_INVITE_CODE, 'utf8');
+    return received.length === expected.length && timingSafeEqual(received, expected);
+}
 
 // 预设的头像颜色池
 const AVATAR_COLORS = [
@@ -43,7 +56,12 @@ function authMiddleware(req, res, next) {
 
 router.post('/register', async (req, res) => {
     try {
-        const { username, password, displayName } = req.body;
+        const { username, password, displayName, inviteCode } = req.body;
+
+        // 邀请码必须先于数据库查询校验，防止绕过前端直接开放注册。
+        if (!isValidRegistrationInviteCode(inviteCode)) {
+            return res.status(403).json({ error: '管理员邀请码无效，无法注册' });
+        }
 
         // 校验输入
         if (!username || !password) {

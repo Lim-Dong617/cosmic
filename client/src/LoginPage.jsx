@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { User, Lock, Eye, EyeOff, ArrowRight, UserPlus, LogIn } from 'lucide-react';
+import { User, Lock, KeyRound, Eye, EyeOff, ArrowRight, UserPlus, LogIn } from 'lucide-react';
 import LoginOrb from './LoginOrb.jsx';
 
 export default function LoginPage({ onLoginSuccess }) {
@@ -9,6 +9,7 @@ export default function LoginPage({ onLoginSuccess }) {
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [displayName, setDisplayName] = useState('');
+    const [inviteCode, setInviteCode] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
@@ -23,6 +24,10 @@ export default function LoginPage({ onLoginSuccess }) {
         }
 
         if (isRegister) {
+            if (!inviteCode.trim()) {
+                setError('请输入管理员邀请码');
+                return;
+            }
             if (password !== confirmPassword) {
                 setError('两次输入的密码不一致');
                 return;
@@ -38,7 +43,12 @@ export default function LoginPage({ onLoginSuccess }) {
         try {
             const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
             const payload = isRegister
-                ? { username: username.trim(), password, displayName: displayName.trim() || username.trim() }
+                ? {
+                    username: username.trim(),
+                    password,
+                    displayName: displayName.trim() || username.trim(),
+                    inviteCode: inviteCode.trim()
+                }
                 : { username: username.trim(), password };
 
             const res = await axios.post(endpoint, payload);
@@ -61,6 +71,7 @@ export default function LoginPage({ onLoginSuccess }) {
         setError('');
         setPassword('');
         setConfirmPassword('');
+        setInviteCode('');
     };
 
     return (
@@ -170,6 +181,23 @@ export default function LoginPage({ onLoginSuccess }) {
                                         value={displayName}
                                         onChange={e => setDisplayName(e.target.value)}
                                         placeholder="您希望显示的名称"
+                                    />
+                                </div>
+                            )}
+
+                            {isRegister && (
+                                <div className="login-field">
+                                    <label htmlFor="login-invite-code">
+                                        <KeyRound size={16} />
+                                        管理员邀请码
+                                    </label>
+                                    <input
+                                        id="login-invite-code"
+                                        type="password"
+                                        value={inviteCode}
+                                        onChange={e => setInviteCode(e.target.value)}
+                                        placeholder="请输入管理员提供的邀请码"
+                                        autoComplete="off"
                                     />
                                 </div>
                             )}

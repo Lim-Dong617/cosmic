@@ -51,6 +51,7 @@ const COSMIC_LARGE_FUNCTION_COUNT = 40;
 const COSMIC_MANY_CHAPTERS = 8;
 const NVIDIA_MODEL_ALIAS = 'nvidia-deepseek-v4-pro';
 const UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
+const SILICONFLOW_MODEL_ALIAS = 'siliconflow-deepseek-v4-flash';
 const INTRANET_GLM_MODEL_ALIAS = 'intranet-glm';
 
 const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
@@ -355,7 +356,11 @@ function App({ user, token, onLogout }) {
     const [isLoading, setIsLoading] = useState(false);
     const [documentContent, setDocumentContent] = useState('');
     const [documentName, setDocumentName] = useState('');
-    const [apiStatus, setApiStatus] = useState({ hasApiKey: false, hasUnlimitdsApiKey: false });
+    const [apiStatus, setApiStatus] = useState({
+        hasApiKey: false,
+        hasUnlimitdsApiKey: false,
+        hasSiliconflowApiKey: false
+    });
     const [tableData, setTableData] = useState([]);
     const [streamingContent, setStreamingContent] = useState('');
     const [aiActivity, setAiActivity] = useState(initialAiActivity);
@@ -539,6 +544,9 @@ function App({ user, token, onLogout }) {
             if (!res.data.hasUnlimitdsApiKey) {
                 setSelectedModel(model => model === UNLIMITDS_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
             }
+            if (!res.data.hasSiliconflowApiKey) {
+                setSelectedModel(model => model === SILICONFLOW_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
+            }
             if (!res.data.hasIntranetGlmApiKey) {
                 setSelectedModel(model => model === INTRANET_GLM_MODEL_ALIAS ? 'deepseek-v4-pro-ga' : model);
             }
@@ -556,7 +564,8 @@ function App({ user, token, onLogout }) {
                 'deepseek-v4-flash-ga': 'DeepSeek-V4-Flash正式版',
                 [INTRANET_GLM_MODEL_ALIAS]: '内网GLM',
                 [NVIDIA_MODEL_ALIAS]: 'DeepSeek-V4-Pro（NVIDIA）',
-                [UNLIMITDS_MODEL_ALIAS]: 'DeepSeek-V4-Pro（UnlimitDS）'
+                [UNLIMITDS_MODEL_ALIAS]: 'DeepSeek-V4-Pro（UnlimitDS）',
+                [SILICONFLOW_MODEL_ALIAS]: 'DeepSeek-V4-Flash（硅基流动）'
             };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
@@ -571,6 +580,7 @@ function App({ user, token, onLogout }) {
             model: selectedModel,
             provider: selectedModel === NVIDIA_MODEL_ALIAS ? 'nvidia'
                 : selectedModel === UNLIMITDS_MODEL_ALIAS ? 'unlimitds'
+                : selectedModel === SILICONFLOW_MODEL_ALIAS ? 'siliconflow'
                 : selectedModel === INTRANET_GLM_MODEL_ALIAS ? 'intranet-glm'
                 : 'volcengine'
         };
@@ -4441,6 +4451,23 @@ function App({ user, token, onLogout }) {
                                         {apiStatus.status === 'ok' && !apiStatus.hasUnlimitdsApiKey
                                             ? 'UnlimitDS · 需配置 API Key'
                                             : 'UnlimitDS · 稳健单路'}
+                                    </div>
+                                </div>
+                            </button>
+                            <button
+                                className={`model-option ${selectedModel === SILICONFLOW_MODEL_ALIAS ? 'active' : ''}`}
+                                onClick={() => handleModelChange(SILICONFLOW_MODEL_ALIAS)}
+                                disabled={apiStatus.status === 'ok' && !apiStatus.hasSiliconflowApiKey}
+                                title={apiStatus.status === 'ok' && !apiStatus.hasSiliconflowApiKey ? '服务器尚未配置 SILICONFLOW_API_KEY' : '使用硅基流动 DeepSeek V4 Flash'}
+                                style={selectedModel === SILICONFLOW_MODEL_ALIAS ? { borderColor: '#06b6d4', background: 'rgba(6,182,212,0.12)' } : {}}
+                            >
+                                <span className="model-option-dot" style={{ background: '#06b6d4' }} />
+                                <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-Flash</div>
+                                    <div style={{ fontSize: 11, opacity: 0.6 }}>
+                                        {apiStatus.status === 'ok' && !apiStatus.hasSiliconflowApiKey
+                                            ? '硅基流动 · 需配置 API Key'
+                                            : '硅基流动 · 高速通道'}
                                     </div>
                                 </div>
                             </button>

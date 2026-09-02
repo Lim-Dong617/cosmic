@@ -49,6 +49,13 @@ services:
         value: https://unlimitds.chat/v1
       - key: UNLIMITDS_V4_PRO_MODEL
         value: deepseek-v4-pro
+      # 硅基流动 DeepSeek V4 Flash（OpenAI 兼容接口）
+      - key: SILICONFLOW_API_KEY
+        sync: false
+      - key: SILICONFLOW_BASE_URL
+        value: https://api.siliconflow.cn/v1
+      - key: SILICONFLOW_V4_FLASH_MODEL
+        value: deepseek-ai/DeepSeek-V4-Flash
       # 默认模型
       - key: DEFAULT_MODEL
         value: deepseek-v4-pro-ga
@@ -71,3 +78,6 @@ services:
         value: 2
       - key: JWT_SECRET
         generateValue: true
+      # 管理员掌握的共享注册邀请码（在 Render 控制台中配置）
+      - key: REGISTRATION_INVITE_CODE
+        sync: false

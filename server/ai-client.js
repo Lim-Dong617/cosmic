@@ -34,6 +34,13 @@ const UNLIMITDS_V4_PRO_MODEL = process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v
 const UNLIMITDS_API_KEY = process.env.UNLIMITDS_API_KEY || null;
 const UNLIMITDS_BASE_URL = process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1';
 
+// 硅基流动 DeepSeek V4 Flash（OpenAI 兼容接口）。使用独立内部别名，
+// 避免与火山引擎的 `deepseek-v4-flash` UI 别名发生路由冲突。
+const SILICONFLOW_V4_FLASH_ALIAS = 'siliconflow-deepseek-v4-flash';
+const SILICONFLOW_V4_FLASH_MODEL = process.env.SILICONFLOW_V4_FLASH_MODEL || 'deepseek-ai/DeepSeek-V4-Flash';
+const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY || null;
+const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
+
 // 内网 GLM OpenAI 兼容配置
 const INTRANET_GLM_ALIAS = 'intranet-glm';
 const INTRANET_GLM_MODEL = process.env.INTRANET_GLM_MODEL || 'glm-5.2';
@@ -164,6 +171,7 @@ const MODEL_MAP = {
     'deepseek-v4-flash': VOLCENGINE_V4_FLASH,           // DeepSeek-V4-flash
     [NVIDIA_V4_PRO_ALIAS]: NVIDIA_V4_PRO_ALIAS,          // NVIDIA NIM DeepSeek-V4-Pro
     [UNLIMITDS_V4_PRO_ALIAS]: UNLIMITDS_V4_PRO_ALIAS,    // UnlimitDS DeepSeek-V4-Pro
+    [SILICONFLOW_V4_FLASH_ALIAS]: SILICONFLOW_V4_FLASH_ALIAS, // 硅基流动 DeepSeek-V4-Flash
     [INTRANET_GLM_ALIAS]: INTRANET_GLM_ALIAS,            // 内网 GLM
     // 兼容旧入口 → 统一映射到新模型
     'deepseek-v4-flash-free': VOLCENGINE_V4_FLASH_GA,   // 旧Flash → Flash正式版
@@ -193,6 +201,7 @@ const VOLCENGINE_MODELS = new Set([
 ]);
 const NVIDIA_MODELS = new Set([NVIDIA_V4_PRO_ALIAS]);
 const UNLIMITDS_MODELS = new Set([UNLIMITDS_V4_PRO_ALIAS]);
+const SILICONFLOW_MODELS = new Set([SILICONFLOW_V4_FLASH_ALIAS]);
 const INTRANET_GLM_MODELS = new Set([INTRANET_GLM_ALIAS]);
 
 // 已废弃的平台列表（保留变量以兼容其他模块引用）
@@ -229,6 +238,15 @@ function resolveModelRoute(model, apiKey = null, baseUrl = null) {
             baseUrl: baseUrl || UNLIMITDS_BASE_URL
         };
     }
+    if (SILICONFLOW_MODELS.has(modelName)) {
+        return {
+            provider: 'siliconflow',
+            modelName,
+            requestModelName: SILICONFLOW_V4_FLASH_MODEL,
+            apiKey: apiKey || SILICONFLOW_API_KEY,
+            baseUrl: baseUrl || SILICONFLOW_BASE_URL
+        };
+    }
     if (INTRANET_GLM_MODELS.has(modelName)) {
         return {
             provider: 'intranet-glm',
@@ -255,6 +273,7 @@ function createClient(apiKey, baseUrl, model, timeoutMs = AI_REQUEST_TIMEOUT_MS)
     if (!route.apiKey) {
         const envName = route.provider === 'nvidia' ? 'NVIDIA_API_KEY'
             : route.provider === 'unlimitds' ? 'UNLIMITDS_API_KEY'
+            : route.provider === 'siliconflow' ? 'SILICONFLOW_API_KEY'
             : route.provider === 'intranet-glm' ? 'INTRANET_GLM_API_KEY'
             : 'VOLCENGINE_API_KEY';
         const error = new Error(`缺少 ${envName}`);
@@ -874,6 +893,10 @@ module.exports = {
     UNLIMITDS_V4_PRO_MODEL,
     UNLIMITDS_BASE_URL,
     UNLIMITDS_MODELS,
+    SILICONFLOW_V4_FLASH_ALIAS,
+    SILICONFLOW_V4_FLASH_MODEL,
+    SILICONFLOW_BASE_URL,
+    SILICONFLOW_MODELS,
     // 内网 GLM
     INTRANET_GLM_ALIAS,
     INTRANET_GLM_MODEL,
