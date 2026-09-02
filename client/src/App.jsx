@@ -51,7 +51,7 @@ const COSMIC_LARGE_FUNCTION_COUNT = 40;
 const COSMIC_MANY_CHAPTERS = 8;
 const NVIDIA_MODEL_ALIAS = 'nvidia-deepseek-v4-pro';
 const UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
-const SILICONFLOW_MODEL_ALIAS = 'siliconflow-deepseek-v4-flash';
+const SILICONFLOW_MODEL_ALIAS = 'siliconflow-deepseek-v3.2';
 const INTRANET_GLM_MODEL_ALIAS = 'intranet-glm';
 
 const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
@@ -432,7 +432,8 @@ function App({ user, token, onLogout }) {
                 'deepseek-v4-pro': 'deepseek-v4-pro-ga',
                 'sensenova-6.8-flash-lite': NVIDIA_MODEL_ALIAS,
                 'qwen3-coder': NVIDIA_MODEL_ALIAS,
-                'gpt-5.1-codex-mini': 'deepseek-v4-pro-ga'
+                'gpt-5.1-codex-mini': 'deepseek-v4-pro-ga',
+                'siliconflow-deepseek-v4-flash': SILICONFLOW_MODEL_ALIAS
             };
             return migrationMap[savedModel] || savedModel || 'deepseek-v4-pro-ga';
         }
@@ -565,7 +566,7 @@ function App({ user, token, onLogout }) {
                 [INTRANET_GLM_MODEL_ALIAS]: '内网GLM',
                 [NVIDIA_MODEL_ALIAS]: 'DeepSeek-V4-Pro（NVIDIA）',
                 [UNLIMITDS_MODEL_ALIAS]: 'DeepSeek-V4-Pro（UnlimitDS）',
-                [SILICONFLOW_MODEL_ALIAS]: 'DeepSeek-V4-Flash（硅基流动）'
+                [SILICONFLOW_MODEL_ALIAS]: 'DeepSeek-V3.2（硅基流动）'
             };
             showToast(`已切换到 ${labels[model] || model}`);
         } catch (error) {
@@ -4458,12 +4459,12 @@ function App({ user, token, onLogout }) {
                                 className={`model-option ${selectedModel === SILICONFLOW_MODEL_ALIAS ? 'active' : ''}`}
                                 onClick={() => handleModelChange(SILICONFLOW_MODEL_ALIAS)}
                                 disabled={apiStatus.status === 'ok' && !apiStatus.hasSiliconflowApiKey}
-                                title={apiStatus.status === 'ok' && !apiStatus.hasSiliconflowApiKey ? '服务器尚未配置 SILICONFLOW_API_KEY' : '使用硅基流动 DeepSeek V4 Flash'}
+                                title={apiStatus.status === 'ok' && !apiStatus.hasSiliconflowApiKey ? '服务器尚未配置 SILICONFLOW_API_KEY' : '使用硅基流动 DeepSeek V3.2'}
                                 style={selectedModel === SILICONFLOW_MODEL_ALIAS ? { borderColor: '#06b6d4', background: 'rgba(6,182,212,0.12)' } : {}}
                             >
                                 <span className="model-option-dot" style={{ background: '#06b6d4' }} />
                                 <div>
-                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V4-Flash</div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>DeepSeek-V3.2</div>
                                     <div style={{ fontSize: 11, opacity: 0.6 }}>
                                         {apiStatus.status === 'ok' && !apiStatus.hasSiliconflowApiKey
                                             ? '硅基流动 · 需配置 API Key'

@@ -49,13 +49,13 @@ services:
         value: https://unlimitds.chat/v1
       - key: UNLIMITDS_V4_PRO_MODEL
         value: deepseek-v4-pro
-      # 硅基流动 DeepSeek V4 Flash（OpenAI 兼容接口）
+      # 硅基流动 DeepSeek V3.2（OpenAI 兼容接口）
       - key: SILICONFLOW_API_KEY
         sync: false
       - key: SILICONFLOW_BASE_URL
         value: https://api.siliconflow.cn/v1
-      - key: SILICONFLOW_V4_FLASH_MODEL
-        value: deepseek-ai/DeepSeek-V4-Flash
+      - key: SILICONFLOW_MODEL
+        value: deepseek-ai/DeepSeek-V3.2
       # 默认模型
       - key: DEFAULT_MODEL
         value: deepseek-v4-pro-ga

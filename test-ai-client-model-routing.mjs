@@ -19,8 +19,8 @@ const {
     UNLIMITDS_V4_PRO_MODEL,
     UNLIMITDS_BASE_URL,
     UNLIMITDS_MODELS,
-    SILICONFLOW_V4_FLASH_ALIAS,
-    SILICONFLOW_V4_FLASH_MODEL,
+    SILICONFLOW_MODEL_ALIAS,
+    SILICONFLOW_MODEL,
     SILICONFLOW_BASE_URL,
     SILICONFLOW_MODELS,
     INTRANET_GLM_ALIAS,
@@ -52,8 +52,8 @@ assert.equal(NVIDIA_BASE_URL, process.env.NVIDIA_BASE_URL || 'https://integrate.
 assert.equal(UNLIMITDS_V4_PRO_ALIAS, 'unlimitds-deepseek-v4-pro');
 assert.equal(UNLIMITDS_V4_PRO_MODEL, process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro');
 assert.equal(UNLIMITDS_BASE_URL, process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1');
-assert.equal(SILICONFLOW_V4_FLASH_ALIAS, 'siliconflow-deepseek-v4-flash');
-assert.equal(SILICONFLOW_V4_FLASH_MODEL, process.env.SILICONFLOW_V4_FLASH_MODEL || 'deepseek-ai/DeepSeek-V4-Flash');
+assert.equal(SILICONFLOW_MODEL_ALIAS, 'siliconflow-deepseek-v3.2');
+assert.equal(SILICONFLOW_MODEL, process.env.SILICONFLOW_MODEL || 'deepseek-ai/DeepSeek-V3.2');
 assert.equal(SILICONFLOW_BASE_URL, process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1');
 assert.equal(INTRANET_GLM_ALIAS, 'intranet-glm');
 assert.equal(INTRANET_GLM_MODEL, process.env.INTRANET_GLM_MODEL || 'glm-5.2');
@@ -67,7 +67,8 @@ assert.equal(MODEL_MAP['deepseek-v4-pro'], VOLCENGINE_V4_PRO);
 assert.equal(MODEL_MAP['deepseek-v4-flash'], VOLCENGINE_V4_FLASH);
 assert.equal(MODEL_MAP[NVIDIA_V4_PRO_ALIAS], NVIDIA_V4_PRO_ALIAS);
 assert.equal(MODEL_MAP[UNLIMITDS_V4_PRO_ALIAS], UNLIMITDS_V4_PRO_ALIAS);
-assert.equal(MODEL_MAP[SILICONFLOW_V4_FLASH_ALIAS], SILICONFLOW_V4_FLASH_ALIAS);
+assert.equal(MODEL_MAP[SILICONFLOW_MODEL_ALIAS], SILICONFLOW_MODEL_ALIAS);
+assert.equal(MODEL_MAP['siliconflow-deepseek-v4-flash'], SILICONFLOW_MODEL_ALIAS);
 
 // VOLCENGINE_MODELS 包含所有四个模型
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_PRO_GA));
@@ -76,11 +77,11 @@ assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_PRO));
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_FLASH));
 assert.ok(NVIDIA_MODELS.has(NVIDIA_V4_PRO_ALIAS));
 assert.deepEqual([...UNLIMITDS_MODELS], [UNLIMITDS_V4_PRO_ALIAS]);
-assert.deepEqual([...SILICONFLOW_MODELS], [SILICONFLOW_V4_FLASH_ALIAS]);
+assert.deepEqual([...SILICONFLOW_MODELS], [SILICONFLOW_MODEL_ALIAS]);
 assert.equal(NVIDIA_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
 assert.equal(VOLCENGINE_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
 assert.equal(UNLIMITDS_MODELS.has(NVIDIA_V4_PRO_ALIAS), false);
-assert.equal(VOLCENGINE_MODELS.has(SILICONFLOW_V4_FLASH_ALIAS), false);
+assert.equal(VOLCENGINE_MODELS.has(SILICONFLOW_MODEL_ALIAS), false);
 assert.equal(SILICONFLOW_MODELS.has(UNLIMITDS_V4_PRO_ALIAS), false);
 assert.ok(INTRANET_GLM_MODELS.has(INTRANET_GLM_ALIAS));
 
@@ -116,16 +117,21 @@ assert.deepEqual(
     resolveModelRoute(unlimitdsRoute.modelName, unlimitdsRoute.apiKey, unlimitdsRoute.baseUrl),
     unlimitdsRoute
 );
-const siliconflowRoute = resolveModelRoute(SILICONFLOW_V4_FLASH_ALIAS, 'siliconflow_test_key');
+const siliconflowRoute = resolveModelRoute(SILICONFLOW_MODEL_ALIAS, 'siliconflow_test_key');
 assert.equal(siliconflowRoute.provider, 'siliconflow');
-assert.equal(siliconflowRoute.modelName, SILICONFLOW_V4_FLASH_ALIAS);
-assert.equal(siliconflowRoute.requestModelName, SILICONFLOW_V4_FLASH_MODEL);
+assert.equal(siliconflowRoute.modelName, SILICONFLOW_MODEL_ALIAS);
+assert.equal(siliconflowRoute.requestModelName, SILICONFLOW_MODEL);
 assert.equal(siliconflowRoute.apiKey, 'siliconflow_test_key');
 assert.equal(siliconflowRoute.baseUrl, SILICONFLOW_BASE_URL);
 assert.deepEqual(
     resolveModelRoute(siliconflowRoute.modelName, siliconflowRoute.apiKey, siliconflowRoute.baseUrl),
     siliconflowRoute
 );
+const legacySiliconflowRoute = resolveModelRoute('siliconflow-deepseek-v4-flash', 'legacy_siliconflow_test_key');
+assert.equal(legacySiliconflowRoute.provider, 'siliconflow');
+assert.equal(legacySiliconflowRoute.modelName, SILICONFLOW_MODEL_ALIAS);
+assert.equal(legacySiliconflowRoute.requestModelName, SILICONFLOW_MODEL);
+assert.equal(legacySiliconflowRoute.apiKey, 'legacy_siliconflow_test_key');
 assert.equal(resolveModelRoute('deepseek-v4-pro').modelName, VOLCENGINE_V4_PRO);
 const intranetRoute = resolveModelRoute(INTRANET_GLM_ALIAS, 'intranet_test_key');
 assert.equal(intranetRoute.provider, 'intranet-glm');
@@ -181,13 +187,13 @@ checkIsolatedUnlimitdsConfig(`
 `);
 
 checkIsolatedUnlimitdsConfig(`
-    const route = ai.resolveModelRoute(ai.SILICONFLOW_V4_FLASH_ALIAS);
+    const route = ai.resolveModelRoute(ai.SILICONFLOW_MODEL_ALIAS);
     assert.equal(route.provider, 'siliconflow');
     assert.equal(route.apiKey, null);
     assert.equal(route.baseUrl, 'https://api.siliconflow.cn/v1');
-    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4-Flash');
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V3.2');
     await assert.rejects(ai.callAI({
-        model: ai.SILICONFLOW_V4_FLASH_ALIAS,
+        model: ai.SILICONFLOW_MODEL_ALIAS,
         messages: [{ role: 'user', content: 'ping' }],
         requestTimeoutMs: 1000
     }), error => error.code === 'MISSING_AI_API_KEY'
@@ -195,6 +201,17 @@ checkIsolatedUnlimitdsConfig(`
         && /SILICONFLOW_API_KEY/.test(error.message)
         && !ai.isRetryableAIError(error));
 `);
+
+// 线上可能残留旧 V4 变量，但新通道必须忽略它并继续使用 V3.2。
+checkIsolatedUnlimitdsConfig(`
+    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V3.2');
+    const route = ai.resolveModelRoute('siliconflow-deepseek-v4-flash');
+    assert.equal(route.provider, 'siliconflow');
+    assert.equal(route.modelName, ai.SILICONFLOW_MODEL_ALIAS);
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V3.2');
+`, {
+    SILICONFLOW_V4_FLASH_MODEL: 'deepseek-ai/DeepSeek-V4-Flash'
+});
 
 checkIsolatedUnlimitdsConfig(`
     assert.equal(ai.UNLIMITDS_V4_PRO_MODEL, 'unlimitds-custom-model');
@@ -210,11 +227,11 @@ checkIsolatedUnlimitdsConfig(`
     assert.equal(ai.resolveModelRoute(ai.NVIDIA_V4_PRO_ALIAS).baseUrl, 'http://127.0.0.1:9/nvidia/v1');
     assert.equal(ai.resolveModelRoute('deepseek-v4-pro').apiKey, 'volcengine_env_test_key');
     assert.equal(ai.resolveModelRoute('deepseek-v4-pro').baseUrl, 'http://127.0.0.1:9/volcengine/v1');
-    assert.equal(ai.SILICONFLOW_V4_FLASH_MODEL, 'siliconflow-custom-model');
+    assert.equal(ai.SILICONFLOW_MODEL, 'siliconflow-custom-model');
     assert.equal(ai.SILICONFLOW_BASE_URL, 'http://127.0.0.1:9/siliconflow/v1');
-    assert.deepEqual(ai.resolveModelRoute(ai.SILICONFLOW_V4_FLASH_ALIAS), {
+    assert.deepEqual(ai.resolveModelRoute(ai.SILICONFLOW_MODEL_ALIAS), {
         provider: 'siliconflow',
-        modelName: ai.SILICONFLOW_V4_FLASH_ALIAS,
+        modelName: ai.SILICONFLOW_MODEL_ALIAS,
         requestModelName: 'siliconflow-custom-model',
         apiKey: 'siliconflow_env_test_key',
         baseUrl: 'http://127.0.0.1:9/siliconflow/v1'
@@ -225,7 +242,7 @@ checkIsolatedUnlimitdsConfig(`
     UNLIMITDS_V4_PRO_MODEL: 'unlimitds-custom-model',
     SILICONFLOW_API_KEY: 'siliconflow_env_test_key',
     SILICONFLOW_BASE_URL: 'http://127.0.0.1:9/siliconflow/v1',
-    SILICONFLOW_V4_FLASH_MODEL: 'siliconflow-custom-model'
+    SILICONFLOW_MODEL: 'siliconflow-custom-model'
 });
 
 // NVIDIA 分支必须请求 OpenAI Chat Completions、强制流式，并锁定非思考模式。
@@ -372,7 +389,7 @@ try {
                 id: 'siliconflow-test',
                 object: 'chat.completion',
                 created: 1,
-                model: SILICONFLOW_V4_FLASH_MODEL,
+                model: SILICONFLOW_MODEL,
                 choices: [{
                     index: 0,
                     message: { role: 'assistant', content: 'SILICONFLOW_OK' },
@@ -390,7 +407,7 @@ try {
         const { port } = siliconflowServer.address();
         const messages = [{ role: 'user', content: 'ping' }];
         const siliconflowCompletion = await callAI({
-            model: SILICONFLOW_V4_FLASH_ALIAS,
+            model: SILICONFLOW_MODEL_ALIAS,
             apiKey: 'siliconflow_test_key',
             baseUrl: `http://127.0.0.1:${port}/v1`,
             messages,
@@ -400,7 +417,7 @@ try {
         assert.equal(siliconflowRequest.method, 'POST');
         assert.equal(siliconflowRequest.path, '/v1/chat/completions');
         assert.equal(siliconflowRequest.authorization, 'Bearer siliconflow_test_key');
-        assert.equal(siliconflowRequest.body.model, SILICONFLOW_V4_FLASH_MODEL);
+        assert.equal(siliconflowRequest.body.model, SILICONFLOW_MODEL);
         assert.equal(siliconflowRequest.body.stream, false);
         assert.equal(siliconflowRequest.body.max_tokens, 1234);
         assert.deepEqual(siliconflowRequest.body.messages, messages);
@@ -481,6 +498,7 @@ assert.equal(MODEL_MAP['deepseek-v4-flash-free'], VOLCENGINE_V4_FLASH_GA);
 assert.equal(MODEL_MAP['deepseek-r1'], VOLCENGINE_V4_PRO_GA);
 assert.equal(MODEL_MAP['gpt-5.1-codex-mini'], VOLCENGINE_V4_PRO_GA);
 assert.equal(MODEL_MAP['glm-5.2'], VOLCENGINE_V4_FLASH_GA);
+assert.equal(MODEL_MAP['deepseek-v3.2'], VOLCENGINE_V4_FLASH_GA);
 
 // 默认模型
 assert.equal(DEFAULT_MODEL_ALIAS, 'deepseek-v4-pro-ga');
