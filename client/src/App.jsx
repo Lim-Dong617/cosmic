@@ -34,6 +34,7 @@ import {
     runDocumentUnderstandingJob,
     runFunctionExtractionJob
 } from './cosmic-split-jobs';
+import { attachFunctionEvidence, buildFunctionSourceContext } from './cosmic-source-context';
 
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
@@ -1635,7 +1636,7 @@ function App({ user, token, onLogout }) {
     };
 
     // 步骤1b: 按章节提取功能过程
-    const startFunctionExtractionFromChapters = async (chapterList = null) => {
+    const startFunctionExtractionFromChapters = async (chapterList = null, options = {}) => {
         const selectedChapters = (chapterList || chapters).filter(ch => ch.selected);
         if (selectedChapters.length === 0) {
             showToast('请至少选择一个章节');
@@ -1674,6 +1675,31 @@ function App({ user, token, onLogout }) {
 
         let allFunctions = '';
         let totalCount = 0;
+        const extractedWithEvidence = [];
+        const sourceDiagnostics = [];
+        const failedChapters = [];
+        const requestTrackedExtraction = async (payload, options) => {
+            try {
+                const response = await requestFunctionExtraction(payload, options);
+                if (!response.data?.success || response.data?.sourceDiagnostics?.sourceComplete === false) {
+                    throw new Error(response.data?.error || '章节原文尚未完整处理，请重试');
+                }
+                extractedWithEvidence.push(...(response.data.functions || []).map(func => ({
+                    ...func, sourceChapter: func.sourceChapter || payload.chapterName
+                })));
+                if (response.data.sourceDiagnostics) sourceDiagnostics.push(response.data.sourceDiagnostics);
+                return response;
+            } catch (error) {
+                if (signal.aborted || error.name === 'AbortError' || error.name === 'CanceledError') throw error;
+                failedChapters.push({ title: payload.chapterName, error: error.response?.data?.error || error.message });
+                // Keep processing subsequent chapters, then report all failures together.
+                return { data: { success: false, failed: true, count: 0, functionList: '' } };
+            }
+        };
+        const parseCollectedFunctions = () => deduplicateFunctionObjects(
+            attachFunctionEvidence(inheritMissingFunctionLevels(parseFunctionListText(allFunctions)), extractedWithEvidence),
+            { semantic: extractionMode !== 'quantity' && !extractedWithEvidence.some(func => func.documentEvidence) }
+        );
         const quantityTotalTarget = extractionMode === 'quantity'
             ? (quantityPlan ? quantityPlan.reduce((s, p) => s + p.target, 0) : totalTargetCount)
             : 0;
@@ -1734,7 +1760,7 @@ function App({ user, token, onLogout }) {
                     if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
                         result = { functionList: '', count: 0, skipped: true };
                     } else {
-                        const res = await requestFunctionExtraction({
+                        const res = await requestTrackedExtraction({
                             documentContent: chapter.content,
                             chapterName: chapter.title,
                             userGuidelines,
@@ -1757,7 +1783,8 @@ function App({ user, token, onLogout }) {
                                 ? attachChapterSource(chapter, res.data.functionList)
                                 : '',
                             count: res.data.count || 0,
-                            skipped: false
+                            skipped: false,
+                            failed: Boolean(res.data.failed)
                         };
                     }
 
@@ -1769,7 +1796,9 @@ function App({ user, token, onLogout }) {
                         percent: 42 + Math.round((completedChapters / Math.max(selectedChapters.length, 1)) * 22),
                         current: completedChapters,
                         total: selectedChapters.length,
-                        detail: result.skipped
+                        detail: result.failed
+                            ? `章节提取失败，继续后续章节：${chapter.title}`
+                            : result.skipped
                             ? `Skipped chapter: ${chapter.title} (target 0)`
                             : `Finished chapter: ${chapter.title}`,
                         stats: `${completedFunctionCount} functions found · ${extractionModeLabel}`
@@ -1853,7 +1882,7 @@ function App({ user, token, onLogout }) {
                         }];
                     });
 
-                    const res = await requestFunctionExtraction({
+                    const res = await requestTrackedExtraction({
                         documentContent: chapter.content,
                         chapterName: chapter.title,
                         userGuidelines,
@@ -1899,12 +1928,12 @@ function App({ user, token, onLogout }) {
                 }
             }
 
+            if (failedChapters.length > 0) {
+                throw new Error(`已继续处理其余所选章节。以下 ${failedChapters.length} 个章节未完成，需要重新提取：\n${failedChapters.map(item => `- ${item.title}：${item.error}`).join('\n')}`);
+            }
             setFunctionListText(allFunctions);
             // 自动解析为结构化数据
-            const parsed = deduplicateFunctionObjects(
-                inheritMissingFunctionLevels(parseFunctionListText(allFunctions)),
-                { semantic: extractionMode !== 'quantity' }
-            );
+            const parsed = parseCollectedFunctions();
 
             // ── 将章节的 level1/level2/level3 注入到每个功能过程对象 ──
             // chapters 状态里已有后端返回的层级信息，通过 sourceChapter 匹配 title
@@ -1963,28 +1992,29 @@ function App({ user, token, onLogout }) {
                 && leveledParsed.length > 0
                 && leveledParsed.length < Math.ceil(moduleEstimateTotal * 0.6);
             const estimateGapNote = hasLargeEstimateGap
-                ? `\n\n### 数量差异说明\n\n模块脚手架粗估约 **${moduleEstimateTotal}** 个功能过程，这是按三级模块、业务对象和触发类型推算的可展开空间；当前精准模式实际提取 **${leveledParsed.length}** 个，是按 COSMIC 业务目的合并后的结果。若要按粗估规模展开，请使用下方 **按粗估数重提**。`
+                ? `\n\n模块粗估约 **${moduleEstimateTotal}** 个，当前提取 **${leveledParsed.length}** 个。粗估数量不代表实际需求数量，请结合原文和覆盖度检查确认完整性。`
+                : '';
+            const sourceNote = sourceDiagnostics.length
+                ? `\n\n已处理 **${sourceDiagnostics.reduce((sum, item) => sum + (Number(item.completedChunks) || 0), 0)}** 个原文片段，其中 **${sourceDiagnostics.reduce((sum, item) => sum + (Number(item.reviewedChunks) || 0), 0)}** 个已复核。片段处理完成不等于业务覆盖率为 100%。${sourceDiagnostics.flatMap(item => item.warnings || []).length ? `\n${[...new Set(sourceDiagnostics.flatMap(item => item.warnings || []))].join('；')}` : ''}`
                 : '';
 
             setMessages(prev => {
                 const filtered = prev.filter(m => !m.content.startsWith('🔍'));
                 return [...filtered, {
                     role: 'assistant',
-                    content: `## 功能过程提取完成\n\n使用 **${extractionModeLabel}** 从 **${selectedChapters.length}** 个章节中共识别到 **${leveledParsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary}${estimateGapNote}\n\n请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。`,
-                    showFunctionListActions: true,
-                    showQuantityEstimateActions: hasLargeEstimateGap,
+                    content: `## 功能过程提取完成\n\n使用 **${extractionModeLabel}** 从 **${selectedChapters.length}** 个章节中共识别到 **${leveledParsed.length}** 个功能过程。\n\n触发类型分布：${triggerSummary || '无'}${sourceNote}${estimateGapNote}\n\n${leveledParsed.length === 0 ? '当前原文未识别到有依据的功能过程，请补充具体业务要求后重试。' : options.autoContinue ? '正在按原文依据继续进行 COSMIC 拆分。' : '请点击**「查看/编辑功能列表」**按钮检查和修改，确认后点击**「开始COSMIC拆分」**。'}`,
+                    showFunctionListActions: leveledParsed.length > 0 && !options.autoContinue,
+                    showQuantityEstimateActions: false,
                     estimateTarget: moduleEstimateTotal
                 }];
             });
+            return { success: true, functions: leveledParsed, sourceDiagnostics, failedChapters: [] };
         } catch (error) {
             if (error.name === 'AbortError' || error.name === 'CanceledError') return;
             if (allFunctions) {
                 // 部分成功
                 setFunctionListText(allFunctions);
-                const parsed = deduplicateFunctionObjects(
-                    inheritMissingFunctionLevels(parseFunctionListText(allFunctions)),
-                    { semantic: extractionMode !== 'quantity' }
-                );
+                const parsed = parseCollectedFunctions();
                 setFunctionListText(functionsToText(parsed));
                 setParsedFunctions(parsed);
                 setCurrentStep(3);
@@ -1996,7 +2026,7 @@ function App({ user, token, onLogout }) {
                 updateAnalysisProgress({
                     status: 'waiting',
                     phase: 'Function extraction partially completed',
-                    detail: `已保留 ${parsed.length} 个功能过程，可检查后继续拆分。`
+                    detail: `已保留 ${parsed.length} 个功能过程；${failedChapters.length} 个章节未完成，需重新提取后确认完整性。`
                 });
             } else {
                 setMessages(prev => [...prev, { role: 'assistant', content: `❌ 功能过程提取失败: ${error.response?.data?.error || error.message}` }]);
@@ -2007,6 +2037,7 @@ function App({ user, token, onLogout }) {
                     detail: error.response?.data?.error || error.message || '功能过程提取失败'
                 });
             }
+            return { success: false, functions: parseCollectedFunctions(), failedChapters };
         } finally {
             setIsLoading(false);
         }
@@ -2018,9 +2049,11 @@ function App({ user, token, onLogout }) {
     };
 
     // ═══════════ 两步骤模式：阶段2 - COSMIC分段拆分（批次模式，断网安全） ═══════════
-    const startCosmicSplit = async () => {
+    const startCosmicSplit = async (functionOverride = null) => {
         // 先同步结构化数据回 text
-        let activeFunctions = inheritMissingFunctionLevels(parsedFunctions).filter(f => f.selected !== false);
+        let activeFunctions = inheritMissingFunctionLevels(
+            Array.isArray(functionOverride) ? functionOverride : parsedFunctions
+        ).filter(f => f.selected !== false);
         if (activeFunctions.length === 0) {
             // 回退到旧模式：用纯文本
             let textForSplit = functionListText;
@@ -2151,7 +2184,7 @@ function App({ user, token, onLogout }) {
                     batchFunctions: batch.texts,
                     batchIndex: bi,
                     totalBatches,
-                    documentContent: documentContent.substring(0, 6000),
+                    documentContent: buildFunctionSourceContext(documentContent, batch.functions, chapters),
                     userGuidelines,
                     previousFunctionNames: completedFunctionNames(previousResultsSnapshot),
                     userConfig: getUserConfig(),
@@ -2232,7 +2265,7 @@ function App({ user, token, onLogout }) {
                             batchFunctions: batch.texts,
                             batchIndex: bi,
                             totalBatches,
-                            documentContent: documentContent.substring(0, 6000),
+                            documentContent: buildFunctionSourceContext(documentContent, batch.functions, chapters),
                             userGuidelines,
                             previousFunctionNames: completedFunctionNames(allTableData),
                             userConfig: getUserConfig(),
@@ -2619,7 +2652,7 @@ function App({ user, token, onLogout }) {
                         batchFunctions: batch.texts,
                         batchIndex: batch.originalIndex,
                         totalBatches: totalRetry,
-                        documentContent: documentContent.substring(0, 6000),
+                        documentContent: buildFunctionSourceContext(documentContent, batch.functions, chapters),
                         userGuidelines,
                         previousFunctionNames: completedFunctionNames(allTableData),
                         userConfig: getUserConfig(),
@@ -2770,6 +2803,24 @@ function App({ user, token, onLogout }) {
     // ═══════════ 一键完成模式 ═══════════
     const startOneKeyAnalysis = async () => {
         if (!documentContent) { showToast('请先上传文档'); return; }
+
+        if (extractionMode === 'precise') {
+            const fullDocument = [{ title: '全文', content: documentContent, charCount: documentContent.length, selected: true }];
+            setIsWaitingForAnalysis(false);
+            setTableData([]);
+            setChapters(fullDocument);
+            setMessages([{ role: 'system', content: '**正在按原文提取功能过程**\n长文档将分片处理并复核，随后按已确认的功能过程自动进行 COSMIC 拆分。' }]);
+            const extraction = await startFunctionExtractionFromChapters(fullDocument, { autoContinue: true });
+            if (!extraction?.success) return;
+            if (extraction.functions.length === 0) {
+                setCurrentStep(0);
+                updateAnalysisProgress({ status: 'waiting', phase: '未识别到功能过程', percent: 100,
+                    detail: '原文处理完成，未识别到有依据的功能过程。请补充具体业务要求后重试。', stats: '0 个功能过程' });
+                return;
+            }
+            await startCosmicSplit(extraction.functions);
+            return;
+        }
 
         if (abortControllerRef.current) abortControllerRef.current.abort();
         abortControllerRef.current = new AbortController();
@@ -3073,7 +3124,7 @@ function App({ user, token, onLogout }) {
                 batchFunctions: batchTexts,
                 batchIndex: Math.floor(start / batchSize),
                 totalBatches: Math.ceil(regenerationTargets.length / batchSize),
-                documentContent: String(nextDocumentContent || '').slice(0, 6000),
+                documentContent: buildFunctionSourceContext(nextDocumentContent, batchFunctions, chapters),
                 userGuidelines,
                 previousFunctionNames: completedFunctionNames(workingRows),
                 userConfig: getUserConfig(),
@@ -3970,6 +4021,7 @@ function App({ user, token, onLogout }) {
                 resultContent += `- **文档预估功能数**: ${v.totalDocumentFunctions || '?'}\n`;
                 resultContent += `- **已提取功能数**: ${v.extractedCount || extractedFunctions.length}\n`;
                 resultContent += `- **遗漏功能数**: ${v.missedFunctions?.length || 0}\n\n`;
+                if (v.scoreBasis) resultContent += `${v.scoreBasis}。\n\n`;
 
                 if (v.missedFunctions && v.missedFunctions.length > 0) {
                     resultContent += `### 遗漏的功能过程:\n\n${missedList}\n\n`;
@@ -4038,6 +4090,14 @@ function App({ user, token, onLogout }) {
                 userConfig: getUserConfig()
             }, { signal });
 
+            if (extractRes.data.success && !extractRes.data.functions?.length) {
+                setMessages(prev => [...prev.filter(m => !m.content.startsWith('**补充提取中')), {
+                    role: 'assistant',
+                    content: '原文复核后，没有确认可新增的独立功能过程。审查候选可能已被已有功能覆盖，或缺少充分原文依据。'
+                }]);
+                return;
+            }
+
             if (extractRes.data.success && extractRes.data.functions && extractRes.data.functions.length > 0) {
                 const existingFunctionKeys = new Set(existingFunctions.map(normalizeProcName));
                 const newFunctions = deduplicateFunctionObjects(
@@ -4071,7 +4131,7 @@ function App({ user, token, onLogout }) {
                         batchFunctions: [functionText],
                         batchIndex: index,
                         totalBatches: newFunctions.length,
-                        documentContent: documentContent.substring(0, 6000),
+                        documentContent: buildFunctionSourceContext(documentContent, [func], chapters),
                         userGuidelines,
                         previousFunctionNames: completedFunctionNames([...tableData, ...supplementaryRows]),
                         userConfig: getUserConfig(),
@@ -5441,6 +5501,7 @@ function App({ user, token, onLogout }) {
                                                     <input
                                                         className="func-input"
                                                         value={func.description || ''}
+                                                        title={func.documentEvidence ? `原文依据：${func.documentEvidence}` : undefined}
                                                         onChange={e => updateFunction(idx, 'description', e.target.value)}
                                                         placeholder="功能过程描述..."
                                                     />

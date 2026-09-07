@@ -80,6 +80,9 @@ const { registerOfficeDocumentRoutes } = require('./office-document-service');
 const { createAsyncJobManager, createHttpError } = require('./async-job-manager');
 const { describeContinueAnalysisRound } = require('./cosmic-round-result');
 const { generateDocumentUnderstanding } = require('./document-understanding');
+const { extractGroundedFunctions, deduplicateGroundedFunctions } = require('./cosmic-extraction');
+const { verifyGroundedCoverage } = require('./cosmic-coverage');
+const { isV4CosmicModel } = require('./cosmic-model-profile');
 
 
 const app = express();
@@ -429,26 +432,8 @@ registerOfficeDocumentRoutes(app, {
     getModelName
 });
 
-const SENSENOVA_V4_MODEL_ALIASES = new Set([
-    'deepseek-v4-flash-free',
-    'deepseek-v4-flash',
-    'deepseek-v4-flash:free',
-    'deepseek/deepseek-v4-flash:free',
-    'deepseek-v4-pro-ga',
-    'deepseek-v4-flash-ga',
-    'deepseek-v4-pro',
-    VOLCENGINE_V4_PRO_GA,
-    VOLCENGINE_V4_FLASH_GA,
-    VOLCENGINE_V4_PRO,
-    VOLCENGINE_V4_FLASH,
-    NVIDIA_V4_PRO_ALIAS,
-    UNLIMITDS_V4_PRO_ALIAS,
-    SILICONFLOW_MODEL_ALIAS
-]);
-
 function isSenseNovaV4Model(modelName, requestedModel = null) {
-    // 所有火山引擎模型都是 V4，统一返回 true
-    return true;
+    return isV4CosmicModel(modelName, requestedModel);
 }
 
 function getFunctionExtractionPrompt(modelName, extractionMode, requestedModel = null) {
@@ -3012,12 +2997,12 @@ function splitIntoModuleAlignedChapters(text, moduleStructure) {
     return anchors.map((anchor, index) => {
         const nextAnchor = anchors[index + 1];
         const endLine = nextAnchor ? nextAnchor.lineIndex : lines.length;
-        const content = lines.slice(anchor.lineIndex, endLine).join('\n').trim();
+        const content = lines.slice(index === 0 ? 0 : anchor.lineIndex, endLine).join('\n').trim();
         return {
             title: anchor.mod.level3 || anchor.title,
             content,
             charCount: content.length,
-            selected: content.length > 30,
+            selected: Boolean(content.trim()),
             level1: anchor.mod.level1 || '',
             level2: anchor.mod.level2 || '',
             level3: anchor.mod.level3 || anchor.title,
@@ -3033,7 +3018,7 @@ function splitIntoModuleAlignedChapters(text, moduleStructure) {
 function getRelevantModulesForChapter(modules, chapterName) {
     if (!Array.isArray(modules) || modules.length === 0) return [];
     const chapterNorm = normalizeModuleMatchText(chapterName);
-    if (!chapterNorm) return modules;
+    if (!chapterNorm || chapterName === '全文') return modules;
 
     const exactL3 = modules.filter(m => normalizeModuleMatchText(m.level3) === chapterNorm);
     if (exactL3.length > 0) return exactL3;
@@ -3054,7 +3039,7 @@ function getRelevantModulesForChapter(modules, chapterName) {
         const l1 = normalizeModuleMatchText(m.level1);
         return l1 && (chapterNorm.includes(l1) || l1.includes(chapterNorm));
     });
-    return level1Matches.length > 0 ? level1Matches : modules;
+    return level1Matches;
 }
 
 function headingNumberDepth(value) {
@@ -3247,9 +3232,7 @@ function hasExcessiveSyntheticChapterOverlap(chapters, sourceText) {
 function isUsableDocumentChapterSplit(chapters) {
     if (!Array.isArray(chapters)) return false;
     const realChapters = chapters.filter(ch => ch && ch.title !== '全文');
-    if (realChapters.length < 2) return false;
-    const selectedCount = realChapters.filter(ch => ch.selected && (ch.charCount || 0) > 50).length;
-    return selectedCount >= Math.min(2, realChapters.length);
+    return realChapters.some(ch => ch.selected && String(ch.content || '').trim());
 }
 
 function findModuleForChapter(chapter, modules) {
@@ -3332,7 +3315,7 @@ async function retryCompactModuleRecognition({ documentContent, modelName, metho
 
 硬性规则：
 1. 只输出 JSON，不要解释。
-2. modules 数量控制在 15~25 个，最多 30 个。
+2. 模块数量由原文中实际业务域决定，不设最低数量，不为短文凑模块；长文优先保留原有模块并压缩描述。
 3. 不要把筛选条件、搜索、排序、公式、推荐规则步骤、字段说明拆成模块。
 4. level3 必须是页面/面板/流程级名称，例如“站址推荐管理”“GIS地图管理”“仿真验证管理”。
 5. 每个模块的 businessObjects 最多 4 个，triggerTypes 最多 3 个。
@@ -3540,8 +3523,8 @@ function splitIntoChapters(text) {
         return [{ title: '全文', content: text, charCount: text.length, selected: true }];
     }
 
-    // 第二遍：过滤「内容过短」的假标题（两标题间内容<30字 → 是列表项）
-    const MIN_CHAPTER_CONTENT = 30;
+    // 短需求也可能是完整的独立业务。仅忽略没有正文的普通标题；
+    // 显式 Markdown 标题保留，避免把相邻的简短需求吞到上一章节。
     const headingPositions = [];
 
     for (let i = 0; i < candidatePositions.length; i++) {
@@ -3551,7 +3534,7 @@ function splitIntoChapters(text) {
             : lines.length;
         const contentBetween = lines.slice(curPos + 1, nextPos)
             .join('').replace(/\s/g, '').length;
-        if (contentBetween >= MIN_CHAPTER_CONTENT) {
+        if (contentBetween > 0 || parseMarkdownHeading(lines[curPos])) {
             headingPositions.push(curPos);
         }
     }
@@ -3583,8 +3566,18 @@ function splitIntoChapters(text) {
         }
     }
 
-    // 文档开头到第一个标题之间的内容
-    // Intro text before the first detected heading is context, not a selectable chapter.
+    // 标题前也可能有功能要求，不能静默丢掉。供用户明确选择是否提取。
+    const introduction = lines.slice(0, finalPositions[0]).join('\n').trim();
+    if (introduction) {
+        chapters.push({
+            title: '文档开头',
+            content: introduction,
+            charCount: introduction.length,
+            selected: true,
+            referenceOnly: false,
+            level1: '', level2: '', level3: '', headingDepth: 0
+        });
+    }
 
     // 按最终标题位置分章，同时计算 level1/level2/level3
     // 维护滚动的每层当前标题文本
@@ -3618,7 +3611,7 @@ function splitIntoChapters(text) {
             title,
             content,
             charCount: content.length,
-            selected: content.length > 50 && !isReferenceOnlyChapterTitle(title),
+            selected: Boolean(content.trim()) && !isReferenceOnlyChapterTitle(title),
             referenceOnly: isReferenceOnlyChapterTitle(title),
             level1: currentL1,
             level2: currentL2,
@@ -3655,7 +3648,7 @@ app.post('/api/split-chapters', (req, res) => {
         const useDocumentChapters = isUsableDocumentChapterSplit(documentChapters);
         let moduleScaffoldChapters = useDocumentChapters
             ? null
-            : (moduleAlignedChapters || buildModuleScaffoldChapters(documentContent, moduleStructure));
+            : moduleAlignedChapters;
         if (hasExcessiveSyntheticChapterOverlap(moduleScaffoldChapters, documentContent)) {
             console.warn('   module scaffold chapters overlap excessively; falling back to a single full-document chapter');
             moduleScaffoldChapters = null;
@@ -3708,6 +3701,42 @@ async function executeFunctionExtraction(requestPayload, { signal, onProgress = 
 
         const isV4Flash = isSenseNovaV4Model(modelName, requestedModel);
         const activePrompt = getFunctionExtractionPrompt(modelName, extractionMode, requestedModel);
+
+        // Precise extraction is source-driven. Generated estimates and module
+        // matrices must never become requirements or minimum counts.
+        if (extractionMode !== 'quantity') {
+            const relevantModules = getRelevantModulesForChapter(moduleStructure?.modules || [], chapterName);
+            const grounded = await extractGroundedFunctions({
+                documentContent,
+                chapterName,
+                userGuidelines,
+                moduleNames: relevantModules.map(module => [module.level1, module.level2, module.level3].filter(Boolean).join(' > ')),
+                modelName,
+                systemPrompt: activePrompt,
+                callAIWithRetry,
+                signal,
+                onProgress
+            });
+            const functions = deduplicateGroundedFunctions(
+                chapterName && chapterName !== '全文'
+                    ? qualifyFunctionNames(grounded.functions, chapterName, moduleStructure)
+                    : grounded.functions
+            );
+            onProgress({ phase: 'finalizing', message: `已处理并复核 ${grounded.sourceDiagnostics.completedChunks} 个原文片段，提取 ${functions.length} 个功能过程` });
+            return {
+                success: true,
+                functionList: buildFunctionListText(functions),
+                functions,
+                count: functions.length,
+                sourceDiagnostics: grounded.sourceDiagnostics,
+                countDiagnostics: {
+                    mode: 'precise', target: null, rawCandidateCount: grounded.functions.length,
+                    afterDedupeCount: functions.length, removedByDedupe: grounded.functions.length - functions.length,
+                    supplementAttempts: 0, supplementalCandidateCount: 0,
+                    finalCount: functions.length, targetSatisfied: true, deficit: 0
+                }
+            };
+        }
 
         // 构建理解上下文（如果有文档理解结果）
         let understandingHint = '';
@@ -4407,8 +4436,9 @@ ${completedFunctions.slice(0, 25).map((f, i) => `${i + 1}. ${f}`).join('\n')}${c
         }
 
         if (documentContent) {
-            // 只传部分文档内容作为参考
-            userPrompt += `\n\n参考文档内容（摘要）：\n${documentContent.substring(0, 4000)}`;
+            // The client selects source context for this batch, including
+            // evidence near the end of long documents.
+            userPrompt += `\n\n本批功能对应的原文参考：\n${documentContent.substring(0, 12000)}`;
         }
         if (userGuidelines) {
             userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
@@ -5156,152 +5186,54 @@ app.delete('/api/continue-analyze-jobs/:jobId', (req, res) => {
 // ═══════════════════════ 覆盖度验证 ═══════════════════════
 
 app.post('/api/verify-coverage', async (req, res) => {
+    const controller = new AbortController();
+    const abort = () => { if (!res.writableEnded) controller.abort(); };
+    req.once('aborted', abort);
+    res.once('close', abort);
     try {
         const { documentContent, extractedFunctions = [], userConfig = null } = req.body;
-
-        if (!documentContent) {
-            return res.status(400).json({ error: '缺少文档内容' });
-        }
-        if (extractedFunctions.length === 0) {
-            return res.status(400).json({ error: '缺少已提取的功能过程列表' });
-        }
-
-        console.log(`🔍 开始覆盖度验证，已提取 ${extractedFunctions.length} 个功能过程...`);
-        const modelName = getModelName(userConfig);
-
-        const functionListText = extractedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n');
-
-        const userPrompt = `## 原始需求文档：
-${documentContent}
-
-## 已提取的功能过程列表（共${extractedFunctions.length}个）：
-${functionListText}
-
-请严格审查以上功能过程列表是否完整覆盖了需求文档中的所有功能。`;
-
-        const completion = await callAIWithRetry({
-            messages: [
-                { role: 'system', content: COVERAGE_VERIFICATION_PROMPT },
-                { role: 'user', content: userPrompt }
-            ],
-            model: modelName,
-            temperature: 0.1,
-            max_tokens: 8000
+        if (!documentContent) return res.status(400).json({ error: '缺少文档内容' });
+        if (!Array.isArray(extractedFunctions) || !extractedFunctions.length) return res.status(400).json({ error: '缺少已提取的功能过程列表' });
+        const verification = await verifyGroundedCoverage({
+            documentContent, extractedFunctions, modelName: getModelName(userConfig),
+            systemPrompt: COVERAGE_VERIFICATION_PROMPT, callAIWithRetry, signal: controller.signal
         });
-
-        if (!completion?.choices?.[0]?.message?.content) {
-            return res.status(500).json({ error: 'AI返回了空响应，请重试' });
-        }
-        const reply = completion.choices[0].message.content;
-
-        // 尝试解析JSON
-        let verification = null;
-        try {
-            const jsonMatch = reply.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                verification = JSON.parse(jsonMatch[0]);
-            }
-        } catch (e) {
-            console.warn('覆盖度验证JSON解析失败');
-            verification = {
-                coverageScore: 0,
-                totalDocumentFunctions: extractedFunctions.length,
-                extractedCount: extractedFunctions.length,
-                missedFunctions: [],
-                vagueFunctions: [],
-                suggestions: ['JSON解析失败，请重试']
-            };
-        }
-
-        // 确保vagueFunctions字段存在
-        if (!verification.vagueFunctions) {
-            verification.vagueFunctions = [];
-        }
-
-        console.log(`✅ 覆盖度验证完成: ${verification.coverageScore}分, 遗漏${verification.missedFunctions?.length || 0}个功能, 笼统描述${verification.vagueFunctions?.length || 0}个`);
-        if (verification.vagueFunctions.length > 0) {
-            console.log(`   ⚠️ 以下功能描述过于笼统，需要细化：`);
-            verification.vagueFunctions.forEach((vf, i) => {
-                console.log(`      ${i + 1}. ${vf.functionName} → ${vf.suggestion}`);
-            });
-        }
-        res.json({ success: true, verification });
+        if (!res.destroyed) res.json({ success: true, verification });
     } catch (error) {
-        console.error('覆盖度验证失败:', error);
-        res.status(500).json({ error: '覆盖度验证失败: ' + error.message });
+        if (!controller.signal.aborted && !res.destroyed) res.status(error.status || 500).json({ error: '覆盖度验证失败: ' + error.message });
+    } finally {
+        req.removeListener('aborted', abort);
+        res.removeListener('close', abort);
     }
 });
 
 // ═══════════════════════ 补充提取 ═══════════════════════
 
 app.post('/api/extract-supplementary', async (req, res) => {
+    const controller = new AbortController();
+    const abort = () => { if (!res.writableEnded) controller.abort(); };
+    req.once('aborted', abort);
+    res.once('close', abort);
     try {
-        const { documentContent, existingFunctions = [], missedFunctions = [], vagueFunctions = [], userConfig = null } = req.body;
-
-        if (!documentContent) {
-            return res.status(400).json({ error: '缺少文档内容' });
-        }
-
-        console.log(`🔄 开始补充提取，已有 ${existingFunctions.length} 个功能，遗漏 ${missedFunctions.length} 个，笼统 ${vagueFunctions.length} 个...`);
-        const modelName = getModelName(userConfig);
-
-        const existingListText = existingFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n');
-        const missedListText = missedFunctions.map((f, i) => {
-            if (typeof f === 'object') {
-                return `${i + 1}. ${f.functionName}（原因：${f.reason || ''}，分类：${f.category || ''}，文档依据：${f.documentEvidence || ''}）`;
-            }
-            return `${i + 1}. ${f}`;
-        }).join('\n');
-
-        // 构建笼统功能细化提示
-        let vagueHint = '';
-        if (vagueFunctions.length > 0) {
-            const vagueListText = vagueFunctions.map((vf, i) => {
-                if (typeof vf === 'object') {
-                    return `${i + 1}. "${vf.functionName}" → 建议细化为：${vf.suggestion}`;
-                }
-                return `${i + 1}. ${vf}`;
-            }).join('\n');
-            vagueHint = `\n\n## 描述过于笼统需要细化的功能（请替换为更具体的业务功能过程）：\n${vagueListText}\n\n注意：以上笼统功能需要拆分为绑定具体业务对象的多个功能过程。例如"定时汇总数据"应拆分为"定时汇总质差小区KPI指标数据"、"定时汇总地市流量统计数据"等。`;
-        }
-
-        const userPrompt = `## 原始需求文档：
-${documentContent}
-
-## 已提取的功能过程（共${existingFunctions.length}个，不要重复这些）：
-${existingListText}
-
-## 覆盖度审查发现的遗漏功能（请针对这些进行补充提取）：
-${missedListText}${vagueHint}
-
-请补充提取上述遗漏的功能过程，同时再次仔细扫描文档看是否有其他遗漏。特别注意数据汇总/统计/报表类功能是否被充分细化拆分。`;
-
-        const completion = await callAIWithRetry({
-            messages: [
-                { role: 'system', content: SUPPLEMENTARY_EXTRACTION_PROMPT },
-                { role: 'user', content: userPrompt }
-            ],
-            model: modelName,
-            temperature: 0.3,
-            max_tokens: 16000
+        const { documentContent, existingFunctions = [], missedFunctions = [], userConfig = null } = req.body;
+        if (!documentContent) return res.status(400).json({ error: '缺少文档内容' });
+        const missed = missedFunctions.map(item => typeof item === 'string' ? { functionName: item } : item).filter(item => item?.functionName);
+        if (!missed.length) return res.json({ success: true, functionList: '', functions: [], count: 0 });
+        const grounded = await extractGroundedFunctions({
+            documentContent, chapterName: '全文', modelName: getModelName(userConfig),
+            systemPrompt: SUPPLEMENTARY_EXTRACTION_PROMPT, callAIWithRetry, signal: controller.signal,
+            userGuidelines: '本轮只核验并补充下列遗漏候选，保留候选功能名。原文不能支持的候选不输出，不新增其他候选。候选：'
+                + JSON.stringify(missed) + '\n已有功能，不要重复或同义改名：' + existingFunctions.join('、')
         });
-
-        if (!completion?.choices?.[0]?.message?.content) {
-            return res.status(500).json({ error: 'AI返回了空响应，请重试' });
-        }
-        const reply = completion.choices[0].message.content;
-        const functions = extractFunctionsFromText(reply);
-
-        console.log(`✅ 补充提取到 ${functions.length} 个新功能过程`);
-        res.json({
-            success: true,
-            functionList: reply,
-            functions,
-            count: functions.length
-        });
+        const allowed = new Set(missed.map(item => canonicalFunctionNameKey(item.functionName)));
+        const existing = new Set(existingFunctions.map(canonicalFunctionNameKey));
+        const functions = grounded.functions.filter(func => allowed.has(canonicalFunctionNameKey(func.functionName)) && !existing.has(canonicalFunctionNameKey(func.functionName)));
+        if (!res.destroyed) res.json({ success: true, functionList: buildFunctionListText(functions), functions, count: functions.length, sourceDiagnostics: grounded.sourceDiagnostics });
     } catch (error) {
-        console.error('补充提取失败:', error);
-        res.status(500).json({ error: '补充提取失败: ' + error.message });
+        if (!controller.signal.aborted && !res.destroyed) res.status(error.status || 500).json({ error: '补充提取失败: ' + error.message });
+    } finally {
+        req.removeListener('aborted', abort);
+        res.removeListener('close', abort);
     }
 });
 
