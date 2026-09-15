@@ -70,6 +70,11 @@ function Root() {
     };
 
     const handleGuestMode = () => {
+        const code = window.prompt('请输入开发者代码：');
+        if (code !== 'xiaoming') {
+            alert('开发者代码错误，无法进入开发模式。');
+            return;
+        }
         const guestUser = { id: 0, username: 'dev', displayName: '开发模式', avatarColor: '#6C63FF' };
         localStorage.setItem('cosmic_guest_mode', 'true');
         setUser(guestUser);
