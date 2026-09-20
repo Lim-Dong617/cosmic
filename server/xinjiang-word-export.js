@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const JSZip = require('jszip');
 const { xml2js, js2xml } = require('xml-js');
+const { writeWordPackage } = require('./word-export-package');
 
 // Keep the supplied OOXML package as the authority for styles, numbering and page layout.
 const TEMPLATE_PATH = path.join(__dirname, 'templates', 'xinjiang-requirements.docx');
@@ -140,7 +141,7 @@ function imageParagraph(relationshipId, id, width, height, title) {
     ]);
 }
 
-async function buildXinjiangWordDocument({ tableData, sequenceDiagrams = [], documentName, filename, buildDescription }) {
+async function buildXinjiangWordDocument({ tableData, sequenceDiagrams = [], documentName, filename, buildDescription, outputPath }) {
     const zip = await JSZip.loadAsync(await fs.readFile(TEMPLATE_PATH));
     const document = xml2js(await zip.file('word/document.xml').async('string'));
     const root = child(document, 'w:document');
@@ -161,7 +162,13 @@ async function buildXinjiangWordDocument({ tableData, sequenceDiagrams = [], doc
     const project = value(documentName || filename || 'XX项目').replace(/^COSMIC(?:功能规格说明书|拆分)[_-]?/, '').replace(/\.(xlsx|xlsm|xls|docx)$/i, '') || 'XX项目';
     const title = /需求说明书$/.test(project) ? project : `${project.replace(/需求$/, '')}需求说明书`;
     const now = new Date();
-    const paragraphs = [];
+    // Serialize each completed paragraph immediately. Retaining xml-js trees
+    // for thousands of processes costs much more memory than their XML text.
+    const serialize = node => js2xml({ elements: [node] });
+    const paragraphs = {
+        xml: [],
+        push(...nodes) { this.xml.push(...nodes.map(node => node.rawXml || serialize(node))); }
+    };
     const tocEntries = [];
     const counters = [0, 0, 0, 0, 0, 0];
     let bookmarkId = 1000;
@@ -202,6 +209,7 @@ async function buildXinjiangWordDocument({ tableData, sequenceDiagrams = [], doc
     if (!headerProperties) { headerProperties = element('w:trPr'); header.elements.unshift(headerProperties); }
     setProperty(headerProperties, 'w:tblHeader');
     table.elements.push(header);
+    const tableRowsXml = [];
     groups.forEach((group, index) => {
         const row = clone(sourceRows[2]);
         const cells = row.elements.filter(item => item.name === 'w:tc');
@@ -212,9 +220,9 @@ async function buildXinjiangWordDocument({ tableData, sequenceDiagrams = [], doc
             cell.elements.push(p);
         });
         removeProperties(child(row, 'w:trPr'), ['w:trHeight']);
-        table.elements.push(row);
+        tableRowsXml.push(serialize(row));
     });
-    paragraphs.push(table);
+    paragraphs.push({ rawXml: serialize(table).replace('</w:tbl>', () => tableRowsXml.join('') + '</w:tbl>') });
     heading('功能需求', 1);
     const relationships = xml2js(await zip.file('word/_rels/document.xml.rels').async('string'));
     const relationshipsRoot = child(relationships, 'Relationships');
@@ -292,8 +300,8 @@ async function buildXinjiangWordDocument({ tableData, sequenceDiagrams = [], doc
         element('w:r', {}, [element('w:instrText', { 'xml:space': 'preserve' }, [{ type: 'text', text: ' TOC \\o "1-6" \\h \\z \\u ' }])]),
         element('w:r', {}, [element('w:fldChar', { 'w:fldCharType': 'separate' })]));
     toc[toc.length - 1].elements.push(element('w:r', {}, [element('w:fldChar', { 'w:fldCharType': 'end' })]));
-    body.elements = [...cover, pageBreak, clone(sourceParagraph('目 录')), ...toc, clone(pageBreak), ...paragraphs, clone(child(body, 'w:sectPr'))];
-    zip.file('word/document.xml', js2xml(document));
+    body.elements = [...cover, pageBreak, clone(sourceParagraph('目 录')), ...toc, clone(pageBreak), element('XjBody'), clone(child(body, 'w:sectPr'))];
+    zip.file('word/document.xml', js2xml(document).replace('<XjBody/>', () => paragraphs.xml.join('')));
     zip.file('word/_rels/document.xml.rels', js2xml(relationships));
     const settings = xml2js(await zip.file('word/settings.xml').async('string'));
     setProperty(child(settings, 'w:settings'), 'w:updateFields', { 'w:val': 'true' });
@@ -302,7 +310,7 @@ async function buildXinjiangWordDocument({ tableData, sequenceDiagrams = [], doc
     const typesRoot = child(types, 'Types');
     if (!typesRoot.elements.some(item => item.attributes?.Extension === 'png')) typesRoot.elements.push(element('Default', { Extension: 'png', ContentType: 'image/png' }));
     zip.file('[Content_Types].xml', js2xml(types));
-    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    return writeWordPackage(zip, outputPath);
 }
 
 module.exports = { buildXinjiangWordDocument };

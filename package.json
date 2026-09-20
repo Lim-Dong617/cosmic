@@ -4,7 +4,7 @@
     "description": "AI智能分析与办公文档处理系统 - 支持COSMIC、NESMA及Word/Excel通用任务",
     "main": "server/index.js",
     "scripts": {
-        "test": "node test-ai-client-model-routing.mjs && node test-auth-registration-invite.mjs && node test-ai-cancellation.mjs && node test-async-job-manager.mjs && node test-cosmic-split-job-client.mjs && node test-cosmic-round-result.mjs && node test-document-understanding.mjs && node test-cosmic-quality.mjs && node test-cosmic-model-profile.mjs && node test-cosmic-extraction.mjs && node test-cosmic-source-context.mjs && node test-cosmic-coverage.mjs && node test-cosmic-http.mjs && node test-code-source-analyzer.mjs && node test-conversation-orchestrator.mjs && node test-office-document-service.mjs && node test-xinjiang-word-export.mjs",
+        "test": "node test-ai-client-model-routing.mjs && node test-auth-registration-invite.mjs && node test-ai-cancellation.mjs && node test-async-job-manager.mjs && node test-cosmic-split-job-client.mjs && node test-cosmic-round-result.mjs && node test-document-understanding.mjs && node test-cosmic-quality.mjs && node test-cosmic-model-profile.mjs && node test-cosmic-extraction.mjs && node test-cosmic-source-context.mjs && node test-cosmic-coverage.mjs && node test-cosmic-http.mjs && node test-code-source-analyzer.mjs && node test-conversation-orchestrator.mjs && node test-office-document-service.mjs && node test-xinjiang-word-export.mjs && node test-word-export-jobs.mjs",
         "test:word-xinjiang": "node test-xinjiang-word-export.mjs",
         "test:cosmic-live": "node tools/test-cosmic-v32-live.mjs",
         "benchmark:models": "node tools/benchmark-glm-vs-deepseek.mjs",
@@ -14,7 +14,9 @@
         "build": "npm --prefix client run build",
         "start": "node server/index.js",
         "install-all": "npm install && cd client && npm install",
-        "render-build": "npm install && cd client && npm install --include=dev && npm run build"
+        "render-build": "npm install && cd client && npm install --include=dev && npm run build",
+        "test:word-export": "node test-word-export-jobs.mjs",
+        "test:word-export:large": "node test-word-export-jobs.mjs --large-images"
     },
     "dependencies": {
         "bcryptjs": "^3.0.3",

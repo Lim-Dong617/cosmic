@@ -76,6 +76,11 @@ services:
         value: 120000
       - key: AI_MODULE_MAX_ATTEMPTS
         value: 2
+      # Word 导出在独立进程串行生成；避免大文档挤占 Web 进程内存
+      - key: WORD_EXPORT_WORKER_HEAP_MB
+        value: 192
+      - key: WORD_EXPORT_MAX_UPLOAD_MB
+        value: 64
       - key: JWT_SECRET
         generateValue: true
       # 管理员掌握的共享注册邀请码（在 Render 控制台中配置）

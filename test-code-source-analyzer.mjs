@@ -117,7 +117,7 @@ assert.equal(mockedAnalysis.functions.length, 1);
 assert.equal(mockedAnalysis.functions[0].functionName, '创建工单');
 assert.ok(mockedAnalysis.functionList.includes('创建工单'));
 
-const serverSource = await readFile(new URL('./server/index.js', import.meta.url), 'utf8');
+const serverSource = (await readFile(new URL('./server/index.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const codeSourceRoute = serverSource.slice(
     serverSource.indexOf("app.post(\n    '/api/analyze-code-source'"),
     serverSource.indexOf("app.post('/api/parse-word'")

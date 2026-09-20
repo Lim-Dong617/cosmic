@@ -34,6 +34,7 @@ import {
     runDocumentUnderstandingJob,
     runFunctionExtractionJob
 } from './cosmic-split-jobs';
+import { exportWordFile, wordExportErrorMessage } from './word-export-jobs';
 import { attachFunctionEvidence, buildFunctionSourceContext } from './cosmic-source-context';
 
 const MAX_UPLOAD_MB = 300;
@@ -398,6 +399,7 @@ function App({ user, token, onLogout }) {
     });
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
+    const wordExportBusyRef = useRef(false);
     const [isSupplementingDescription, setIsSupplementingDescription] = useState(false); // 是否正在补充功能描述
 
     // 用户会话管理
@@ -3410,7 +3412,11 @@ function App({ user, token, onLogout }) {
 
     // ═══════════ 导出Word文档（借鉴omega-cosmic的DocBuilder） ═══════════
     const exportWord = async () => {
+        if (isGeneratingDiagrams || wordExportBusyRef.current) return;
         if (tableData.length === 0) { showToast('没有可导出的数据'); return; }
+        wordExportBusyRef.current = true;
+        setIsGeneratingDiagrams(true);
+        setDiagramProgress('正在准备 Word 导出…');
         try {
             let sequenceDiagrams = null;
             const exportTableData = orderCosmicTableData(tableData, parsedFunctions, moduleStructure);
@@ -3442,27 +3448,31 @@ function App({ user, token, onLogout }) {
                 }
             }
 
-            const response = await axios.post('/api/export-word',
-                {
+            const blob = await exportWordFile({
+                httpClient: axios,
+                payload: {
                     tableData: exportTableData,
                     filename: `COSMIC功能规格说明书_${documentName || '结果'}`,
                     documentName: documentName || '',
                     exportTemplate: wordExportTemplate,
-                    sequenceDiagrams: sequenceDiagrams && sequenceDiagrams.length > 0 ? sequenceDiagrams : undefined
+                    sequenceDiagrams: sequenceDiagrams?.length ? sequenceDiagrams : undefined
                 },
-                { responseType: 'blob', timeout: 120000 }
-            );
-            const url = window.URL.createObjectURL(new Blob([response.data]));
+                onStatus: setDiagramProgress
+            });
+            const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
             const templateSuffix = { hierarchy: '_模块层级版', 'business-spec': '_完整说明书', xinjiang: '_新疆需求说明书' }[wordExportTemplate] || '_模块层级版';
             link.download = `COSMIC功能规格说明书_${documentName || '结果'}${templateSuffix}${sequenceDiagrams ? '_含时序图' : ''}.docx`;
+            document.body.appendChild(link);
             link.click();
-            window.URL.revokeObjectURL(url);
+            link.remove();
+            setTimeout(() => window.URL.revokeObjectURL(url), 60000);
             showToast(sequenceDiagrams ? `Word导出成功（含 ${sequenceDiagrams.length} 张时序图）` : 'Word文档导出成功');
         } catch (error) {
-            showToast('导出Word失败: ' + error.message);
+            showToast('导出Word失败: ' + await wordExportErrorMessage(error));
         } finally {
+            wordExportBusyRef.current = false;
             setIsGeneratingDiagrams(false);
             setDiagramProgress('');
         }
@@ -4659,12 +4669,12 @@ function App({ user, token, onLogout }) {
                                         <button className="btn btn-secondary btn-sm" onClick={() => setShowTableView(true)}>
                                             <Table size={14} /> 查看表格
                                         </button>
-                                        <button className="btn btn-success btn-sm" onClick={exportExcel}>
+                                        <button className="btn btn-success btn-sm" onClick={exportExcel} disabled={isGeneratingDiagrams}>
                                             <Download size={14} /> 导出Excel
                                         </button>
                                         {renderExcelTemplateSelect()}
-                                        <button className="btn btn-sm" onClick={exportWord} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为Word功能规格说明书">
-                                            <FileText size={14} /> 导出Word
+                                        <button className="btn btn-sm" onClick={exportWord} disabled={isGeneratingDiagrams} style={{ background: 'linear-gradient(135deg, #3B82F6, #6C5CE7)', color: '#fff', border: 'none' }} title="导出为Word功能规格说明书">
+                                            {isGeneratingDiagrams ? <Loader2 size={14} className="spinner" /> : <FileText size={14} />} {isGeneratingDiagrams ? diagramProgress : '导出Word'}
                                         </button>
                                     </>
                                 )}

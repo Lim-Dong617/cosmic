@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import vm from 'node:vm';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const JSZip = require('jszip');
 const { xml2js } = require('xml-js');
 const { buildXinjiangWordDocument } = require('./server/xinjiang-word-export');
-const { orderCosmicTableData } = require('./server/cosmic-quality');
+const { buildWordDocument } = require('./server/word-export');
 const child = (node, name) => node.elements?.find(item => item.name === name);
 const text = node => node?.type === 'text' ? node.text : (node?.elements || []).map(text).join('');
 const descendants = (node, name) => [ ...(node?.name === name ? [node] : []), ...(node?.elements || []).flatMap(item => descendants(item, name)) ];
@@ -82,24 +81,10 @@ assert.doesNotMatch(await noDiagrams.file('word/document.xml').async('string'), 
 await assert.rejects(buildXinjiangWordDocument({ tableData: [{ dataMovementType: 'R' }] }), /未找到可导出/);
 await assert.rejects(buildXinjiangWordDocument({ tableData: processRows('查询'), sequenceDiagrams: [{ processName: '查询', imageBase64: 'invalid' }] }), /有效 PNG/);
 
-// Exercise the actual registered route without booting the database/AI service.
-const serverSource = await fs.readFile('server/index.js', 'utf8');
-const start = serverSource.indexOf("app.post('/api/export-word'");
-const end = serverSource.indexOf('// ═══════════════════════ COSMIC 模块识别', start);
-let handler;
-vm.runInNewContext(serverSource.slice(start, end), {
-    app: { post(route, fn) { assert.equal(route, '/api/export-word'); handler = fn; } },
-    buildXinjiangWordDocument, orderCosmicTableData, buildFunctionDescription: () => '功能描述', console
-});
-const headers = {};
-let result;
-await handler({ body: { tableData, exportTemplate: 'xinjiang', documentName: '接口测试' } }, {
-    setHeader(name, val) { headers[name] = val; }, send(data) { result = data; },
-    status(status) { throw new Error(`Unexpected HTTP status ${status}`); }
-});
+// Exercise template dispatch; real HTTP submission/download is covered by test-word-export-jobs.
+const result = await buildWordDocument({ tableData, exportTemplate: 'xinjiang', documentName: '接口测试' });
 assert.ok(Buffer.isBuffer(result));
-assert.match(headers['Content-Type'], /wordprocessingml/);
-assert.match(decodeURIComponent(headers['Content-Disposition']), /新疆需求说明书/);
+assert.match(await (await JSZip.loadAsync(result)).file('word/document.xml').async('string'), /接口测试/);
 console.log('新疆 Word 导出通过：六章结构、真实标题1～6、连续图题、图片绑定、合并单元格层级、缺图、同名过程、源格式保留及导出接口。');
 
 if (process.argv.includes('--sample')) {
