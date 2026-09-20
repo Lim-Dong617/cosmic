@@ -3428,7 +3428,14 @@ function App({ user, token, onLogout }) {
                         }
                     );
                     setDiagramProgress(`已生成 ${sequenceDiagrams.length} 张时序图，正在生成Word...`);
+                    if (wordExportTemplate === 'xinjiang') {
+                        const expectedCount = exportTableData.filter(row => row.dataMovementType === 'E' && row.functionalProcess).length;
+                        if (sequenceDiagrams.length !== expectedCount) {
+                            throw new Error(`新疆模板时序图未全部生成（${sequenceDiagrams.length}/${expectedCount}），请重试`);
+                        }
+                    }
                 } catch (err) {
+                    if (wordExportTemplate === 'xinjiang') throw err;
                     console.warn('时序图生成部分失败:', err);
                     showToast('部分时序图生成失败，将导出无时序图版本');
                     sequenceDiagrams = null;
@@ -3448,7 +3455,8 @@ function App({ user, token, onLogout }) {
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.download = `COSMIC功能规格说明书_${documentName || '结果'}${wordExportTemplate === 'business-spec' ? '_完整说明书' : '_模块层级版'}${sequenceDiagrams ? '_含时序图' : ''}.docx`;
+            const templateSuffix = { hierarchy: '_模块层级版', 'business-spec': '_完整说明书', xinjiang: '_新疆需求说明书' }[wordExportTemplate] || '_模块层级版';
+            link.download = `COSMIC功能规格说明书_${documentName || '结果'}${templateSuffix}${sequenceDiagrams ? '_含时序图' : ''}.docx`;
             link.click();
             window.URL.revokeObjectURL(url);
             showToast(sequenceDiagrams ? `Word导出成功（含 ${sequenceDiagrams.length} 张时序图）` : 'Word文档导出成功');
@@ -3480,9 +3488,13 @@ function App({ user, token, onLogout }) {
     const renderWordTemplateSelect = () => (
         <label className="excel-template-select" title="选择Word导出模板">
             <span>Word模板</span>
-            <select value={wordExportTemplate} onChange={e => setWordExportTemplate(e.target.value)}>
+            <select value={wordExportTemplate} onChange={e => {
+                setWordExportTemplate(e.target.value);
+                if (e.target.value === 'xinjiang') setExportWithDiagrams(true);
+            }}>
                 <option value="hierarchy">模块层级文档</option>
                 <option value="business-spec">完整说明书（原模板）</option>
+                <option value="xinjiang">新疆需求说明书</option>
             </select>
         </label>
     );

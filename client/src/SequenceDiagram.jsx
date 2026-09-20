@@ -570,6 +570,7 @@ export async function generateAllDiagramImages(tableData, onProgress = null) {
             const { base64, width, height } = await svgToPngBase64(svg, 2);
             results.push({
                 processName: groups[i].processName,
+                processIndex: i,
                 imageBase64: base64,
                 width,
                 height,

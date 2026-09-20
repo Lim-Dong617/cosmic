@@ -61,6 +61,7 @@ const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_
 const { authRouter } = require('./auth');
 const { initDatabase } = require('./database');
 const { buildCosmicAssessmentWorkbook } = require('./cosmic-template-export');
+const { buildXinjiangWordDocument } = require('./xinjiang-word-export');
 const {
     canonicalFunctionNameKey,
     isReferenceOnlyChapterTitle,
@@ -1154,10 +1155,12 @@ function parseCosmicExcelRows(worksheet, headerRowNumber, columnMap) {
             getByKey(row, 'dataAttributes'),
             getByKey(row, 'functionDescription')
         ];
-        if (isCosmicExcelInstructionRow(rawValues)) continue;
-
         const dmt = normalizeCosmicDmt(getByKey(row, 'dataMovementType'));
         if (!dmt) continue;
+
+        // “必填/选填”等词也可能出现在真实的功能描述、数据属性中。
+        // 数据移动类型已经确认是 E/R/W/X 后，不能再按说明词过滤整行，
+        // 否则会把合法功能过程及其子过程一起丢掉。
 
         const rawLevel1 = getByKey(row, 'level1');
         const rawLevel2 = getByKey(row, 'level2');
@@ -5943,6 +5946,16 @@ app.post('/api/export-word', async (req, res) => {
 
         if (!tableData || tableData.length === 0) {
             return res.status(400).json({ error: '没有可导出的数据' });
+        }
+
+        if (exportTemplate === 'xinjiang') {
+            const buffer = await buildXinjiangWordDocument({
+                tableData: orderCosmicTableData(tableData), sequenceDiagrams, documentName, filename,
+                buildDescription: buildFunctionDescription
+            });
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename + '_新疆需求说明书')}.docx`);
+            return res.send(buffer);
         }
 
         // 检查是否有功能描述数据
