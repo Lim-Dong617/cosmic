@@ -7,14 +7,18 @@ const require = createRequire(import.meta.url);
 require('dotenv').config();
 const { callAIWithRetry, SILICONFLOW_MODEL_ALIAS, resolveModelRoute } = require('../server/ai-client');
 const { extractGroundedFunctions } = require('../server/cosmic-extraction');
-const { V3_2_FUNCTION_EXTRACTION_PROMPT } = require('../server/prompts');
+const { SENSENOVA_V4_FUNCTION_EXTRACTION_PROMPT, V3_2_FUNCTION_EXTRACTION_PROMPT } = require('../server/prompts');
+const { isV4CosmicModel } = require('../server/cosmic-model-profile');
 
 const route = resolveModelRoute(SILICONFLOW_MODEL_ALIAS);
 if (!route.apiKey) {
     console.error('未执行在线测试：请在运行环境配置 SILICONFLOW_API_KEY。不要将密钥写入测试报告或版本库。');
     process.exit(2);
 }
-assert.match(route.requestModelName, /v3\.2/i, 'Live test must use V3.2');
+assert.match(route.requestModelName, /v4.*flash|v3\.2/i, 'Live test must use SiliconFlow DeepSeek V4 Flash or V3.2');
+const systemPrompt = isV4CosmicModel(route.requestModelName, SILICONFLOW_MODEL_ALIAS)
+    ? SENSENOVA_V4_FUNCTION_EXTRACTION_PROMPT
+    : V3_2_FUNCTION_EXTRACTION_PROMPT;
 
 const query = '值班员输入状态和日期范围查询巡检任务，系统在同一列表展示任务编号、名称和执行状态；筛选与排序是该次查询的条件。';
 const create = '管理员提交新增巡检计划请求，系统保存计划并返回计划编号。';
@@ -36,7 +40,7 @@ for (const sample of cases) {
         console.log(`开始 ${sample.id}：${sample.text.length} 字`);
         const result = await extractGroundedFunctions({
             documentContent: sample.text, chapterName: '全文', modelName: SILICONFLOW_MODEL_ALIAS,
-            systemPrompt: V3_2_FUNCTION_EXTRACTION_PROMPT, callAIWithRetry,
+            systemPrompt, callAIWithRetry,
             signal: AbortSignal.timeout(20 * 60 * 1000),
             onProgress: progress => console.log(`${sample.id}: ${progress.message}`)
         });

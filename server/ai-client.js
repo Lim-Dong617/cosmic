@@ -34,12 +34,24 @@ const UNLIMITDS_V4_PRO_MODEL = process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v
 const UNLIMITDS_API_KEY = process.env.UNLIMITDS_API_KEY || null;
 const UNLIMITDS_BASE_URL = process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1';
 
-// 硅基流动 DeepSeek V3.2（OpenAI 兼容接口）。使用独立内部别名，
+// 硅基流动 DeepSeek V4 Flash（OpenAI 兼容接口）。使用独立内部别名，
 // 避免与火山引擎的 `deepseek-v4-flash` UI 别名发生路由冲突。
-const SILICONFLOW_MODEL_ALIAS = 'siliconflow-deepseek-v3.2';
-const SILICONFLOW_MODEL = process.env.SILICONFLOW_MODEL || 'deepseek-ai/DeepSeek-V3.2';
+// 优先读取 SILICONFLOW_V4_FLASH_MODEL；若线上仍残留旧 V3.2 的 SILICONFLOW_MODEL
+// 变量，自动忽略并默认切到 DeepSeek-V4-Flash。
+function resolveSiliconflowModel(env = process.env) {
+    const explicitV4 = String(env.SILICONFLOW_V4_FLASH_MODEL || '').trim();
+    if (explicitV4) return explicitV4;
+    const generic = String(env.SILICONFLOW_MODEL || '').trim();
+    if (generic && !/v3\.2/i.test(generic)) return generic;
+    return 'deepseek-ai/DeepSeek-V4-Flash';
+}
+const SILICONFLOW_V4_FLASH_ALIAS = 'siliconflow-deepseek-v4-flash';
+const SILICONFLOW_MODEL_ALIAS = SILICONFLOW_V4_FLASH_ALIAS;
+const SILICONFLOW_V4_FLASH_MODEL = resolveSiliconflowModel(process.env);
+const SILICONFLOW_MODEL = SILICONFLOW_V4_FLASH_MODEL;
 const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY || null;
 const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
+const SILICONFLOW_ENABLE_THINKING = String(process.env.SILICONFLOW_ENABLE_THINKING || '').trim().toLowerCase() === 'true';
 
 // 内网 GLM OpenAI 兼容配置
 const INTRANET_GLM_ALIAS = 'intranet-glm';
@@ -171,8 +183,8 @@ const MODEL_MAP = {
     'deepseek-v4-flash': VOLCENGINE_V4_FLASH,           // DeepSeek-V4-flash
     [NVIDIA_V4_PRO_ALIAS]: NVIDIA_V4_PRO_ALIAS,          // NVIDIA NIM DeepSeek-V4-Pro
     [UNLIMITDS_V4_PRO_ALIAS]: UNLIMITDS_V4_PRO_ALIAS,    // UnlimitDS DeepSeek-V4-Pro
-    [SILICONFLOW_MODEL_ALIAS]: SILICONFLOW_MODEL_ALIAS, // 硅基流动 DeepSeek-V3.2
-    'siliconflow-deepseek-v4-flash': SILICONFLOW_MODEL_ALIAS, // 兼容旧硅基流动入口
+    [SILICONFLOW_MODEL_ALIAS]: SILICONFLOW_MODEL_ALIAS, // 硅基流动 DeepSeek-V4-Flash
+    'siliconflow-deepseek-v3.2': SILICONFLOW_MODEL_ALIAS, // 兼容旧硅基流动 V3.2 入口 → V4 Flash
     [INTRANET_GLM_ALIAS]: INTRANET_GLM_ALIAS,            // 内网 GLM
     // 兼容旧入口 → 统一映射到新模型
     'deepseek-v4-flash-free': VOLCENGINE_V4_FLASH_GA,   // 旧Flash → Flash正式版
@@ -592,7 +604,9 @@ async function callAI(options) {
         : max_tokens;
     const providerRequestOptions = route.provider === 'nvidia'
         ? { chat_template_kwargs: { thinking: false } }
-        : {};
+        : route.provider === 'siliconflow' && !SILICONFLOW_ENABLE_THINKING && /deepseek-v(?:3\.[12]|4)/i.test(requestModelName)
+            ? { enable_thinking: false }
+            : {};
 
     if (stream && res) {
         // 流式调用（直接输出给客户端）
@@ -894,6 +908,8 @@ module.exports = {
     UNLIMITDS_V4_PRO_MODEL,
     UNLIMITDS_BASE_URL,
     UNLIMITDS_MODELS,
+    SILICONFLOW_V4_FLASH_ALIAS,
+    SILICONFLOW_V4_FLASH_MODEL,
     SILICONFLOW_MODEL_ALIAS,
     SILICONFLOW_MODEL,
     SILICONFLOW_BASE_URL,

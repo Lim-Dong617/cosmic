@@ -326,6 +326,95 @@ async function testCrossChunkDuplicatesAndIndependentSimilarNames() {
     assert.equal(result.sourceDiagnostics.reviewedChunks, 2);
 }
 
+function testEvidenceToleratesPunctuationTablesAndMinorParaphrase() {
+    const source = [
+        '| 区域查询 | 用户可根据区域编码、区域名称（支持模糊搜索）以及区域层级查询并筛选区域列表，同时展示区域状态。 |',
+        '（1）管理员可通过 API: GET /area/list 查询区域基础资料；'
+    ].join('\n');
+    const range = { start: 0, end: source.length };
+
+    // Fullwidth/halfwidth punctuation & markdown table pipe differences.
+    const tableHit = locateEvidence(source, '原文：区域查询：用户可根据区域编码,区域名称(支持模糊搜索)以及区域层级查询并筛选区域列表,同时展示区域状态', range);
+    assert.ok(tableHit, 'punctuation and table separator differences should match');
+    assert.ok(tableHit.text.includes('查询并筛选区域列表'));
+
+    // Halfwidth/case and dropped list number prefix.
+    const apiHit = locateEvidence(source, '管理员可通过api：get/area/list查询区域基础资料。', range);
+    assert.ok(apiHit, 'case and punctuation differences should match');
+    assert.ok(apiHit.text.includes('GET /area/list'));
+
+    // Minor parenthetical omission on a long quote.
+    const paraphraseHit = locateEvidence(source, '用户可根据区域编码、区域名称以及区域层级查询并筛选区域列表，展示区域状态。', range);
+    assert.ok(paraphraseHit, 'minor parenthetical trim on long quote should still ground to original span');
+    assert.ok(paraphraseHit.text.includes('查询并筛选区域列表'));
+
+    // Fabricated action verb on a long quote must STILL be rejected.
+    assert.equal(
+        locateEvidence(source, '用户可根据区域编码、区域名称以及区域层级导出并下载区域列表，展示区域状态。', range),
+        null,
+        'invented action verbs (导出/下载) must never pass fuzzy grounding'
+    );
+    assert.equal(
+        locateEvidence(source, '用户可根据区域编码、区域名称以及区域层级删除区域列表，展示区域状态。', range),
+        null,
+        'invented delete action must never pass fuzzy grounding'
+    );
+}
+
+function testMultilineEvidenceAndBoldHeadersAreParsed() {
+    const raw = [
+        '**##触发事件：** 用户触发',
+        '##功能用户：发起者：用户 接收者：用户',
+        '##功能过程：查询与筛选区域列表',
+        '##功能过程描述：用户按条件查询并筛选区域列表',
+        '##原文依据：用户可根据区域编码查询区域列表，',
+        '同时支持按所属机构筛选展示结果。'
+    ].join('\n');
+    const parsed = parseGroundedFunctionList(raw);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].functionName, '查询与筛选区域列表');
+    assert.ok(parsed[0].documentEvidence.includes('按所属机构筛选展示结果'));
+}
+
+async function testPartialUnsupportedItemsDropWithWarningInsteadOfFailingJob() {
+    const evidence = '用户可根据区域编码和区域名称查询区域列表，系统返回匹配记录。';
+    const valid = record('查询区域列表', evidence);
+    const fabricated = record('导出区域列表', '用户可将区域列表导出为Excel文件。');
+    const mixed = `${valid}\n\n${fabricated}`;
+    const calls = [];
+    const result = await extract({
+        documentContent: evidence,
+        callAIWithRetry: scriptedCall([completion(mixed), completion(mixed), completion(valid)], calls)
+    });
+    assert.equal(calls.length, 3);
+    assert.deepEqual(result.functions.map(func => func.functionName), ['查询区域列表']);
+    assert.equal(result.sourceDiagnostics.droppedUnsupportedCount, 1);
+    assert.ok(result.sourceDiagnostics.warnings.some(item => item.includes('已过滤1条缺少原文依据')));
+    assert.equal(result.sourceDiagnostics.sourceComplete, true);
+}
+
+async function testLeafSplitDropsIsolatedUnsupportedItemOnMultiChunkDocument() {
+    const validQuote = '管理员提交新增区域请求，系统保存区域信息并返回区域编号。';
+    const filler = '背景与架构说明段落。'.repeat(220);
+    const documentContent = `${validQuote}\n${filler}`;
+    const valid = record('新增区域', validQuote);
+    const fabricated = record('查询与筛选区域列表', '系统支持导出全部区域统计报表。');
+    const result = await extract({
+        documentContent,
+        chunkChars: 1200,
+        maxSplitDepth: 1,
+        callAIWithRetry: async options => {
+            const range = sourceRequest(options);
+            if (range.text.includes(validQuote)) return completion(valid);
+            return completion(fabricated);
+        }
+    });
+    assert.deepEqual(result.functions.map(func => func.functionName), ['新增区域']);
+    assert.ok(result.sourceDiagnostics.droppedUnsupportedCount >= 1);
+    assert.ok(result.sourceDiagnostics.warnings.some(item => item.includes('查询与筛选区域列表')));
+    assert.equal(result.sourceDiagnostics.sourceComplete, true);
+}
+
 const tests = [
     testContiguousSourceRanges,
     testLongUnbrokenSourceRetainsItsTail,
@@ -338,7 +427,11 @@ const tests = [
     testEvidenceMustIntersectCurrentRangeAndPreserveWords,
     testEmptyFunctionListUsesExplicitFixedSentence,
     testCancellationStopsReviewAndRecovery,
-    testCrossChunkDuplicatesAndIndependentSimilarNames
+    testCrossChunkDuplicatesAndIndependentSimilarNames,
+    testEvidenceToleratesPunctuationTablesAndMinorParaphrase,
+    testMultilineEvidenceAndBoldHeadersAreParsed,
+    testPartialUnsupportedItemsDropWithWarningInsteadOfFailingJob,
+    testLeafSplitDropsIsolatedUnsupportedItemOnMultiChunkDocument
 ];
 let deepRecoveryCalls = 0;
 const fullyRecovered = await extract({

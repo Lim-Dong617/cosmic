@@ -9,7 +9,7 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dummyKey = 'offline-http-test-dummy-key';
-const modelAlias = 'siliconflow-deepseek-v3.2';
+const modelAlias = 'siliconflow-deepseek-v4-flash';
 const userConfig = { model: modelAlias };
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -77,7 +77,7 @@ const record = (name, evidence) => (
 );
 const reply = (content, finishReason = 'stop') => ({
     id: 'offline-completion', object: 'chat.completion', created: 1,
-    model: 'deepseek-ai/DeepSeek-V3.2',
+    model: 'deepseek-ai/DeepSeek-V4-Flash',
     choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finishReason }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
 });
@@ -105,8 +105,9 @@ async function runHttpTests() {
             let raw = '';
             for await (const chunk of request) raw += chunk;
             const body = JSON.parse(raw);
-            assert.equal(body.model, 'deepseek-ai/DeepSeek-V3.2', 'the UI alias must route through the actual V3.2 provider client');
+            assert.equal(body.model, 'deepseek-ai/DeepSeek-V4-Flash', 'the UI alias must route through the SiliconFlow V4 Flash provider client');
             assert.equal(body.stream, false);
+            assert.equal(body.enable_thinking, false);
             scenarioCalls.push(body);
             totalUpstreamCalls += 1;
             const result = scenario(body);
@@ -296,7 +297,7 @@ async function runHttpTests() {
             assert.equal(response.body.sourceDiagnostics.sourceComplete, true);
             assert.equal(scenarioCalls.length, 2);
         });
-        console.log(`COSMIC real HTTP integration tests passed: ${passed} scenarios, ${totalUpstreamCalls} local V3.2-compatible requests; no live model or database used.`);
+        console.log(`COSMIC real HTTP integration tests passed: ${passed} scenarios, ${totalUpstreamCalls} local SiliconFlow V4 Flash requests; no live model or database used.`);
     } catch (error) {
         console.error(logs);
         throw error;

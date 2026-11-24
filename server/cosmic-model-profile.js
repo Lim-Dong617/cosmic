@@ -17,12 +17,15 @@ const V4_MODELS = new Set([
     'nvidia-deepseek-v4-pro',
     'deepseek-ai/deepseek-v4-pro-0813',
     'unlimitds-deepseek-v4-pro',
+    'siliconflow-deepseek-v4-flash',
+    'deepseek-ai/deepseek-v4-flash',
+    'deepseek-ai/deepseek-v4-flash-0731',
+    'deepseek-ai/deepseek-v4.1-flash',
+    'deepseek-ai/deepseek-v4.1-flash-1017',
 ]);
 
 const V32_MODELS = new Set([
     'siliconflow-deepseek-v3.2',
-    // Historical UI alias now routes to SiliconFlow V3.2.
-    'siliconflow-deepseek-v4-flash',
     'deepseek-ai/deepseek-v3.2',
     'deepseek-v3.2',
 ]);

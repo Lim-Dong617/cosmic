@@ -52,8 +52,8 @@ assert.equal(NVIDIA_BASE_URL, process.env.NVIDIA_BASE_URL || 'https://integrate.
 assert.equal(UNLIMITDS_V4_PRO_ALIAS, 'unlimitds-deepseek-v4-pro');
 assert.equal(UNLIMITDS_V4_PRO_MODEL, process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro');
 assert.equal(UNLIMITDS_BASE_URL, process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1');
-assert.equal(SILICONFLOW_MODEL_ALIAS, 'siliconflow-deepseek-v3.2');
-assert.equal(SILICONFLOW_MODEL, process.env.SILICONFLOW_MODEL || 'deepseek-ai/DeepSeek-V3.2');
+assert.equal(SILICONFLOW_MODEL_ALIAS, 'siliconflow-deepseek-v4-flash');
+assert.equal(SILICONFLOW_MODEL, process.env.SILICONFLOW_V4_FLASH_MODEL || 'deepseek-ai/DeepSeek-V4-Flash');
 assert.equal(SILICONFLOW_BASE_URL, process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1');
 assert.equal(INTRANET_GLM_ALIAS, 'intranet-glm');
 assert.equal(INTRANET_GLM_MODEL, process.env.INTRANET_GLM_MODEL || 'glm-5.2');
@@ -68,7 +68,7 @@ assert.equal(MODEL_MAP['deepseek-v4-flash'], VOLCENGINE_V4_FLASH);
 assert.equal(MODEL_MAP[NVIDIA_V4_PRO_ALIAS], NVIDIA_V4_PRO_ALIAS);
 assert.equal(MODEL_MAP[UNLIMITDS_V4_PRO_ALIAS], UNLIMITDS_V4_PRO_ALIAS);
 assert.equal(MODEL_MAP[SILICONFLOW_MODEL_ALIAS], SILICONFLOW_MODEL_ALIAS);
-assert.equal(MODEL_MAP['siliconflow-deepseek-v4-flash'], SILICONFLOW_MODEL_ALIAS);
+assert.equal(MODEL_MAP['siliconflow-deepseek-v3.2'], SILICONFLOW_MODEL_ALIAS);
 
 // VOLCENGINE_MODELS 包含所有四个模型
 assert.ok(VOLCENGINE_MODELS.has(VOLCENGINE_V4_PRO_GA));
@@ -127,7 +127,7 @@ assert.deepEqual(
     resolveModelRoute(siliconflowRoute.modelName, siliconflowRoute.apiKey, siliconflowRoute.baseUrl),
     siliconflowRoute
 );
-const legacySiliconflowRoute = resolveModelRoute('siliconflow-deepseek-v4-flash', 'legacy_siliconflow_test_key');
+const legacySiliconflowRoute = resolveModelRoute('siliconflow-deepseek-v3.2', 'legacy_siliconflow_test_key');
 assert.equal(legacySiliconflowRoute.provider, 'siliconflow');
 assert.equal(legacySiliconflowRoute.modelName, SILICONFLOW_MODEL_ALIAS);
 assert.equal(legacySiliconflowRoute.requestModelName, SILICONFLOW_MODEL);
@@ -191,7 +191,7 @@ checkIsolatedUnlimitdsConfig(`
     assert.equal(route.provider, 'siliconflow');
     assert.equal(route.apiKey, null);
     assert.equal(route.baseUrl, 'https://api.siliconflow.cn/v1');
-    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V3.2');
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4-Flash');
     await assert.rejects(ai.callAI({
         model: ai.SILICONFLOW_MODEL_ALIAS,
         messages: [{ role: 'user', content: 'ping' }],
@@ -202,15 +202,25 @@ checkIsolatedUnlimitdsConfig(`
         && !ai.isRetryableAIError(error));
 `);
 
-// 线上可能残留旧 V4 变量，但新通道必须忽略它并继续使用 V3.2。
+// 线上可能残留旧 V3.2 的 SILICONFLOW_MODEL 变量，切到 V4 Flash 后必须忽略它并走 DeepSeek-V4-Flash。
 checkIsolatedUnlimitdsConfig(`
-    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V3.2');
-    const route = ai.resolveModelRoute('siliconflow-deepseek-v4-flash');
+    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V4-Flash');
+    const route = ai.resolveModelRoute('siliconflow-deepseek-v3.2');
     assert.equal(route.provider, 'siliconflow');
     assert.equal(route.modelName, ai.SILICONFLOW_MODEL_ALIAS);
-    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V3.2');
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4-Flash');
 `, {
-    SILICONFLOW_V4_FLASH_MODEL: 'deepseek-ai/DeepSeek-V4-Flash'
+    SILICONFLOW_MODEL: 'deepseek-ai/DeepSeek-V3.2'
+});
+
+// 配置 SILICONFLOW_V4_FLASH_MODEL 时应优先使用该指定模型 ID（例如 DeepSeek-V4.1-Flash）。
+checkIsolatedUnlimitdsConfig(`
+    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V4.1-Flash');
+    const route = ai.resolveModelRoute(ai.SILICONFLOW_MODEL_ALIAS);
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4.1-Flash');
+`, {
+    SILICONFLOW_MODEL: 'deepseek-ai/DeepSeek-V3.2',
+    SILICONFLOW_V4_FLASH_MODEL: 'deepseek-ai/DeepSeek-V4.1-Flash'
 });
 
 checkIsolatedUnlimitdsConfig(`
@@ -422,6 +432,7 @@ try {
         assert.equal(siliconflowRequest.body.max_tokens, 1234);
         assert.deepEqual(siliconflowRequest.body.messages, messages);
         assert.equal(Object.hasOwn(siliconflowRequest.body, 'chat_template_kwargs'), false);
+        assert.equal(siliconflowRequest.body.enable_thinking, false);
         assert.equal(siliconflowCompletion.choices[0].message.content, 'SILICONFLOW_OK');
     } finally {
         await new Promise((resolve, reject) => siliconflowServer.close(error => error ? reject(error) : resolve()));
