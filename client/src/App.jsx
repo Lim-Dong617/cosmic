@@ -467,6 +467,13 @@ function App({ user, token, onLogout }) {
     const [moduleStructure, setModuleStructure] = useState(null); // 三级模块结构
     const [extractionMode, setExtractionMode] = useState('precise'); // 'precise' | 'quantity'
     const [totalTargetCount, setTotalTargetCount] = useState(50); // 数量优先目标数
+    const [quantityMaximize, setQuantityMaximize] = useState(() => {
+        if (typeof window !== 'undefined') {
+            const saved = window.localStorage.getItem('cosmicQuantityMaximize');
+            return saved === null ? true : saved === 'true';
+        }
+        return true;
+    }); // 数量优先：尽量多拆（不封顶，仅按文档内容充分细拆）
     const [quantityPlan, setQuantityPlan] = useState(null); // 每模块目标数量规划
     const [showQuantityPlan, setShowQuantityPlan] = useState(false); // 数量规划弹窗
 
@@ -497,8 +504,9 @@ function App({ user, token, onLogout }) {
             window.localStorage.setItem('analysisMode', analysisMode);
             window.localStorage.setItem('useEnhancedCosmicExperience', useEnhancedCosmicExperience ? 'true' : 'false');
             window.localStorage.setItem('cosmicSplitExecutionMode', splitExecutionMode);
+            window.localStorage.setItem('cosmicQuantityMaximize', quantityMaximize ? 'true' : 'false');
         }
-    }, [selectedModel, minFunctionCount, analysisMode, useEnhancedCosmicExperience, splitExecutionMode]);
+    }, [selectedModel, minFunctionCount, analysisMode, useEnhancedCosmicExperience, splitExecutionMode, quantityMaximize]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -985,15 +993,20 @@ function App({ user, token, onLogout }) {
 
     const switchToQuantityMode = useCallback((targetTotal = null, openPlan = false) => {
         const estimateTotal = getModuleEstimateTotal();
-        const nextTotal = Math.max(0, parseInt(targetTotal ?? estimateTotal ?? totalTargetCount, 10) || 0);
+        const defaultTotal = estimateTotal > 0 ? Math.max(estimateTotal, totalTargetCount) : totalTargetCount;
+        const nextTotal = Math.max(0, parseInt(targetTotal ?? defaultTotal, 10) || 0);
         setExtractionMode('quantity');
         setTotalTargetCount(nextTotal);
         if (moduleStructure?.modules?.length) {
             setQuantityPlan(buildQuantityPlanFromModules(moduleStructure.modules, nextTotal));
         }
         if (openPlan) setShowQuantityPlan(true);
-        if (nextTotal > 0) showToast(`已切到数量优先，目标总数 ${nextTotal} 个`);
-    }, [buildQuantityPlanFromModules, getModuleEstimateTotal, moduleStructure, totalTargetCount]);
+        if (nextTotal > 0) {
+            showToast(quantityMaximize
+                ? `已切到数量优先（尽多细拆），保底目标 ${nextTotal} 个`
+                : `已切到数量优先，目标总数 ${nextTotal} 个`);
+        }
+    }, [buildQuantityPlanFromModules, getModuleEstimateTotal, moduleStructure, quantityMaximize, totalTargetCount]);
 
     const prepareQuantityReExtraction = useCallback((targetTotal = null) => {
         switchToQuantityMode(targetTotal, true);
@@ -1700,7 +1713,7 @@ function App({ user, token, onLogout }) {
         };
         const parseCollectedFunctions = () => deduplicateFunctionObjects(
             attachFunctionEvidence(inheritMissingFunctionLevels(parseFunctionListText(allFunctions)), extractedWithEvidence),
-            { semantic: extractionMode !== 'quantity' && !extractedWithEvidence.some(func => func.documentEvidence) }
+            { semantic: (extractionMode !== 'quantity' || quantityMaximize) && !extractedWithEvidence.some(func => func.documentEvidence) }
         );
         const quantityTotalTarget = extractionMode === 'quantity'
             ? (quantityPlan ? quantityPlan.reduce((s, p) => s + p.target, 0) : totalTargetCount)
@@ -1759,7 +1772,7 @@ function App({ user, token, onLogout }) {
                     const chapterTargetCount = quantityChapterTargets[index] || 0;
                     let result;
 
-                    if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
+                    if (extractionMode === 'quantity' && chapterTargetCount <= 0 && !(quantityMaximize && !quantityPlan)) {
                         result = { functionList: '', count: 0, skipped: true };
                     } else {
                         const res = await requestTrackedExtraction({
@@ -1770,7 +1783,8 @@ function App({ user, token, onLogout }) {
                             extractionMode,
                             moduleStructure: moduleStructure || null,
                             quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
-                            targetCount: chapterTargetCount
+                            targetCount: chapterTargetCount,
+                            quantityMaximize: extractionMode === 'quantity' && quantityMaximize
                         }, {
                             signal,
                             requestKey: `${extractionRunId}:chapter-${index + 1}`,
@@ -1854,7 +1868,7 @@ function App({ user, token, onLogout }) {
                     if (signal.aborted) return;
                     const chapter = selectedChapters[i];
                     const chapterTargetCount = quantityChapterTargets[i] || 0;
-                    if (extractionMode === 'quantity' && chapterTargetCount <= 0) {
+                    if (extractionMode === 'quantity' && chapterTargetCount <= 0 && !(quantityMaximize && !quantityPlan)) {
                         updateAnalysisProgress({
                             phase: 'Function extraction',
                             percent: 42 + Math.round(((i + 1) / Math.max(selectedChapters.length, 1)) * 22),
@@ -1871,7 +1885,7 @@ function App({ user, token, onLogout }) {
                         current: i,
                         total: selectedChapters.length,
                         detail: extractionMode === 'quantity' && chapterTargetCount > 0
-                            ? `Analyzing chapter: ${chapter.title} (target ${chapterTargetCount})`
+                            ? `Analyzing chapter: ${chapter.title} (${quantityMaximize ? 'floor' : 'target'} ${chapterTargetCount})`
                             : `Analyzing chapter: ${chapter.title}`,
                         stats: `${totalCount} functions found · ${extractionModeLabel}`
                     });
@@ -1892,7 +1906,8 @@ function App({ user, token, onLogout }) {
                         extractionMode,
                         moduleStructure: moduleStructure || null,
                         quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
-                        targetCount: chapterTargetCount
+                        targetCount: chapterTargetCount,
+                        quantityMaximize: extractionMode === 'quantity' && quantityMaximize
                     }, {
                         signal,
                         requestKey: `${extractionRunId}:chapter-${i + 1}`,
@@ -2913,12 +2928,16 @@ function App({ user, token, onLogout }) {
                 if (signal.aborted) return;
                 const uniqueFunctions = [...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))];
 
+                const oneKeyQuantityTarget = quantityPlan
+                    ? quantityPlan.reduce((sum, item) => sum + (Number(item?.target) || 0), 0)
+                    : (Number(totalTargetCount) || minFunctionCount || 50);
+
                 setMessages(prev => {
                     const filtered = prev.filter(m => !m.content.startsWith('**第 '));
                     return [...filtered, {
                         role: 'system',
                         content: extractionMode === 'quantity'
-                            ? `**第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / 目标 ${minFunctionCount} 个功能过程`
+                            ? `**第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / ${quantityMaximize ? '保底目标' : '目标'} ${oneKeyQuantityTarget} 个功能过程`
                             : `**第 ${round} 轮分析** | 已识别 ${allTableData.length} 个子过程 / ${[...new Set(allTableData.map(r => r.functionalProcess).filter(Boolean))].length} 个功能过程`
                     }];
                 });
@@ -2938,12 +2957,13 @@ function App({ user, token, onLogout }) {
                         documentContent,
                         previousFunctionNames: completedFunctionNames(allTableData),
                         round,
-                        targetFunctions: minFunctionCount,
+                        targetFunctions: extractionMode === 'quantity' ? oneKeyQuantityTarget : minFunctionCount,
                         understanding,
                         userGuidelines,
                         userConfig: getUserConfig(),
                         coverageVerification: lastCoverage,
                         extractionMode,
+                        quantityMaximize: extractionMode === 'quantity' && quantityMaximize,
                         useEnhancedExperience: useEnhancedCosmicExperience
                     },
                     requestKey: `${oneKeyRunId}:round-${round}`,
@@ -4582,16 +4602,29 @@ function App({ user, token, onLogout }) {
                             </div>
                         )}
                         {extractionMode === 'quantity' && (
-                            <div className="setting-row">
-                                <span className="setting-label">数量优先·目标总数</span>
-                                <input
-                                    type="number"
-                                    className="setting-input number-input"
-                                    value={totalTargetCount}
-                                    onChange={e => updateQuantityTotalTarget(e.target.value)}
-                                    min={0}
-                                />
-                            </div>
+                            <>
+                                <div className="setting-row">
+                                    <span className="setting-label">
+                                        {quantityMaximize ? '数量优先·保底目标' : '数量优先·目标总数'}
+                                    </span>
+                                    <input
+                                        type="number"
+                                        className="setting-input number-input"
+                                        value={totalTargetCount}
+                                        onChange={e => updateQuantityTotalTarget(e.target.value)}
+                                        min={0}
+                                    />
+                                </div>
+                                <div className="setting-row" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <span className="setting-label" style={{ marginBottom: 0 }}>尽多细拆（不封顶）</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={quantityMaximize}
+                                        onChange={e => setQuantityMaximize(e.target.checked)}
+                                        title="开启后按文档内容尽可能多拆，不裁剪超出目标数的有效功能"
+                                    />
+                                </div>
+                            </>
                         )}
                         <div className="setting-row">
                             <span className="setting-label">全局拆分要求（可选）</span>
@@ -4921,7 +4954,7 @@ function App({ user, token, onLogout }) {
                                         {extractionMode === 'quantity' && (
                                             <>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>
-                                                    <span style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}>目标总数：</span>
+                                                    <span style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}>{quantityMaximize ? '保底目标：' : '目标总数：'}</span>
                                                     <input
                                                         type="number" min={0} step={1}
                                                         value={totalTargetCount}
@@ -4930,6 +4963,13 @@ function App({ user, token, onLogout }) {
                                                     />
                                                     <span style={{ fontSize: 11, color: '#f59e0b' }}>个</span>
                                                 </div>
+                                                <button
+                                                    onClick={() => setQuantityMaximize(prev => !prev)}
+                                                    title={quantityMaximize ? '当前：在符合文档内容的基础上尽可能多拆，不裁剪超出保底数的有效功能；点击切回精确目标数' : '点击开启：按文档内容尽可能多拆（不封顶）'}
+                                                    style={{ padding: '3px 10px', borderRadius: 8, fontSize: 11, border: quantityMaximize ? '1px solid #d97706' : '1px solid var(--border-subtle)', cursor: 'pointer', background: quantityMaximize ? 'rgba(245,158,11,0.22)' : 'var(--bg-tertiary)', color: quantityMaximize ? '#d97706' : 'var(--text-secondary)', fontWeight: 600, transition: 'all 0.15s', whiteSpace: 'nowrap' }}
+                                                >
+                                                    {quantityMaximize ? '✓ 尽多细拆（不封顶）' : '精确目标数'}
+                                                </button>
                                                 {quantityPlan && (
                                                     <button
                                                         onClick={() => setShowQuantityPlan(true)}
@@ -4938,7 +4978,7 @@ function App({ user, token, onLogout }) {
                                                         <FileText size={12} /> 调整规划（{quantityPlan.length}个模块）
                                                     </button>
                                                 )}
-                                                <span style={{ fontSize: 11, color: '#f59e0b', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Zap size={12} /> 目标少时筛选精简，目标多时扩展补足；目标为0的模块会提示跳过</span>
+                                                <span style={{ fontSize: 11, color: '#f59e0b', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Zap size={12} /> {quantityMaximize ? '忠于原文按CRUD/流程/报表/接口八维深挖，自动语义去重且不封顶' : '目标少时筛选精简，目标多时扩展补足；目标为0的模块会提示跳过'}</span>
                                             </>
                                         )}
                                         {extractionMode === 'precise' && (
@@ -5351,6 +5391,17 @@ function App({ user, token, onLogout }) {
                                         style={{ padding: '4px 14px', borderRadius: 8, fontSize: 12, border: '1px solid var(--border-subtle)', cursor: 'pointer', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', fontWeight: 500 }}
                                     >
                                         均分
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            const baseEst = quantityPlan.reduce((sum, m) => sum + Math.max(1, Number(m.estimated) || 8), 0);
+                                            const boosted = Math.max(1, Math.ceil(baseEst * 1.5));
+                                            updateQuantityTotalTarget(boosted);
+                                            showToast(`已按预估 1.5x 细拆分配，保底目标 ${boosted} 个`);
+                                        }}
+                                        style={{ padding: '4px 14px', borderRadius: 8, fontSize: 12, border: '1px solid rgba(245,158,11,0.5)', cursor: 'pointer', background: 'rgba(245,158,11,0.12)', color: '#d97706', fontWeight: 600 }}
+                                    >
+                                        按预估 1.5x 细拆
                                     </button>
                                 </div>
 

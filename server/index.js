@@ -90,8 +90,8 @@ const {
 const { registerOfficeDocumentRoutes } = require('./office-document-service');
 const { createAsyncJobManager, createHttpError } = require('./async-job-manager');
 const { describeContinueAnalysisRound } = require('./cosmic-round-result');
-const { generateDocumentUnderstanding } = require('./document-understanding');
-const { extractGroundedFunctions, deduplicateGroundedFunctions } = require('./cosmic-extraction');
+const { generateDocumentUnderstanding, isTruncatedFinishReason } = require('./document-understanding');
+const { extractGroundedFunctions, deduplicateGroundedFunctions, splitSourceRanges } = require('./cosmic-extraction');
 const { verifyGroundedCoverage } = require('./cosmic-coverage');
 const { isV4CosmicModel } = require('./cosmic-model-profile');
 
@@ -3319,11 +3319,22 @@ app.post('/api/split-chapters', (req, res) => {
 
 async function executeFunctionExtraction(requestPayload, { signal, onProgress = () => {} } = {}) {
     try {
-        const { documentContent, chapterName = '', userGuidelines = '', userConfig = null, extractionMode = 'precise', moduleStructure = null, quantityPlan = null, targetCount = 0 } = requestPayload || {};
+        const {
+            documentContent,
+            chapterName = '',
+            userGuidelines = '',
+            userConfig = null,
+            extractionMode = 'precise',
+            moduleStructure = null,
+            quantityPlan = null,
+            targetCount = 0,
+            quantityMaximize = false
+        } = requestPayload || {};
         if (!documentContent) {
             throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
         }
-        if (extractionMode === 'quantity' && (Number(targetCount) || 0) <= 0) {
+        const maximizeQuantity = extractionMode === 'quantity' && Boolean(quantityMaximize);
+        if (extractionMode === 'quantity' && !maximizeQuantity && (Number(targetCount) || 0) <= 0) {
             return {
                 success: true,
                 functionList: '',
@@ -3334,7 +3345,9 @@ async function executeFunctionExtraction(requestPayload, { signal, onProgress = 
         }
 
         const chapterInfo = chapterName ? `【${chapterName}】章节的` : '';
-        const modeLabel = extractionMode === 'quantity' ? '数量优先' : '精准';
+        const modeLabel = extractionMode === 'quantity'
+            ? (maximizeQuantity ? '数量优先·尽多细拆' : '数量优先')
+            : '精准';
         console.log(`📋 开始提取功能过程列表${chapterName ? '（' + chapterName + '）' : ''}（${modeLabel}模式）...`);
         const modelName = getModelName(userConfig);
         const requestedModel = userConfig?.model || null;
@@ -3495,107 +3508,210 @@ async function executeFunctionExtraction(requestPayload, { signal, onProgress = 
                 : `\n\n【三级模块脚手架】以下是文档识别到的三级模块结构，请确保每个模块的功能都被提取，不要遗漏任何模块：\n${scaffoldList}`;
         }
 
-        let userPrompt;
-        if (extractionMode === 'quantity' && targetCount > 0) {
-            userPrompt = `请从以下${chapterInfo}需求文档中按目标数量提取功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
-            userPrompt += `\n\n【数量优先执行策略】\n`;
-            userPrompt += `- 本次目标：恰好输出 ${targetCount} 个功能过程，不允许上下浮动。\n`;
-            userPrompt += `- 如果文档可拆出的功能明显多于目标数：请筛选业务主干、核心接口、关键数据处理、主要查询统计、关键自动化任务；忽略低频、重复、边缘、纯展示、可由主流程覆盖的功能。\n`;
-            userPrompt += `- 如果文档可拆出的功能少于目标数：请在不虚构业务的前提下，按业务对象、CRUD、状态流转、查询统计、导入导出、定时任务、外部接口等维度合理扩展。\n`;
-            userPrompt += `- 目标少时不要追求覆盖所有细节；目标多时可以展开细粒度功能，但禁止无意义凑数或重复改名。\n`;
-            userPrompt += `- 输出数量必须优先服从本次目标；发现重复项时必须从文档中选择另一项独立业务结果补位，不能直接少交。\n`;
-            userPrompt += `- 输出前逐项计数，确保“##功能过程”行数严格等于 ${targetCount}。`;
-        } else {
-            userPrompt = `请从以下${chapterInfo}需求文档中提取所有功能过程列表：\n\n${documentContent}${understandingHint}${moduleScaffoldHint}`;
-        }
-        if (userGuidelines) {
-            userPrompt += `\n\n用户特殊要求：${userGuidelines}`;
-        }
-        if (extractionMode === 'quantity' && targetCount > 0) {
-            userPrompt += `\n\n**再次确认：本章节必须恰好输出 ${targetCount} 个功能过程。目标少则筛选精简，目标多则按真实独立业务维度补足。**`;
-        }
-        if (isV4Flash) {
-            userPrompt += `\n\n【V4 Flash 专用校准】\n- 你必须优先避免重复和过细拆分。\n- 同一业务对象的配置、新增、修改、删除、查看列表，如果业务目的相同，应合并为一个维护/配置/查询功能过程。\n- 不要为了达到数量目标而重复输出近似功能过程；功能过程名称必须唯一。\n- 合并重复项后必须从原文中按其他真实业务对象、触发事件、接口方向、状态变化或统计维度补位，最终数量仍须精确等于目标。`;
-        }
+        const strictQuantityMode = extractionMode === 'quantity' && (maximizeQuantity || Number(targetCount) > 0);
+        const requestedTarget = Number(targetCount) > 0 ? Math.max(1, Math.floor(Number(targetCount))) : null;
+        const isTruncated = reason => (
+            typeof isTruncatedFinishReason === 'function'
+                ? isTruncatedFinishReason(reason)
+                : ['length', 'max_tokens'].includes(String(reason || '').toLowerCase())
+        );
+        const selectQuantityDocSlice = (text, sliceRound, maxChars = 16000) => {
+            const full = String(text || '');
+            if (full.length <= maxChars) return full;
+            const step = Math.max(4000, maxChars - 600);
+            const sliceCount = Math.max(1, Math.ceil((full.length - 600) / step));
+            const index = ((Math.max(1, sliceRound) - 1) % sliceCount);
+            const start = Math.min(full.length - 1, index * step);
+            const end = Math.min(full.length, start + maxChars);
+            return `【第 ${index + 1}/${sliceCount} 段原文，第 ${start + 1}~${end} 字符】\n${full.slice(start, end)}`;
+        };
+        const buildQuantityUserPrompt = (contentText, chunkTarget, chunkLabel = '') => {
+            const scopePrefix = chunkLabel ? `${chapterInfo}${chunkLabel}` : chapterInfo;
+            let prompt = `请从以下${scopePrefix}需求文档中提取功能过程列表：\n\n${contentText}${understandingHint}${moduleScaffoldHint}`;
+            prompt += `\n\n【数量优先执行策略】\n`;
+            if (maximizeQuantity) {
+                prompt += chunkTarget
+                    ? `- 本次策略：在严格符合文档原文业务内容的前提下，尽可能充分、细粒度地拆出所有独立功能过程（参考保底目标不少于 ${chunkTarget} 个；如文档支持更多请全部拆出，不要人为截断或少拆）。\n`
+                    : `- 本次策略：在严格符合文档原文业务内容的前提下，尽可能充分、细粒度地拆出所有独立功能过程，不要人为截断或合并。\n`;
+                prompt += `- 请按八维充分细拆：每个业务对象的独立增删改查/列表/详情/启停/批量/导入/导出、流程审批与状态流转节点、不同视角的看板/报表/统计/下钻查询、指标计算/阈值检测/预警通知、定时任务、外部接口按方向与对象、规则/模板/参数/权限配置。\n`;
+                prompt += `- 严守文档边界：必须绑定文档真实出现的业务对象与业务域限定词；禁止凭空编造文档未提及的模块或系统，禁止拆出纯界面微交互（点击按钮/切Tab/翻页），禁止用同义改名凑数。\n`;
+            } else if (chunkTarget > 0) {
+                prompt += `- 本次目标：恰好输出 ${chunkTarget} 个功能过程，不允许上下浮动。\n`;
+                prompt += `- 如果文档可拆出的功能明显多于目标数：请筛选业务主干、核心接口、关键数据处理、主要查询统计、关键自动化任务；忽略低频、边缘、可由主流程覆盖的功能。\n`;
+                prompt += `- 如果文档可拆出的功能少于目标数：请在不虚构文档外业务的前提下，围绕文档提及的业务对象、独立CRUD（新增/修改/删除/列表/详情/导入导出）、状态流转节点、查询统计报表、定时任务、外部接口与规则配置等维度充分细拆。\n`;
+                prompt += `- 输出数量必须优先服从本次目标；发现重复项时必须从文档中选择另一项独立业务结果补位，不能直接少交。\n`;
+                prompt += `- 输出前逐项计数，确保“##功能过程”行数严格等于 ${chunkTarget}。\n`;
+            }
+            if (userGuidelines) {
+                prompt += `\n用户特殊要求：${userGuidelines}\n`;
+            }
+            if (isV4Flash) {
+                prompt += `\n【V4 数量优先细拆提醒】\n- 禁止把同一业务对象的新增、修改、删除、查询列表、查看详情、导入导出或审批环节强行合并成一个“维护/管理xxx”功能过程。\n- 每条功能名称必须唯一并保留业务域限定词，严格忠于文档内容，不编造文档未提及的业务，也不用同义改名重复凑数。`;
+            }
+            return prompt;
+        };
 
-        onProgress({ phase: 'extracting', message: `正在提取${chapterName ? `“${chapterName}”` : '当前章节'}的功能过程` });
-        const completion = await callAIWithRetry({
-            messages: [
+        const runQuantityCallWithContinuation = async (messages, { temperature = 0.1, maxTokens = 16000 } = {}) => {
+            const completion = await callAIWithRetry({
+                messages,
+                model: modelName,
+                temperature,
+                max_tokens: maxTokens,
+                signal
+            });
+            if (!completion?.choices?.[0]?.message?.content) {
+                console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
+                throw createHttpError('AI返回了空响应，请重试或切换模型', 502, 'EMPTY_AI_RESPONSE');
+            }
+            let text = completion.choices[0].message.content;
+            if (isTruncated(completion.choices[0]?.finish_reason || completion?.stop_reason)) {
+                console.warn('⚠️ 数量优先功能提取输出被截断，自动续写剩余项...');
+                onProgress({ phase: 'continuing', message: '输出较长已触发续写，正在补齐剩余功能过程' });
+                try {
+                    const cont = await callAIWithRetry({
+                        messages: [
+                            ...messages,
+                            { role: 'assistant', content: text },
+                            { role: 'user', content: '你的输出因长度上限被截断，请紧接上次中断处继续输出剩余功能过程，不要重复前面已输出的项目，严格保持四行格式，不要附加说明。' }
+                        ],
+                        model: modelName,
+                        temperature,
+                        max_tokens: 10000,
+                        signal
+                    });
+                    if (cont?.choices?.[0]?.message?.content) {
+                        text += '\n\n' + cont.choices[0].message.content;
+                    }
+                } catch (contErr) {
+                    if (signal?.aborted || contErr?.name === 'AbortError') throw contErr;
+                    console.warn(`⚠️ 数量优先续写失败，保留已提取部分: ${contErr.message}`);
+                }
+            }
+            return text;
+        };
+
+        // 长章节或全文在数量优先模式下按 ~6000 字分段扫描，避免后半段被忽略或触发单次输出截断。
+        const shouldChunkQuantity = strictQuantityMode && documentContent.length > 7500;
+        const quantityRanges = shouldChunkQuantity
+            ? splitSourceRanges(documentContent, 6000)
+            : [{ start: 0, end: documentContent.length }];
+
+        const extractedFunctions = [];
+        for (let idx = 0; idx < quantityRanges.length; idx += 1) {
+            if (signal?.aborted) throw signal.reason || new Error('功能提取已取消');
+            const range = quantityRanges[idx];
+            const chunkText = quantityRanges.length > 1
+                ? `【前文，仅作上下文】\n${documentContent.slice(Math.max(0, range.start - 300), range.start)}\n【当前原文（第 ${idx + 1}/${quantityRanges.length} 段，第 ${range.start + 1}~${range.end} 字符）】\n${documentContent.slice(range.start, range.end)}\n【后文，仅作上下文】\n${documentContent.slice(range.end, range.end + 300)}`
+                : documentContent;
+            const chunkRatio = (range.end - range.start) / Math.max(1, documentContent.length);
+            const chunkTarget = requestedTarget
+                ? (quantityRanges.length > 1
+                    ? Math.max(maximizeQuantity ? 6 : 2, Math.ceil(requestedTarget * chunkRatio * (maximizeQuantity ? 1.35 : 1.2)))
+                    : requestedTarget)
+                : (maximizeQuantity ? Math.max(12, Math.ceil((range.end - range.start) / 280)) : 0);
+            const chunkLabel = quantityRanges.length > 1 ? `第 ${idx + 1}/${quantityRanges.length} 段` : '';
+
+            onProgress({
+                phase: 'extracting',
+                message: quantityRanges.length > 1
+                    ? `正在细拆${chapterName ? `“${chapterName}”` : '当前章节'}第 ${idx + 1}/${quantityRanges.length} 段功能过程`
+                    : `正在提取${chapterName ? `“${chapterName}”` : '当前章节'}的功能过程`
+            });
+
+            const chunkReply = await runQuantityCallWithContinuation([
                 { role: 'system', content: activePrompt },
-                { role: 'user', content: userPrompt }
-            ],
-            model: modelName,
-            temperature: extractionMode === 'quantity' ? 0 : 0.3,
-            max_tokens: 16000,
-            signal
-        });
-
-        if (!completion?.choices?.[0]?.message?.content) {
-            console.error('❌ AI返回空响应:', JSON.stringify(completion, null, 2).substring(0, 500));
-            throw createHttpError('AI返回了空响应，请重试或切换模型', 502, 'EMPTY_AI_RESPONSE');
+                { role: 'user', content: buildQuantityUserPrompt(chunkText, chunkTarget, chunkLabel) }
+            ], {
+                temperature: maximizeQuantity ? 0.15 : 0.05,
+                maxTokens: 16000
+            });
+            extractedFunctions.push(...extractFunctionsFromText(chunkReply));
         }
-        let reply = completion.choices[0].message.content;
-        const extractedFunctions = extractFunctionsFromText(reply);
-        const strictQuantityMode = extractionMode === 'quantity' && Number(targetCount) > 0;
-        const requestedTarget = strictQuantityMode ? Math.max(1, Math.floor(Number(targetCount))) : null;
+
         let functions = qualifyFunctionNames(extractedFunctions, chapterName, moduleStructure);
         const rawCandidateCount = functions.length;
-        // 精准模式保留原有的语义去重；数量模式只删除完全同名项，避免程序把
-        // “查询/查看”等相似但按数量规划要求独立保留的功能过程静默吃掉。
-        functions = dedupeFunctionsByName(functions, { semantic: !strictQuantityMode });
+        // 尽多细拆模式启用语义去重，清除“新增/创建”“查询/获取”等同义重复，同时保留不同动作与不同对象；
+        // 精确目标模式只删除完全同名项，避免目标数被静默吃掉。
+        const useSemanticDedupe = !strictQuantityMode || maximizeQuantity;
+        functions = dedupeFunctionsByName(functions, { semantic: useSemanticDedupe });
         const afterDedupeCount = functions.length;
+        let reply = buildFunctionListText(functions);
         const namesAdjusted = functions.length !== extractedFunctions.length
             || functions.some((func, idx) => func.functionName !== extractedFunctions[idx]?.functionName);
         if (namesAdjusted) {
             console.log(`🏷️ 功能过程名称整理: ${extractedFunctions.length} 个候选 → ${functions.length} 个唯一完整名称`);
-            reply = buildFunctionListText(functions);
         }
+
+        const SUPPLEMENT_ANGLES = [
+            '重点排查文档中后段、表格逐行、分点列表及细节说明里尚未覆盖的业务对象与独立功能过程。',
+            '重点做业务对象独立操作拆细：核查原文提及的每个实体/台账/配置项，补全原文支持但此前被合并遗漏的新增、修改、删除、列表查询、详情查看、启用/停用、批量处理、导入、导出等独立功能（不要停留在笼统的“管理/维护xxx”）。',
+            '重点深挖流程与数据分析：核查审批/工单/派单流转各独立环节（提交、受理、审批、驳回、派发、处理、复核、归档）、不同业务视角的看板/报表/排名/明细下钻查询、指标计算、阈值检测与预警通知。',
+            '重点核查自动化与外部协同：核查定时同步/汇总/巡检/归档任务、外部系统接收/拉取/推送接口（按方向与对象分别拆分）、规则/策略/模板/参数配置及权限/审计日志查询等文档已有依据的功能。'
+        ];
 
         let supplementAttempts = 0;
         let supplementalCandidateCount = 0;
         if (strictQuantityMode) {
-            if (functions.length > requestedTarget) {
+            if (!maximizeQuantity && requestedTarget && functions.length > requestedTarget) {
                 console.log(`✂️ 数量优先精确裁剪: ${functions.length} → ${requestedTarget}`);
                 functions = functions.slice(0, requestedTarget);
             }
 
-            // 模型或前置去重少交时进行定向补位。补位只接受新名称，并最多尝试两轮，
-            // 防止无限请求；仍不足时通过 countDiagnostics 明确返回缺口，而不是静默成功。
-            while (functions.length < requestedTarget && supplementAttempts < 2) {
+            const maxSupplementRounds = 4;
+            const floorTarget = requestedTarget || 0;
+            let zeroGainStreak = 0;
+            while (supplementAttempts < maxSupplementRounds) {
+                const belowFloor = floorTarget > 0 && functions.length < floorTarget;
+                if (!maximizeQuantity && !belowFloor) break;
+                if (maximizeQuantity && !belowFloor && supplementAttempts >= 2) break;
+
                 supplementAttempts++;
-                const missingCount = requestedTarget - functions.length;
+                const missingCount = Math.max(0, floorTarget - functions.length);
+                const angleFocus = SUPPLEMENT_ANGLES[(supplementAttempts - 1) % SUPPLEMENT_ANGLES.length];
                 onProgress({
                     phase: 'supplementing',
-                    message: `功能数量不足，正在补充第 ${supplementAttempts} 轮（还差 ${missingCount} 个）`
+                    message: belowFloor
+                        ? `正在进行第 ${supplementAttempts} 轮深度补拆（当前 ${functions.length}/${floorTarget}，还差 ${missingCount} 个）`
+                        : `正在进行第 ${supplementAttempts} 轮细粒度补漏（当前已提取 ${functions.length} 个）`
                 });
                 const existingNames = functions.map(func => func.functionName);
-                const supplementPrompt = `请为以下章节补充恰好 ${missingCount} 个新的COSMIC功能过程，使最终总数达到 ${requestedTarget} 个。
+                const docSlice = selectQuantityDocSlice(documentContent, supplementAttempts, 16000);
+                const supplementGoalLine = belowFloor
+                    ? (maximizeQuantity
+                        ? `请为以下章节继续深挖并补充至少 ${missingCount} 个新的COSMIC功能过程（若文档支持更多请全部输出，不设上限）。`
+                        : `请为以下章节补充恰好 ${missingCount} 个新的COSMIC功能过程，使最终总数达到 ${floorTarget} 个。`)
+                    : `当前已提取 ${existingNames.length} 个功能过程。请在严格符合文档内容的前提下，围绕下方核查重点继续深挖文档中尚未覆盖或此前被粗略合并的独立功能过程，尽可能全部补齐；如果文档确实已彻底穷尽无新增，请只回复“无新增功能过程”。`;
+                const supplementPrompt = `${supplementGoalLine}
+
+【本轮重点核查方向】
+${angleFocus}
 
 【章节原文】
-${documentContent}
+${docSlice}
 ${moduleScaffoldHint}
 
 【已经保留的 ${existingNames.length} 个功能过程，禁止重复或同义改名】
 ${existingNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}
 
 要求：
-1. 只输出新增的 ${missingCount} 个功能过程，不要重发已有项。
-2. 每项必须有原文业务依据，并与已有项在业务对象、触发事件、状态变化、接口方向、统计维度或业务结果上至少一项不同。
-3. 不要因为功能相似而少交；输出前确认“##功能过程”行数恰好为 ${missingCount}。
-4. 严格沿用系统提示中的四行格式，不要输出解释。${userGuidelines ? `\n5. 用户特殊要求：${userGuidelines}` : ''}`;
+1. 只输出本轮新增的功能过程，不要重发已有项，不要对已有项做同义改名（如“新增/创建”“查询/获取”重复）。
+2. 每项必须严格来自文档真实业务内容，并与已有项在业务对象、独立操作动作、触发事件、流程节点、接口方向、统计维度或业务结果上明确不同。
+3. 严禁编造文档未提及的外部系统或模块，严禁拆分纯界面微交互（点击按钮/切Tab/翻页）。
+4. ${belowFloor && !maximizeQuantity ? `输出前确认“##功能过程”行数恰好为 ${missingCount}。` : '如有遗漏请尽可能完整拆出，不要提前省略。'}
+5. 严格沿用系统提示中的四行格式，不要输出解释。${userGuidelines ? `\n6. 用户特殊要求：${userGuidelines}` : ''}`;
 
                 try {
-                    const supplementCompletion = await callAIWithRetry({
-                        messages: [
-                            { role: 'system', content: activePrompt },
-                            { role: 'user', content: supplementPrompt }
-                        ],
-                        model: modelName,
-                        temperature: 0,
-                        max_tokens: Math.min(12000, Math.max(3000, missingCount * 700)),
-                        signal
+                    const supplementReply = await runQuantityCallWithContinuation([
+                        { role: 'system', content: activePrompt },
+                        { role: 'user', content: supplementPrompt }
+                    ], {
+                        temperature: supplementAttempts === 1 ? 0.15 : 0.25,
+                        maxTokens: Math.min(16000, Math.max(4000, (missingCount || 20) * 700))
                     });
-                    const supplementReply = supplementCompletion?.choices?.[0]?.message?.content || '';
+                    if (maximizeQuantity && !belowFloor && /^\s*无新增功能过程[。.]?\s*$/.test(supplementReply)) {
+                        console.log(`🧩 尽多细拆第 ${supplementAttempts} 轮确认已穷尽，停止补漏（共 ${functions.length} 个）`);
+                        break;
+                    }
                     const supplemental = qualifyFunctionNames(
                         extractFunctionsFromText(supplementReply),
                         chapterName,
@@ -3603,10 +3719,19 @@ ${existingNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}
                     );
                     supplementalCandidateCount += supplemental.length;
                     const beforeMerge = functions.length;
-                    functions = dedupeFunctionsByName([...functions, ...supplemental], { semantic: false })
-                        .slice(0, requestedTarget);
-                    console.log(`🧩 数量补位第 ${supplementAttempts} 轮: 新增 ${functions.length - beforeMerge} 个，当前 ${functions.length}/${requestedTarget}`);
-                    if (functions.length === beforeMerge) break;
+                    functions = dedupeFunctionsByName([...functions, ...supplemental], { semantic: useSemanticDedupe });
+                    if (!maximizeQuantity && floorTarget > 0) {
+                        functions = functions.slice(0, floorTarget);
+                    }
+                    const gained = functions.length - beforeMerge;
+                    console.log(`🧩 数量补位第 ${supplementAttempts} 轮: 新增 ${gained} 个，当前 ${functions.length}${floorTarget ? `/${floorTarget}` : ''}`);
+                    if (gained === 0) {
+                        zeroGainStreak += 1;
+                        if (!belowFloor || zeroGainStreak >= 2) break;
+                    } else {
+                        zeroGainStreak = 0;
+                        if (maximizeQuantity && !belowFloor && gained < 2) break;
+                    }
                 } catch (supplementError) {
                     if (signal?.aborted || supplementError?.name === 'AbortError') throw supplementError;
                     console.warn(`⚠️ 数量补位第 ${supplementAttempts} 轮失败: ${supplementError.message}`);
@@ -3618,14 +3743,16 @@ ${existingNames.map((name, index) => `${index + 1}. ${name}`).join('\n')}
 
         const countDiagnostics = {
             mode: extractionMode,
+            quantityMaximize: maximizeQuantity,
             target: requestedTarget,
+            chunkCount: quantityRanges.length,
             rawCandidateCount,
             afterDedupeCount,
             removedByDedupe: rawCandidateCount - afterDedupeCount,
             supplementAttempts,
             supplementalCandidateCount,
             finalCount: functions.length,
-            targetSatisfied: requestedTarget === null || functions.length === requestedTarget,
+            targetSatisfied: requestedTarget === null || (maximizeQuantity ? functions.length >= requestedTarget : functions.length === requestedTarget),
             deficit: requestedTarget === null ? 0 : Math.max(0, requestedTarget - functions.length)
         };
 
@@ -4458,9 +4585,34 @@ app.delete('/api/cosmic-split-jobs/:jobId', (req, res) => {
 
 // ═══════════════════════ 循环分析（一键完成模式） ═══════════════════════
 
+function selectDocumentSliceForRound(documentContent, round = 1, maxChars = 20000) {
+    const full = String(documentContent || '');
+    if (!full) return '（文档内容未提供）';
+    if (full.length <= maxChars) return full;
+    const step = Math.max(6000, maxChars - 800);
+    const sliceCount = Math.max(1, Math.ceil((full.length - 800) / step));
+    const sliceIndex = (Math.max(1, round) - 1) % sliceCount;
+    const start = Math.min(full.length - 1, sliceIndex * step);
+    const end = Math.min(full.length, start + maxChars);
+    return `【当前轮次聚焦第 ${sliceIndex + 1}/${sliceCount} 段原文（第 ${start + 1}~${end} 字符，共 ${full.length} 字符）】\n${full.slice(start, end)}`;
+}
+
 async function executeContinueAnalysis(requestPayload, { signal, onProgress = () => {} } = {}) {
     try {
-        const { documentContent, previousResults = [], previousFunctionNames = [], round = 1, targetFunctions = 30, understanding = null, userGuidelines = '', userConfig = null, coverageVerification: prevCoverage = null, extractionMode = 'precise', useEnhancedExperience = false } = requestPayload || {};
+        const {
+            documentContent,
+            previousResults = [],
+            previousFunctionNames = [],
+            round = 1,
+            targetFunctions = 30,
+            understanding = null,
+            userGuidelines = '',
+            userConfig = null,
+            coverageVerification: prevCoverage = null,
+            extractionMode = 'precise',
+            useEnhancedExperience = false,
+            quantityMaximize = false
+        } = requestPayload || {};
 
         if (!documentContent) {
             throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
@@ -4471,13 +4623,14 @@ async function executeContinueAnalysis(requestPayload, { signal, onProgress = ()
         ].filter(Boolean))];
         const modelName = getModelName(userConfig);
         const isQuantityMode = extractionMode === 'quantity';
+        const maximizeQuantity = isQuantityMode && Boolean(quantityMaximize);
         const completenessRule = getCosmicCompletenessRule(useEnhancedExperience);
 
         // 仅数量优先模式才使用目标数量
         let effectiveTarget = null;
         if (isQuantityMode) {
             effectiveTarget = (understanding?.totalEstimatedFunctions && understanding.totalEstimatedFunctions > targetFunctions)
-                ? Math.ceil(understanding.totalEstimatedFunctions * 1.1)
+                ? Math.ceil(understanding.totalEstimatedFunctions * (maximizeQuantity ? 1.3 : 1.1))
                 : targetFunctions;
             if (effectiveTarget !== targetFunctions) {
                 console.log(`📊 目标功能数已动态调整: ${targetFunctions} → ${effectiveTarget}（基于文档理解预估）`);
@@ -4536,17 +4689,22 @@ async function executeContinueAnalysis(requestPayload, { signal, onProgress = ()
         }
 
         let userPrompt = '';
+        const quantityGranularityHint = isQuantityMode
+            ? `\n【数量优先细粒度要求】在严格忠于文档真实业务内容的前提下，请将文档涉及的业务对象独立操作（新增/修改/删除/列表查询/详情查看/启停/批量/导入/导出）、流程审批节点、专题看板/统计报表/下钻查询、指标计算/阈值预警/通知推送、定时任务、外部接口按方向与对象、规则/模板/参数配置逐一拆分为独立功能过程，不要把多个独立操作笼统合并为单个“维护/管理xxx”；严禁编造文档外模块或同义改名凑数。`
+            : '';
         if (round === 1) {
             let guidelinesContext = userGuidelines ? `\n用户特定要求：${userGuidelines}` : '';
             const targetHint = isQuantityMode
-                ? `，目标约 ${effectiveTarget} 个功能过程`
+                ? (maximizeQuantity
+                    ? `，保底目标至少 ${effectiveTarget || 50} 个功能过程，请在符合文档内容的基础上尽可能细粒度拆出所有独立业务功能，不设上限`
+                    : `，目标约 ${effectiveTarget} 个功能过程`)
                 : `，请完整无遗漏地提取文档中所有功能过程，数量以文档实际内容为准`;
             userPrompt = `以下是功能文档内容：
 ${guidelinesContext}
 ${documentContent}
 ${understandingContext}
 
-请对文档中的功能进行COSMIC拆分${targetHint}。
+请对文档中的功能进行COSMIC拆分${targetHint}。${quantityGranularityHint}
 
 **输出格式**：只输出Markdown表格，不要额外说明。
 
@@ -4555,8 +4713,7 @@ ${understandingContext}
 
 ${completenessRule} 功能描述只在E行填写。`;
         } else {
-            // 关键修复：第2轮及之后也要传递文档内容，否则AI看不到原文
-            // 构建遗漏功能提示（如果有覆盖度验证结果）
+            // 关键修复：第2轮及之后按轮次滑动覆盖完整长文档，避免永远只看到前16000字导致后半段遗漏
             let missedHint = '';
             if (prevCoverage?.missedFunctions?.length > 0) {
                 const missedList = prevCoverage.missedFunctions.map((f, i) => {
@@ -4567,13 +4724,15 @@ ${completenessRule} 功能描述只在E行填写。`;
             }
 
             const targetRequirement = isQuantityMode
-                ? `- 目标 ${effectiveTarget} 个功能过程，当前还差 ${Math.max(0, effectiveTarget - completedFunctions.length)} 个`
+                ? (maximizeQuantity
+                    ? `- 保底目标至少 ${effectiveTarget || 50} 个功能过程（当前已完成 ${completedFunctions.length} 个）；在符合文档内容的基础上请继续深挖所有未覆盖或可进一步细拆的独立业务功能，不设上限`
+                    : `- 目标 ${effectiveTarget} 个功能过程，当前还差 ${Math.max(0, effectiveTarget - completedFunctions.length)} 个`)
                 : `- 请完整提取文档中所有尚未覆盖的功能过程，不设数量限制，以文档实际内容为准`;
 
             userPrompt = `继续分析文档中尚未拆分的功能过程。
 
 ## 原始需求文档（请仔细阅读，找出尚未拆分的功能）：
-${documentContent ? documentContent.substring(0, 16000) : '（文档内容未提供）'}
+${selectDocumentSliceForRound(documentContent, round, 20000)}
 ${understandingContext}
 
 ## 已完成的功能过程（共${completedFunctions.length}个，请勿重复）：
@@ -4581,7 +4740,7 @@ ${completedFunctions.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 ${missedHint}
 
 ## 要求
-${targetRequirement}
+${targetRequirement}${quantityGranularityHint}
 - 请仔细逐段阅读文档，找出上面"已完成"列表中未覆盖的功能
 - ${completenessRule}
 - 输出表格必须包含"功能描述"列，功能描述只在E行填写，内容要描述业务处理过程
