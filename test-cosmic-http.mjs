@@ -77,7 +77,7 @@ const record = (name, evidence) => (
 );
 const reply = (content, finishReason = 'stop') => ({
     id: 'offline-completion', object: 'chat.completion', created: 1,
-    model: 'deepseek-ai/DeepSeek-V4-Flash',
+    model: 'deepseek-ai/DeepSeek-V3.2',
     choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finishReason }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
 });
@@ -105,7 +105,7 @@ async function runHttpTests() {
             let raw = '';
             for await (const chunk of request) raw += chunk;
             const body = JSON.parse(raw);
-            assert.equal(body.model, 'deepseek-ai/DeepSeek-V4-Flash', 'the UI alias must route through the SiliconFlow V4 Flash provider client');
+            assert.equal(body.model, 'deepseek-ai/DeepSeek-V3.2', 'the siliconflow-deepseek-v4-flash alias must route to DeepSeek-V3.2');
             assert.equal(body.stream, false);
             assert.equal(body.enable_thinking, false);
             scenarioCalls.push(body);

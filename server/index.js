@@ -3545,9 +3545,7 @@ async function executeFunctionExtraction(requestPayload, { signal, onProgress = 
             if (userGuidelines) {
                 prompt += `\n用户特殊要求：${userGuidelines}\n`;
             }
-            if (isV4Flash) {
-                prompt += `\n【V4 数量优先细拆提醒】\n- 禁止把同一业务对象的新增、修改、删除、查询列表、查看详情、导入导出或审批环节强行合并成一个“维护/管理xxx”功能过程。\n- 每条功能名称必须唯一并保留业务域限定词，严格忠于文档内容，不编造文档未提及的业务，也不用同义改名重复凑数。`;
-            }
+            prompt += `\n【数量优先细拆提醒】\n- 禁止把同一业务对象的新增、修改、删除、查询列表、查看详情、导入导出或审批环节强行合并成一个“维护/管理xxx”功能过程。\n- 每条功能名称必须唯一并保留业务域限定词，严格忠于文档内容，不编造文档未提及的业务，也不用同义改名重复凑数。`;
             return prompt;
         };
 

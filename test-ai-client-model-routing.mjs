@@ -53,7 +53,7 @@ assert.equal(UNLIMITDS_V4_PRO_ALIAS, 'unlimitds-deepseek-v4-pro');
 assert.equal(UNLIMITDS_V4_PRO_MODEL, process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v4-pro');
 assert.equal(UNLIMITDS_BASE_URL, process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1');
 assert.equal(SILICONFLOW_MODEL_ALIAS, 'siliconflow-deepseek-v4-flash');
-assert.equal(SILICONFLOW_MODEL, process.env.SILICONFLOW_V4_FLASH_MODEL || 'deepseek-ai/DeepSeek-V4-Flash');
+assert.equal(SILICONFLOW_MODEL, process.env.SILICONFLOW_MODEL || 'deepseek-ai/DeepSeek-V3.2');
 assert.equal(SILICONFLOW_BASE_URL, process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1');
 assert.equal(INTRANET_GLM_ALIAS, 'intranet-glm');
 assert.equal(INTRANET_GLM_MODEL, process.env.INTRANET_GLM_MODEL || 'glm-5.2');
@@ -191,7 +191,7 @@ checkIsolatedUnlimitdsConfig(`
     assert.equal(route.provider, 'siliconflow');
     assert.equal(route.apiKey, null);
     assert.equal(route.baseUrl, 'https://api.siliconflow.cn/v1');
-    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4-Flash');
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V3.2');
     await assert.rejects(ai.callAI({
         model: ai.SILICONFLOW_MODEL_ALIAS,
         messages: [{ role: 'user', content: 'ping' }],
@@ -202,25 +202,27 @@ checkIsolatedUnlimitdsConfig(`
         && !ai.isRetryableAIError(error));
 `);
 
-// 线上可能残留旧 V3.2 的 SILICONFLOW_MODEL 变量，切到 V4 Flash 后必须忽略它并走 DeepSeek-V4-Flash。
+// 线上可能残留旧 SILICONFLOW_V4_FLASH_MODEL 变量，底层已切换回 V3.2 时必须忽略它并继续走 DeepSeek-V3.2。
 checkIsolatedUnlimitdsConfig(`
-    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V4-Flash');
-    const route = ai.resolveModelRoute('siliconflow-deepseek-v3.2');
+    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V3.2');
+    const route = ai.resolveModelRoute('siliconflow-deepseek-v4-flash');
     assert.equal(route.provider, 'siliconflow');
     assert.equal(route.modelName, ai.SILICONFLOW_MODEL_ALIAS);
-    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4-Flash');
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V3.2');
+    const legacyRoute = ai.resolveModelRoute('siliconflow-deepseek-v3.2');
+    assert.equal(legacyRoute.requestModelName, 'deepseek-ai/DeepSeek-V3.2');
 `, {
-    SILICONFLOW_MODEL: 'deepseek-ai/DeepSeek-V3.2'
+    SILICONFLOW_V4_FLASH_MODEL: 'deepseek-ai/DeepSeek-V4-Flash'
 });
 
-// 配置 SILICONFLOW_V4_FLASH_MODEL 时应优先使用该指定模型 ID（例如 DeepSeek-V4.1-Flash）。
+// 显式配置 SILICONFLOW_MODEL 时应优先使用自定义模型 ID。
 checkIsolatedUnlimitdsConfig(`
-    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V4.1-Flash');
+    assert.equal(ai.SILICONFLOW_MODEL, 'deepseek-ai/DeepSeek-V3.2-Custom');
     const route = ai.resolveModelRoute(ai.SILICONFLOW_MODEL_ALIAS);
-    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V4.1-Flash');
+    assert.equal(route.requestModelName, 'deepseek-ai/DeepSeek-V3.2-Custom');
 `, {
-    SILICONFLOW_MODEL: 'deepseek-ai/DeepSeek-V3.2',
-    SILICONFLOW_V4_FLASH_MODEL: 'deepseek-ai/DeepSeek-V4.1-Flash'
+    SILICONFLOW_V4_FLASH_MODEL: 'deepseek-ai/DeepSeek-V4-Flash',
+    SILICONFLOW_MODEL: 'deepseek-ai/DeepSeek-V3.2-Custom'
 });
 
 checkIsolatedUnlimitdsConfig(`

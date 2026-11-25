@@ -34,16 +34,13 @@ const UNLIMITDS_V4_PRO_MODEL = process.env.UNLIMITDS_V4_PRO_MODEL || 'deepseek-v
 const UNLIMITDS_API_KEY = process.env.UNLIMITDS_API_KEY || null;
 const UNLIMITDS_BASE_URL = process.env.UNLIMITDS_BASE_URL || 'https://unlimitds.chat/v1';
 
-// 硅基流动 DeepSeek V4 Flash（OpenAI 兼容接口）。使用独立内部别名，
-// 避免与火山引擎的 `deepseek-v4-flash` UI 别名发生路由冲突。
-// 优先读取 SILICONFLOW_V4_FLASH_MODEL；若线上仍残留旧 V3.2 的 SILICONFLOW_MODEL
-// 变量，自动忽略并默认切到 DeepSeek-V4-Flash。
+// 硅基流动通道（OpenAI 兼容接口）。前端保持 `siliconflow-deepseek-v4-flash` 别名不变，
+// 底层默认请求模型统一使用 `deepseek-ai/DeepSeek-V3.2`（忽略残留的 SILICONFLOW_V4_FLASH_MODEL；
+// 如需指定其他硅基流动模型，可显式配置 SILICONFLOW_MODEL）。
 function resolveSiliconflowModel(env = process.env) {
-    const explicitV4 = String(env.SILICONFLOW_V4_FLASH_MODEL || '').trim();
-    if (explicitV4) return explicitV4;
-    const generic = String(env.SILICONFLOW_MODEL || '').trim();
-    if (generic && !/v3\.2/i.test(generic)) return generic;
-    return 'deepseek-ai/DeepSeek-V4-Flash';
+    const explicitModel = String(env.SILICONFLOW_MODEL || '').trim();
+    if (explicitModel) return explicitModel;
+    return 'deepseek-ai/DeepSeek-V3.2';
 }
 const SILICONFLOW_V4_FLASH_ALIAS = 'siliconflow-deepseek-v4-flash';
 const SILICONFLOW_MODEL_ALIAS = SILICONFLOW_V4_FLASH_ALIAS;
@@ -632,7 +629,7 @@ async function callAI(options) {
             }
             return null;
         } catch (error) {
-            const normalizedError = guard.normalizeError(error);
+            const normalizedError = decorateProviderError(guard.normalizeError(error), route);
             if (emittedContent) normalizedError.doNotRetry = true;
             throw normalizedError;
         } finally {
@@ -687,7 +684,7 @@ async function callAI(options) {
                 usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
             };
         } catch (error) {
-            throw guard.normalizeError(error);
+            throw decorateProviderError(guard.normalizeError(error), route);
         } finally {
             guard.cleanup();
         }
@@ -705,7 +702,7 @@ async function callAI(options) {
                 stream: false
             }, { signal: guard.signal });
         } catch (error) {
-            throw guard.normalizeError(error);
+            throw decorateProviderError(guard.normalizeError(error), route);
         } finally {
             guard.cleanup();
         }
@@ -722,6 +719,25 @@ async function callAI(options) {
 
         return completion;
     }
+}
+
+function decorateProviderError(error, route) {
+    if (!error || typeof error !== 'object') return error;
+    const status = getAIErrorStatus(error);
+    const message = String(error.message || '');
+    const providerLabel = route?.provider === 'siliconflow' ? '硅基流动'
+        : route?.provider === 'nvidia' ? 'NVIDIA NIM'
+        : route?.provider === 'unlimitds' ? 'UnlimitDS'
+        : route?.provider === 'intranet-glm' ? '内网 GLM'
+        : '火山引擎';
+    if (status === 402 && !/余额不足|欠费/.test(message)) {
+        error.message = `${providerLabel}账户余额不足（HTTP 402，模型: ${route?.requestModelName || ''}），请检查账户余额/充值状态`;
+    } else if (status === 403 && /AccountOverdueError|overdue balance/i.test(message) && !/欠费/.test(message)) {
+        error.message = `${providerLabel}账户已欠费（HTTP 403，模型: ${route?.requestModelName || ''}），请充值后再试`;
+    } else if (status === 410 && !/已下线|失效/.test(message)) {
+        error.message = `${providerLabel}模型端点已下线或失效（HTTP 410，模型: ${route?.requestModelName || ''}），请切换其他模型`;
+    }
+    return error;
 }
 
 function getAIErrorStatus(error) {

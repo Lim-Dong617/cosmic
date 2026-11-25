@@ -6,6 +6,7 @@ const { isV4CosmicModel, isV32CosmicModel } = require('./server/cosmic-model-pro
 
 for (const model of [
   'siliconflow-deepseek-v3.2',
+  'siliconflow-deepseek-v4-flash',
   'deepseek-ai/DeepSeek-V3.2',
 ]) {
   assert.equal(isV4CosmicModel(model), false, `${model} must not inherit V4 behavior`);
@@ -22,7 +23,6 @@ for (const model of [
   'nvidia-deepseek-v4-pro',
   'deepseek-ai/deepseek-v4-pro-0813',
   'unlimitds-deepseek-v4-pro',
-  'siliconflow-deepseek-v4-flash',
   'deepseek-ai/DeepSeek-V4-Flash',
   'deepseek-ai/DeepSeek-V4-Flash-0731',
   'deepseek-ai/DeepSeek-V4.1-Flash',
