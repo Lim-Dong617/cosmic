@@ -7,6 +7,7 @@ const {
     splitSourceRanges,
     parseGroundedFunctionList,
     locateEvidence,
+    normalizeGroundedFunctionalUser,
     deduplicateGroundedFunctions,
     extractGroundedFunctions
 } = require('./server/cosmic-extraction');
@@ -415,6 +416,30 @@ async function testLeafSplitDropsIsolatedUnsupportedItemOnMultiChunkDocument() {
     assert.equal(result.sourceDiagnostics.sourceComplete, true);
 }
 
+function testFunctionalUserNormalizationRespectsCosmicRules() {
+    assert.equal(
+        normalizeGroundedFunctionalUser('用户触发', '发起者：运维人员 接收者：系统'),
+        '发起者：运维人员 接收者：运维人员'
+    );
+    assert.equal(
+        normalizeGroundedFunctionalUser('用户触发', '发起者：管理员 接收者：本系统'),
+        '发起者：管理员 接收者：管理员'
+    );
+    assert.equal(
+        normalizeGroundedFunctionalUser('时钟触发', '发起者：系统 接收者：系统'),
+        '发起者：定时触发器 接收者：本系统'
+    );
+    assert.equal(
+        normalizeGroundedFunctionalUser('接口调用触发', '发起者：外部网管系统 接收者：系统'),
+        '发起者：外部网管系统 接收者：本系统'
+    );
+    assert.equal(
+        normalizeGroundedFunctionalUser('用户触发', '管理员'),
+        '管理员',
+        'plain labels without 发起者/接收者 must remain unchanged'
+    );
+}
+
 const tests = [
     testContiguousSourceRanges,
     testLongUnbrokenSourceRetainsItsTail,
@@ -431,7 +456,8 @@ const tests = [
     testEvidenceToleratesPunctuationTablesAndMinorParaphrase,
     testMultilineEvidenceAndBoldHeadersAreParsed,
     testPartialUnsupportedItemsDropWithWarningInsteadOfFailingJob,
-    testLeafSplitDropsIsolatedUnsupportedItemOnMultiChunkDocument
+    testLeafSplitDropsIsolatedUnsupportedItemOnMultiChunkDocument,
+    testFunctionalUserNormalizationRespectsCosmicRules
 ];
 let deepRecoveryCalls = 0;
 const fullyRecovered = await extract({

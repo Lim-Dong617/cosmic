@@ -223,4 +223,47 @@ function createQuantityHarness(callAIWithRetry) {
     assert.ok(slices.some(s => s.includes(tail)), 'round slices must cover tail');
 }
 
+// 5. qualifyFunctionNames 应只补全裸通用词，绝不破坏已带厂家/业务限定词或并列章节标题的功能名。
+{
+    const qStart = serverSource.indexOf('function cleanBusinessContextName(');
+    const qEnd = serverSource.indexOf('function normalizeCosmicDmt(', qStart);
+    assert.ok(qStart > 0 && qEnd > qStart, 'qualifyFunctionNames block must exist');
+    const qCtx = vm.createContext({
+        getRelevantModulesForChapter: () => [],
+        normalizeGroundedFunctionalUser: extraction.normalizeGroundedFunctionalUser
+    });
+    vm.runInContext(serverSource.slice(qStart, qEnd) + '\nglobalThis.qualify = qualifyFunctionNames;', qCtx);
+
+    // 裸通用词正常补全章节限定词
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(qCtx.qualify([
+            { functionName: '编辑标签信息', triggerEvent: '用户触发', functionalUser: '发起者：管理员 接收者：系统' },
+            { functionName: '批量删除标签', triggerEvent: '用户触发', functionalUser: '发起者：管理员 接收者：管理员' }
+        ], '3.1 元数据标签管理'))),
+        [
+            { functionName: '编辑元数据标签信息', triggerEvent: '用户触发', functionalUser: '发起者：管理员 接收者：管理员' },
+            { functionName: '批量删除元数据标签', triggerEvent: '用户触发', functionalUser: '发起者：管理员 接收者：管理员' }
+        ]
+    );
+
+    // 并列标题（如“区域与工单”“华为与中兴”）不得乱拼进子功能名
+    assert.deepEqual(
+        [...qCtx.qualify([
+            { functionName: '发起质差问题工单', triggerEvent: '用户触发', functionalUser: '发起者：运维人员 接收者：运维人员' },
+            { functionName: '审批问题工单', triggerEvent: '用户触发', functionalUser: '发起者：审核专家 接收者：审核专家' }
+        ], '3 区域与工单管理').map(f => f.functionName)],
+        ['发起质差问题工单', '审批问题工单']
+    );
+
+    // 不同厂家的限定词必须原样保留，不能相互覆盖或拼成病句
+    assert.deepEqual(
+        [...qCtx.qualify([
+            { functionName: '查询告警列表', triggerEvent: '用户触发', functionalUser: '发起者：用户 接收者：用户' },
+            { functionName: '查询华为基站告警列表', triggerEvent: '用户触发', functionalUser: '发起者：用户 接收者：用户' },
+            { functionName: '查询中兴基站告警列表', triggerEvent: '用户触发', functionalUser: '发起者：用户 接收者：用户' }
+        ], '2.1 华为基站告警管理').map(f => f.functionName)],
+        ['查询华为基站告警列表', '查询华为基站告警列表', '查询中兴基站告警列表']
+    );
+}
+
 console.log('COSMIC quantity priority optimization tests passed');

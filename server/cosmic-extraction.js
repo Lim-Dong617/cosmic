@@ -331,6 +331,33 @@ function locateEvidence(source, evidence, range, contextChars = 400) {
     return null;
 }
 
+function normalizeGroundedFunctionalUser(triggerEvent, functionalUser) {
+    const trigger = String(triggerEvent || '').trim();
+    const user = String(functionalUser || '').trim();
+    if (!user) return user;
+    const match = user.match(/^发起者[：:]\s*(.+?)\s+接收者[：:]\s*(.+)$/);
+    if (!match) return user;
+    const initiator = match[1].trim();
+    const receiver = match[2].trim();
+    if (trigger === '时钟触发') {
+        if (/^(?:本)?系统$/.test(initiator) && /^(?:本)?系统$/.test(receiver)) {
+            return '发起者：定时触发器 接收者：本系统';
+        }
+        if (/^(?:定时触发器|定时调度器|调度器)$/.test(initiator) && receiver === '系统') {
+            return `发起者：${initiator} 接收者：本系统`;
+        }
+    } else if (trigger === '用户触发') {
+        if (initiator && !/^(?:本)?系统$|定时|调度|外部/.test(initiator) && /^(?:本)?系统$/.test(receiver)) {
+            return `发起者：${initiator} 接收者：${initiator}`;
+        }
+    } else if (trigger === '接口调用触发') {
+        if (initiator && receiver === '系统') {
+            return `发起者：${initiator} 接收者：本系统`;
+        }
+    }
+    return user;
+}
+
 function evaluateGrounding(functions, source, range, chapterName) {
     const grounded = [];
     const unsupported = [];
@@ -339,7 +366,8 @@ function evaluateGrounding(functions, source, range, chapterName) {
         if (!evidence) {
             unsupported.push(func);
         } else {
-            grounded.push({ ...func, documentEvidence: evidence.text, sourceStart: evidence.start, sourceEnd: evidence.end, sourceChapter: chapterName });
+            const functionalUser = normalizeGroundedFunctionalUser(func.triggerEvent, func.functionalUser);
+            grounded.push({ ...func, functionalUser, documentEvidence: evidence.text, sourceStart: evidence.start, sourceEnd: evidence.end, sourceChapter: chapterName });
         }
     }
     return { grounded, unsupported };
@@ -552,4 +580,4 @@ async function extractGroundedFunctions({
     return { functions: deduplicateGroundedFunctions(functions), sourceDiagnostics: diagnostics };
 }
 
-module.exports = { EMPTY_RESULT, SOURCE_RULES, splitSourceRanges, parseGroundedFunctionList, locateEvidence, deduplicateGroundedFunctions, functionListText, extractGroundedFunctions };
+module.exports = { EMPTY_RESULT, SOURCE_RULES, splitSourceRanges, parseGroundedFunctionList, locateEvidence, normalizeGroundedFunctionalUser, deduplicateGroundedFunctions, functionListText, extractGroundedFunctions };

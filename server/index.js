@@ -91,7 +91,7 @@ const { registerOfficeDocumentRoutes } = require('./office-document-service');
 const { createAsyncJobManager, createHttpError } = require('./async-job-manager');
 const { describeContinueAnalysisRound } = require('./cosmic-round-result');
 const { generateDocumentUnderstanding, isTruncatedFinishReason } = require('./document-understanding');
-const { extractGroundedFunctions, deduplicateGroundedFunctions, splitSourceRanges } = require('./cosmic-extraction');
+const { extractGroundedFunctions, deduplicateGroundedFunctions, splitSourceRanges, normalizeGroundedFunctionalUser } = require('./cosmic-extraction');
 const { verifyGroundedCoverage } = require('./cosmic-coverage');
 const { isV4CosmicModel } = require('./cosmic-model-profile');
 
@@ -525,6 +525,8 @@ function buildBusinessObjectQualifiers(chapterName, moduleStructure) {
             if (objectIndex <= 0) continue;
             const prefix = context.slice(0, objectIndex).trim();
             if (prefix.length < 2 || prefix.length > 10) continue;
+            // 带并列连词的复合标题（如“区域与工单”“华为与中兴告警”）不能作为单一对象前缀硬塞进子功能名。
+            if (/[与和及、或/＆&]/.test(prefix)) continue;
             if (/创建|新增|编辑|修改|删除|查询|查看|启用|停用|导入|导出|同步|生成|执行/.test(prefix)) continue;
             qualifiers.set(genericObject, `${prefix}${genericObject}`);
         }
@@ -532,19 +534,36 @@ function buildBusinessObjectQualifiers(chapterName, moduleStructure) {
     return qualifiers;
 }
 
+const BARE_ACTION_PREFIX_PATTERN = /^(?:定时|批量|自动|手动|实时|按日|按周|按月)?(?:新增|创建|新建|添加|录入|编辑|修改|更新|变更|调整|删除|移除|注销|作废|查询|查看|检索|搜索|浏览|启用|停用|开启|关闭|导入|导出|上传|下载|同步|生成|执行|运行|发起|提交|审批|审核|驳回|派发|派单|受理|处理|归档|统计|汇总|配置|维护|管理|接收|推送|发送|展示|获取|核查|校验|解析|映射|存储)?$/;
+
 function qualifyFunctionNames(functions = [], chapterName = '', moduleStructure = null) {
     const qualifiers = buildBusinessObjectQualifiers(chapterName, moduleStructure);
-    if (qualifiers.size === 0) return functions;
 
     return functions.map(func => {
         const originalName = String(func.functionName || '').trim();
         let qualifiedName = originalName;
-        for (const [genericObject, fullObject] of qualifiers) {
-            if (qualifiedName.includes(fullObject) || !qualifiedName.includes(genericObject)) continue;
-            qualifiedName = qualifiedName.replace(genericObject, fullObject);
-            break;
+        if (qualifiers.size > 0) {
+            const strippedLead = qualifiedName.replace(/^\s*(?:\[.*?\]\s*)?/, '');
+            const leadOffset = qualifiedName.length - strippedLead.length;
+            for (const [genericObject, fullObject] of qualifiers) {
+                if (qualifiedName.includes(fullObject)) continue;
+                const objectPos = strippedLead.indexOf(genericObject);
+                if (objectPos < 0) continue;
+                // 仅当通用词前面没有其他厂家/业务域限定词（只有动作动词或为空）时才自动补全；
+                // 已带限定词（如“发起质差问题工单”“查询中兴小区告警”）一律原样保留。
+                const beforeObject = strippedLead.slice(0, objectPos).trim();
+                if (!BARE_ACTION_PREFIX_PATTERN.test(beforeObject)) continue;
+                qualifiedName = qualifiedName.slice(0, leadOffset + objectPos)
+                    + fullObject
+                    + qualifiedName.slice(leadOffset + objectPos + genericObject.length);
+                break;
+            }
         }
-        return qualifiedName === originalName ? func : { ...func, functionName: qualifiedName };
+        const normalizedUser = typeof normalizeGroundedFunctionalUser === 'function'
+            ? normalizeGroundedFunctionalUser(func.triggerEvent, func.functionalUser)
+            : func.functionalUser;
+        if (qualifiedName === originalName && normalizedUser === func.functionalUser) return func;
+        return { ...func, functionName: qualifiedName, functionalUser: normalizedUser };
     });
 }
 
