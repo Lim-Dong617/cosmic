@@ -57,6 +57,13 @@ const {
     buildSensenovaV4CosmicSplitPrompt
 } = require('./prompts');
 const { NESMA_FUNCTION_EXTRACTION_PROMPT, NESMA_QUANTITY_PRIORITY_PROMPT, NESMA_MODULE_RECOGNITION_PROMPT, NESMA_COVERAGE_VERIFICATION_PROMPT, NESMA_GUOCHANHUA_MIGRATION_PROMPT } = require('./nesma-prompts');
+const {
+    NESMA_FP_WEIGHTS,
+    NESMA_REUSE_COEFFICIENTS,
+    NESMA_REUSE_LEVEL_PATTERN,
+    sanitizeNesmaTableData,
+    buildNesmaBatchDocumentExcerpt
+} = require('./nesma-quality');
 const { authRouter } = require('./auth');
 const { initDatabase } = require('./database');
 const { buildCosmicAssessmentWorkbook } = require('./cosmic-template-export');
@@ -1611,34 +1618,95 @@ function extractProcessKeyword(processName, length = 4) {
  * @param {string|null} verbPrefix - 动词前缀（如"读取"），有则在动词后插入关键词
  * @returns {string} 唯一化后的名称
  */
+function mergePrefixOverlap(prefix, text) {
+    const left = String(prefix || '').trim();
+    const right = String(text || '').trim();
+    if (!left) return right;
+    if (!right) return left;
+    if (right.startsWith(left)) return right;
+    if (left.endsWith(right)) return left;
+    const maxOverlap = Math.min(left.length, right.length);
+    for (let overlap = maxOverlap; overlap >= 1; overlap--) {
+        if (left.slice(-overlap) === right.slice(0, overlap)) {
+            return left + right.slice(overlap);
+        }
+    }
+    return left + right;
+}
+
 function makeUniqueName(original, processName, existingNames, verbPrefix = null) {
     const cleanProcess = (processName || '').replace(/\[.*?\]\s*/, '').trim();
     if (!cleanProcess) return original;
 
-    // 自动检测动词前缀（如果调用方没传）
-    if (!verbPrefix) {
+    // 数据属性列表（以顿号分隔的字段串）避免往首字段硬拼长前缀
+    const isAttrList = /[、，,]/.test(original) && !/表$|请求$|响应$|结果$|数据$/.test(original);
+
+    // 自动检测动词前缀（如果调用方没传，且不是属性列表）
+    if (!verbPrefix && !isAttrList) {
         const autoVerb = original.match(/^(接收|读取|保存|更新|返回|呈现|记录|检索|获取|查询|写入|删除|批量)/);
         if (autoVerb) verbPrefix = autoVerb[1];
     }
 
-    // 逐步增加关键词长度: 4 → 6 → 8 → 全名
-    const lengths = [4, 6, 8, cleanProcess.length];
-    for (const len of lengths) {
-        const keyword = cleanProcess.substring(0, Math.min(len, cleanProcess.length));
+    const actionVerbMatch = cleanProcess.match(/^(新增|创建|录入|登记|修改|编辑|更新|删除|查询|检索|查看|导出|导入|定时拉取|定时采集|定时同步|定时|自动|接收|推送|发起|提交|审批|审核|处理|统计|分析|汇总)/);
+    const processBodyWithoutVerb = (verbPrefix && cleanProcess.startsWith(verbPrefix))
+        ? cleanProcess.slice(verbPrefix.length)
+        : cleanProcess;
+
+    if (isAttrList) {
+        const shortTag = actionVerbMatch ? actionVerbMatch[1] : cleanProcess.substring(0, 2);
+        const attrCandidates = [
+            `${original}、${shortTag}时间`,
+            `${original}、${shortTag}状态`,
+            `${original}、${shortTag}标识`,
+            `${original}、操作备注`
+        ];
+        for (const candidate of attrCandidates) {
+            if (!existingNames.has(candidate.toLowerCase().trim())) {
+                return candidate;
+            }
+        }
+    }
+
+    // 逐步增加关键词长度（先试短动作前缀，再递增，并自动消除首尾重叠词避免"华为华为"/"质差质差"叠字）
+    const candidateKeywords = [];
+    if (actionVerbMatch) candidateKeywords.push(actionVerbMatch[1]);
+    for (const len of [2, 4, 6, 8, processBodyWithoutVerb.length]) {
+        const kw = processBodyWithoutVerb.substring(0, Math.min(len, processBodyWithoutVerb.length));
+        if (kw && !candidateKeywords.includes(kw)) candidateKeywords.push(kw);
+    }
+
+    let bestMerged = original;
+    for (const keyword of candidateKeywords) {
         let candidate;
         if (verbPrefix) {
-            // 动词 + 关键词 + 剩余部分，如 "读取" + "用户管理" + "信息"
-            candidate = verbPrefix + keyword + original.substring(verbPrefix.length);
+            const rest = original.substring(verbPrefix.length);
+            candidate = verbPrefix + mergePrefixOverlap(keyword, rest);
         } else {
-            // 关键词 + 原名，如 "用户管理" + "信息表"
-            candidate = keyword + original;
+            candidate = mergePrefixOverlap(keyword, original);
+        }
+        bestMerged = candidate;
+        if (!existingNames.has(candidate.toLowerCase().trim())) {
+            return candidate;
+        }
+    }
+
+    // 若同过程多行碰撞（例如同一过程 R/W 都写"质差问题工单表"），插入语义后缀区分，杜绝叠字
+    const semanticQualifiers = ['状态', '记录', '明细', '更新', '结果', '副本'];
+    for (const q of semanticQualifiers) {
+        let candidate;
+        if (/数据表$/.test(bestMerged)) {
+            candidate = bestMerged.replace(/数据表$/, `${q}数据表`);
+        } else if (/表$/.test(bestMerged)) {
+            candidate = bestMerged.replace(/表$/, `${q}表`);
+        } else {
+            candidate = `${bestMerged}${q}`;
         }
         if (!existingNames.has(candidate.toLowerCase().trim())) {
             return candidate;
         }
     }
-    // 兜底：完整功能过程名 + 原名
-    return cleanProcess + original;
+
+    return mergePrefixOverlap(cleanProcess, original);
 }
 
 /**
@@ -5961,46 +6029,18 @@ app.post('/api/nesma/recognize-modules', async (req, res) => {
 
 // ═══════════════════════ NESMA 功能点提取 ═══════════════════════
 
-/**
- * 重用程度 → 调整系数映射
- * 参考："软件开发计价模型" 10/7/4/5/4
- */
-const REUSE_COEFFICIENTS = {
-    '低': 1.0,       // 完全新开发
-    '中': 0.667,     // 部分复用
-    '高': 0.333,     // 高度复用
-};
+const REUSE_COEFFICIENTS = NESMA_REUSE_COEFFICIENTS;
+const REUSE_LEVEL_PATTERN = NESMA_REUSE_LEVEL_PATTERN;
+const FP_WEIGHTS = NESMA_FP_WEIGHTS;
 
-/**
- * 重用程度按 低:中:高 = 1:3:6 的比例循环分配
- * 序列: 低 中 中 中 高 高 高 高 高 高 （每10个一个周期，共 1低3中6高）
- */
-const REUSE_LEVEL_PATTERN = [
-    '低', '中', '中', '中', '高', '高', '高', '高', '高', '高'
-];
-let _reuseLevelCounter = 0;
-function nextReuseLevel() {
-    const level = REUSE_LEVEL_PATTERN[_reuseLevelCounter % REUSE_LEVEL_PATTERN.length];
-    _reuseLevelCounter++;
-    return level;
+function createLocalReuseLevelPicker() {
+    let counter = 0;
+    return () => {
+        const level = REUSE_LEVEL_PATTERN[counter % REUSE_LEVEL_PATTERN.length];
+        counter++;
+        return level;
+    };
 }
-/**
- * 每次解析新表格前重置计数器，使比例从头计算
- */
-function resetReuseLevelCounter() {
-    _reuseLevelCounter = 0;
-}
-
-/**
- * NESMA 功能点权重表（类别 × 复杂度 → UFP）
- */
-const FP_WEIGHTS = {
-    ILF: { '低': 7, '中': 10, '高': 15 },
-    EIF: { '低': 5, '中': 7, '高': 10 },
-    EI: { '低': 3, '中': 4, '高': 6 },
-    EO: { '低': 4, '中': 5, '高': 7 },
-    EQ: { '低': 3, '中': 4, '高': 6 },
-};
 
 /**
  * 解析NESMA功能点Markdown表格
@@ -6011,7 +6051,7 @@ const FP_WEIGHTS = {
  */
 function parseNesmaTable(markdown) {
     if (!markdown) return [];
-    resetReuseLevelCounter(); // 每次解析新表格时，重置比例计数器
+    const nextReuseLevel = createLocalReuseLevelPicker(); // 使用局部计数器，彻底消除并发请求串号
     const tableData = [];
     const lines = markdown.split('\n');
     let headerFound = false;
@@ -6250,8 +6290,8 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
             activePrompt = NESMA_FUNCTION_EXTRACTION_PROMPT;
         }
 
-        // ── 自动分批阈值：数量优先/国产化每批2个模块，精准模式≤10个模块 ──
-        const BATCH_SIZE = (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 2 : 10;
+        // ── 自动分批阈值：精准模式每批3个模块（提速防超时+提升质量），数量优先/国产化每批2个模块 ──
+        const BATCH_SIZE = (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 2 : 3;
 
         // ── 确定活跃模块列表 ──
         let activeMods = [];
@@ -6275,8 +6315,9 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
         // ────────────────────────────────────────────────────────────────
         // 辅助函数：为一批模块（batchMods）构造 prompt 并调用一次 AI
         // ────────────────────────────────────────────────────────────────
-        const extractOneBatch = async (batchMods, batchIndex, totalBatches, accumulated) => {
-            let prompt = `请从以下需求文档中提取NESMA功能点：\n\n${content}`;
+        const extractOneBatch = async (batchMods, batchIndex, totalBatches) => {
+            const batchDoc = buildNesmaBatchDocumentExcerpt(content, batchMods, 14000);
+            let prompt = `请从以下需求文档中提取NESMA功能点：\n\n${batchDoc}`;
 
             if (batchMods.length > 0) {
                 if (extractionMode === 'quantity' && quantityPlan && quantityPlan.length > 0) {
@@ -6299,7 +6340,7 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                         if (!t) { for (const [k, v] of Object.entries(planMap)) { if (l3key.includes(k) || k.includes(l3key)) { t = v; break; } } }
                         return s + (t || 10);
                     }, 0);
-                    prompt += `\n\n## 📊 按计划数量拆分·本批次模块（批次${batchIndex + 1}/${totalBatches}，本批合计目标 ${batchTotal} 个功能点）\n\n仅需提取以下${batchMods.length}个三级模块的功能点：\n\n${modListWithTarget}\n\n📋 执行要求（必须严格遵守）：\n1. **每个三级模块的功能点数量必须精确等于目标数，上下浮动不超过2个**\n2. 先规划该模块下有哪些业务实体，再按 ILF + EI(CRUD) + EQ(查询/筛选) + EO(统计) 四类展开\n3. 筛选维度（时间/状态/类型/区域）按需拆分，不要无限展开\n4. **禁止为了凑数量而重复或拆出明显无意义的功能点**\n5. 若目标数较小（< 10），优先保证ILF + 基础CRUD + 一个查询即可`;
+                    prompt += `\n\n## 📊 按计划数量拆分·本批次模块（批次${batchIndex + 1}/${totalBatches}，本批合计目标 ${batchTotal} 个功能点）\n\n仅需提取以下${batchMods.length}个三级模块的功能点：\n\n${modListWithTarget}\n\n📋 执行要求（必须严格遵守）：\n1. **每个三级模块的功能点数量必须精确等于目标数，上下浮动不超过2个**\n2. 先规划该模块下有哪些业务实体，再按 ILF + EI(CRUD) + EQ(查询/筛选) + EO(统计) 四类展开\n3. 筛选维度（时间/状态/类型/区域）按需拆分，不要无限展开\n4. **禁止为了凑数量而重复或拆出明显无意义的功能点（如界面主题/浏览器兼容）**\n5. 若目标数较小（< 10），优先保证ILF + 基础CRUD + 一个查询即可`;
                 } else if (extractionMode === 'quantity' && targetFpCount) {
                     const modList = batchMods.map(m => {
                         const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
@@ -6317,16 +6358,16 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                 } else {
                     const modList = batchMods.map(m => {
                         const objs = m.businessObjects?.length > 0 ? `（业务对象：${m.businessObjects.join('、')}）` : '';
-                        const est = m.estimatedFunctionPoints ? `，预估约${m.estimatedFunctionPoints}个功能点` : '';
+                        const est = m.estimatedFunctionPoints ? `，参考细化规模约${m.estimatedFunctionPoints}个高质量功能点` : '';
                         return `  - [${m.level1}] > [${m.level2}] > [${m.level3}]${objs}${est}`;
                     }).join('\n');
-                    prompt += `\n\n## ⚠️ 模块覆盖脚手架（批次${batchIndex + 1}/${totalBatches}，仅处理以下${batchMods.length}个模块）\n${modList}\n\n每个三级模块须有 ILF/EIF + CRUD(EI) + 查询(EQ) + 统计(EO)。`;
+                    prompt += `\n\n## 🎯 高质量NESMA精准拆分·本批次模块（批次${batchIndex + 1}/${totalBatches}，仅处理以下${batchMods.length}个三级模块）\n${modList}\n\n请严格遵守：\n1. 充分展开每个真实业务对象的专业 NESMA 工程闭环（ILF/EIF + 独立业务EI + 独立视图/导出EQ + 统计分析EO），多厂家/多对象完整保留前缀；\n2. **严禁**拆分纯界面主题/浏览器兼容等非功能性描述；\n3. **严禁**把单次采集+入库、接收推送+入库+返回回执、审批+更新状态+记录意见拆成多个伪功能点；\n4. **严禁**把同一列表页的筛选项按单字段机械拆成多个“按X筛选”EQ；\n5. 全表**严禁**出现“报表”二字。`;
                 }
             }
 
             // ⚠️ 多批次模式下不向 AI 注入已累积列表！
             // 每批已按模块限定范围，AI 不会越界重复；大量"已提取"列表会挤占 token 导致产出减少。
-            // 批次间去重由代码层的 existingNames Set 完成。
+            // 批次间去重与质量净化由后端 sanitizeNesmaTableData 完成。
             // 仅首批注入 previousResults（跨轮补充场景），且最多传 50 条防止撑爆。
             if (batchIndex === 0 && previousResults.length > 0) {
                 const prevNames = previousResults.map(r => r.funcName).filter(Boolean);
@@ -6344,8 +6385,8 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
                     { role: 'user', content: prompt }
                 ],
                 model: modelName,
-                temperature: 0.3,
-                max_tokens: (extractionMode === 'quantity' || extractionMode === 'guochanhua') ? 16384 : 16000
+                temperature: extractionMode === 'precise' ? 0.2 : 0.3,
+                max_tokens: extractionMode === 'precise' ? 8192 : 12000
             });
 
             if (!completion?.choices?.[0]?.message?.content) {
@@ -6355,57 +6396,68 @@ app.post('/api/nesma/extract-functions', async (req, res) => {
         };
 
         // ────────────────────────────────────────────────────────────────
-        // 主提取逻辑：模块数 ≤ BATCH_SIZE → 单次；否则自动分批
+        // 主提取逻辑：模块数 ≤ BATCH_SIZE → 单次；否则自动分批（并发度2提速防超时）
         // ────────────────────────────────────────────────────────────────
-        let allTableData = [];
+        let rawTableData = [];
         let allReplies = [];
 
         if (activeMods.length === 0 || activeMods.length <= BATCH_SIZE) {
             // 单批次
             console.log(`📌 单批次提取: ${activeMods.length} 个模块`);
-            const reply = await extractOneBatch(activeMods, 0, 1, []);
-            allTableData = parseNesmaTable(reply);
+            const reply = await extractOneBatch(activeMods, 0, 1);
+            rawTableData = parseNesmaTable(reply);
             allReplies.push(reply);
         } else {
-            // 多批次自动分批
+            // 多批次自动分批（并发度=2，保持模块顺序）
             const totalBatches = Math.ceil(activeMods.length / BATCH_SIZE);
-            console.log(`🔀 模块数(${activeMods.length}) > 阈值(${BATCH_SIZE})，自动分为 ${totalBatches} 批...`);
+            const batchSpecs = Array.from({ length: totalBatches }, (_, bi) => ({
+                bi,
+                batchMods: activeMods.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE)
+            }));
+            console.log(`🔀 模块数(${activeMods.length}) > 阈值(${BATCH_SIZE})，自动分为 ${totalBatches} 批（并发2）...`);
 
-            for (let bi = 0; bi < totalBatches; bi++) {
-                const batchMods = activeMods.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE);
-                console.log(`  📦 批次 ${bi + 1}/${totalBatches}: [${batchMods.map(m => m.level3 || m.level2).join('] [')}]`);
-                try {
-                    const reply = await extractOneBatch(batchMods, bi, totalBatches, allTableData);
-                    const batchData = parseNesmaTable(reply);
-                    // 数量优先模式：用 "三级模块|功能名" 联合去重，避免跨模块同名功能点被误删
-                    // 精准模式：仅用功能名去重（兼容原逻辑）
-                    const buildDedupeKey = (r) => {
-                        const l3 = (r.level3 || r.level4 || '').trim();
-                        const name = (r.funcName || '').toLowerCase().trim();
-                        return extractionMode === 'quantity' ? `${l3}||${name}` : name;
-                    };
-                    const existingKeys = new Set(allTableData.map(buildDedupeKey));
-                    const newRows = batchData.filter(r => !existingKeys.has(buildDedupeKey(r)));
-                    allTableData = [...allTableData, ...newRows];
-                    allReplies.push(reply);
-                    console.log(`  ✅ 批次 ${bi + 1} 完成: +${newRows.length} 个（累计 ${allTableData.length} 个）`);
-                } catch (batchErr) {
-                    console.error(`  ❌ 批次 ${bi + 1} 失败: ${batchErr.message}，跳过继续...`);
+            const batchResults = new Array(totalBatches).fill(null);
+            let cursor = 0;
+            const workerCount = Math.min(2, totalBatches);
+            await Promise.all(Array.from({ length: workerCount }, async () => {
+                while (cursor < totalBatches) {
+                    const current = cursor++;
+                    const { bi, batchMods } = batchSpecs[current];
+                    console.log(`  📦 批次 ${bi + 1}/${totalBatches}: [${batchMods.map(m => m.level3 || m.level2).join('] [')}]`);
+                    try {
+                        const reply = await extractOneBatch(batchMods, bi, totalBatches);
+                        const rows = parseNesmaTable(reply);
+                        batchResults[bi] = { reply, rows };
+                        console.log(`  ✅ 批次 ${bi + 1} 完成: 原始 ${rows.length} 个`);
+                    } catch (batchErr) {
+                        console.error(`  ❌ 批次 ${bi + 1} 失败: ${batchErr.message}，跳过继续...`);
+                    }
                 }
-                // 批次间间隔 1.5 秒，避免限流
-                if (bi < totalBatches - 1) await new Promise(r => setTimeout(r, 1500));
+            }));
+
+            for (const item of batchResults) {
+                if (!item) continue;
+                allReplies.push(item.reply);
+                rawTableData.push(...item.rows);
             }
-            // 重新编号
-            allTableData.forEach((r, i) => { r.id = String(i + 1); });
         }
 
-        console.log(`✅ NESMA功能点提取完成，共解析到 ${allTableData.length} 个功能点（共 ${allReplies.length} 批次）`);
+        const { tableData: allTableData, diagnostics: qualityDiagnostics } = sanitizeNesmaTableData(rawTableData, {
+            extractionMode,
+            fpWeights: FP_WEIGHTS,
+            reuseCoefficients: REUSE_COEFFICIENTS,
+            reusePattern: REUSE_LEVEL_PATTERN,
+            reassignReuse: true
+        });
+
+        console.log(`✅ NESMA功能点提取完成: 原始 ${qualityDiagnostics.rawCount} → 净化后 ${allTableData.length} 个（去非功能 ${qualityDiagnostics.removedNonFunctionalCount} / 去原子拆碎 ${qualityDiagnostics.removedAtomicNoiseCount} / 去单字段筛选 ${qualityDiagnostics.removedTrivialFilterCount} / 去重 ${qualityDiagnostics.removedDuplicateCount}，共 ${allReplies.length} 批次）`);
         res.json({
             success: true,
             reply: allReplies.join('\n\n---批次分隔---\n\n'),
             tableData: allTableData,
             count: allTableData.length,
-            batches: allReplies.length
+            batches: allReplies.length,
+            qualityDiagnostics
         });
     } catch (error) {
         console.error('NESMA功能点提取失败:', error);
@@ -6478,12 +6530,23 @@ app.post('/api/nesma/verify-coverage', async (req, res) => {
 
 app.post('/api/nesma/extract-supplementary', async (req, res) => {
     try {
-        const { documentContent, existingFunctions = [], missedFunctions = [], moduleStructure = null, userConfig = null } = req.body;
+        const {
+            documentContent,
+            existingFunctions = [],
+            missedFunctions = [],
+            moduleStructure = null,
+            extractionMode = null,
+            userConfig = null
+        } = req.body;
         if (!documentContent) {
             return res.status(400).json({ error: '缺少文档内容' });
         }
 
-        console.log(`🔄 开始NESMA补充提取，遗漏 ${missedFunctions.length} 个...`);
+        const inferredMigration = extractionMode === 'guochanhua'
+            || existingFunctions.some(f => f?.migrationDimension && f.migrationDimension !== '' && f.migrationDimension !== '原有业务');
+        const effectiveMode = inferredMigration ? 'guochanhua' : (extractionMode || 'precise');
+
+        console.log(`🔄 开始NESMA补充提取（${effectiveMode}模式），遗漏 ${missedFunctions.length} 个...`);
         const modelName = getModelName(userConfig);
 
         const existingNames = existingFunctions.map((f, i) => `${i + 1}. [${f.category}] ${f.funcName}`).join('\n');
@@ -6492,7 +6555,7 @@ app.post('/api/nesma/extract-supplementary', async (req, res) => {
             return `${i + 1}. ${f}`;
         }).join('\n');
 
-        let userPrompt = `## 原始需求文档：\n${documentContent}\n\n## 已提取的功能点（不要重复）：\n${existingNames}\n\n## 遗漏的功能点（请补充提取）：\n${missedNames}\n\n请补充提取上述遗漏的NESMA功能点。`;
+        let userPrompt = `## 原始需求文档：\n${documentContent}\n\n## 已提取的功能点（不要重复）：\n${existingNames}\n\n## 遗漏的功能点（请补充提取）：\n${missedNames}\n\n请补充提取上述遗漏的NESMA功能点（严禁拆分界面主题/浏览器兼容等非功能描述，严禁出现“报表”二字）。`;
 
         // 注入模块脚手架，帮助AI定位遗漏功能点所在的模块
         if (moduleStructure && moduleStructure.modules?.length > 0) {
@@ -6504,19 +6567,26 @@ app.post('/api/nesma/extract-supplementary', async (req, res) => {
 
         const completion = await callAIWithRetry({
             messages: [
-                { role: 'system', content: NESMA_FUNCTION_EXTRACTION_PROMPT },
+                { role: 'system', content: effectiveMode === 'guochanhua' ? NESMA_GUOCHANHUA_MIGRATION_PROMPT : NESMA_FUNCTION_EXTRACTION_PROMPT },
                 { role: 'user', content: userPrompt }
             ],
             model: modelName,
-            temperature: 0.3,
-            max_tokens: 16000
+            temperature: 0.2,
+            max_tokens: 8192
         });
 
         if (!completion?.choices?.[0]?.message?.content) {
             return res.status(500).json({ error: 'AI返回了空响应' });
         }
         const reply = completion.choices[0].message.content;
-        const tableData = parseNesmaTable(reply);
+        const parsedRows = parseNesmaTable(reply);
+        const { tableData } = sanitizeNesmaTableData(parsedRows, {
+            extractionMode: effectiveMode,
+            fpWeights: FP_WEIGHTS,
+            reuseCoefficients: REUSE_COEFFICIENTS,
+            reusePattern: REUSE_LEVEL_PATTERN,
+            reassignReuse: true
+        });
 
         console.log(`✅ NESMA补充提取到 ${tableData.length} 个功能点`);
         res.json({ success: true, tableData, count: tableData.length });
@@ -6745,30 +6815,49 @@ app.post('/api/nesma/export-excel', async (req, res) => {
         });
         ws2.columns = [{ width: 18 }, { width: 36 }, { width: 50 }, { width: 12 }];
 
-        // ═══════════ Sheet 3: 详细清单（完整7列+UFP/AFP） ═══════════
+        // ═══════════ Sheet 3: 详细清单（完整7/8列+UFP/AFP） ═══════════
         const ws3 = workbook.addWorksheet('详细清单');
-        const detailHeaders = ['编号', '一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP'];
+        const detailHeaders = hasMigrationData
+            ? ['编号', '一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '迁移维度', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP']
+            : ['编号', '一级模块', '二级模块', '三级模块', '业务功能', '功能点类型', '功能需求描述', '外部接口需求描述', 'UFP', '重用程度', '修改类型', 'AFP'];
         const dHeaderRow = ws3.addRow(detailHeaders);
-        dHeaderRow.eachCell((cell) => {
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D4F8B' } };
+        dHeaderRow.eachCell((cell, colNumber) => {
+            const isMigCol = hasMigrationData && colNumber === 7;
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isMigCol ? 'FF10B981' : 'FF0D4F8B' } };
             cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
             cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
             cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
         });
-        ws3.columns = [
-            { width: 6 },  // 编号
-            { width: 20 }, // 一级模块
-            { width: 22 }, // 二级模块
-            { width: 22 }, // 三级模块
-            { width: 32 }, // 业务功能
-            { width: 10 }, // 功能点类型
-            { width: 40 }, // 功能需求描述
-            { width: 36 }, // 外部接口需求描述
-            { width: 8 },  // UFP
-            { width: 10 }, // 重用程度
-            { width: 10 }, // 修改类型
-            { width: 10 }, // AFP
-        ];
+        ws3.columns = hasMigrationData
+            ? [
+                { width: 6 },  // 编号
+                { width: 18 }, // 一级模块
+                { width: 20 }, // 二级模块
+                { width: 20 }, // 三级模块
+                { width: 30 }, // 业务功能
+                { width: 10 }, // 功能点类型
+                { width: 14 }, // 迁移维度
+                { width: 38 }, // 功能需求描述
+                { width: 32 }, // 外部接口需求描述
+                { width: 8 },  // UFP
+                { width: 10 }, // 重用程度
+                { width: 10 }, // 修改类型
+                { width: 10 }, // AFP
+            ]
+            : [
+                { width: 6 },  // 编号
+                { width: 20 }, // 一级模块
+                { width: 22 }, // 二级模块
+                { width: 22 }, // 三级模块
+                { width: 32 }, // 业务功能
+                { width: 10 }, // 功能点类型
+                { width: 40 }, // 功能需求描述
+                { width: 36 }, // 外部接口需求描述
+                { width: 8 },  // UFP
+                { width: 10 }, // 重用程度
+                { width: 10 }, // 修改类型
+                { width: 10 }, // AFP
+            ];
         let prevDL1 = '';
         let prevDL2 = '';
         let prevDL3 = '';
@@ -6789,11 +6878,18 @@ app.post('/api/nesma/export-excel', async (req, res) => {
             const showL3 = (l3 && l3 !== '无' && l3 !== prevDL3) ? l3 : '';
             if (l3 && l3 !== '无') prevDL3 = l3;
 
-            const dRow = ws3.addRow([
-                row.id, showL1, showL2, showL3, row.funcName, row.category,
-                row.funcDescription || '', row.interfaceDescription || '',
-                row.fpCount, rl, row.modType, afpVal
-            ]);
+            const migDim = row.migrationDimension || '原有业务';
+            const dRow = hasMigrationData
+                ? ws3.addRow([
+                    row.id, showL1, showL2, showL3, row.funcName, row.category, migDim,
+                    row.funcDescription || '', row.interfaceDescription || '',
+                    row.fpCount, rl, row.modType, afpVal
+                ])
+                : ws3.addRow([
+                    row.id, showL1, showL2, showL3, row.funcName, row.category,
+                    row.funcDescription || '', row.interfaceDescription || '',
+                    row.fpCount, rl, row.modType, afpVal
+                ]);
             dRow.eachCell((cell, colNumber) => {
                 cell.alignment = { vertical: 'middle', wrapText: true };
                 cell.border = {
@@ -6802,13 +6898,15 @@ app.post('/api/nesma/export-excel', async (req, res) => {
                     left: { style: 'thin', color: { argb: 'FFE0E0E0' } },
                     right: { style: 'thin', color: { argb: 'FFE0E0E0' } }
                 };
-                if ([1, 6, 9, 10, 11, 12].includes(colNumber)) {
+                const centerCols = hasMigrationData ? [1, 6, 7, 10, 11, 12, 13] : [1, 6, 9, 10, 11, 12];
+                if (centerCols.includes(colNumber)) {
                     cell.alignment = { horizontal: 'center', vertical: 'middle' };
                 }
                 if (colNumber === 6) {
                     cell.font = { bold: true, color: { argb: categoryColors[row.category] || 'FF000000' } };
                 }
-                if (colNumber === 12) cell.numFmt = '#,##0.000';
+                const afpCol = hasMigrationData ? 13 : 12;
+                if (colNumber === afpCol) cell.numFmt = '#,##0.000';
             });
         });
         ws3.views = [{ state: 'frozen', ySplit: 1 }];
