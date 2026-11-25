@@ -2047,6 +2047,7 @@ app.get('/api/health', (req, res) => {
     const hasIntranetGlmApiKey = Boolean(process.env.INTRANET_GLM_API_KEY);
     res.json({
         status: 'ok',
+        commit: process.env.RENDER_GIT_COMMIT || null,
         hasApiKey: hasVolcengineApiKey || hasNvidiaApiKey || hasUnlimitdsApiKey || hasSiliconflowApiKey || hasIntranetGlmApiKey,
         hasVolcengineApiKey,
         hasNvidiaApiKey,
