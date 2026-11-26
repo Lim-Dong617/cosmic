@@ -81,10 +81,15 @@ const {
 } = require('./function-description');
 const {
     canonicalFunctionNameKey,
+    isBoilerplateIntro,
     isReferenceOnlyChapterTitle,
     keepLastDuplicateHeadingPositions,
     orderCosmicTableData
 } = require('./cosmic-quality');
+const {
+    preprocessDocument,
+    restoreWordHeadingNumbers
+} = require('./document-preprocessor');
 const {
     MAX_SCREENSHOTS,
     analyzeCodeSource,
@@ -2118,76 +2123,7 @@ app.post('/api/config', (req, res) => {
 
 // ═══════════════════════ 文档解析 ═══════════════════════
 
-function restoreWordHeadingNumbers(markdown) {
-    const lines = String(markdown || '').split(/\r?\n/);
-    const headingRows = lines
-        .map((line, index) => {
-            const match = line.trim().match(/^(#{1,6})\s+(.+)$/);
-            return match ? {
-                index,
-                level: match[1].length,
-                // Mammoth escapes manually typed dots in headings ("1\\."), so
-                // normalize the title before checking whether it is numbered.
-                title: match[2].trim().replace(/\\([.>\-])/g, '$1')
-            } : null;
-        })
-        .filter(Boolean);
-
-    if (headingRows.length === 0) return String(markdown || '').trim();
-
-    // Word cover/document titles are frequently Heading 1 too. When the first
-    // two headings are adjacent peers, keep the first as an unnumbered title.
-    const first = headingRows[0];
-    const second = headingRows[1];
-    const textBetweenFirstTwo = second
-        ? lines.slice(first.index + 1, second.index).join('').trim()
-        : '';
-    const skipFirstAsDocumentTitle = Boolean(
-        second
-        && first.level === second.level
-        && !textBetweenFirstTwo
-        && /需求|说明书|文档|内容|方案|报告|设计|规格|项目/.test(first.title)
-    );
-
-    const structuralRows = skipFirstAsDocumentTitle ? headingRows.slice(1) : headingRows;
-    const baseLevel = Math.min(...structuralRows.map(row => row.level));
-    const counters = Array(6).fill(0);
-    const replacements = new Map();
-
-    headingRows.forEach((row, rowIndex) => {
-        if (skipFirstAsDocumentTitle && rowIndex === 0) {
-            replacements.set(row.index, row.title);
-            return;
-        }
-        if (/^(?:目录|contents)$/i.test(row.title)) {
-            replacements.set(row.index, row.title);
-            return;
-        }
-
-        const counterIndex = row.level - baseLevel;
-        for (let i = 0; i < counterIndex; i++) {
-            if (counters[i] === 0) counters[i] = 1;
-        }
-        counters[counterIndex] += 1;
-        counters.fill(0, counterIndex + 1);
-
-        // Do not duplicate numbers that were typed into the heading itself.
-        if (/^\d+(?:\.\d+)*[.、\s]/.test(row.title)) {
-            replacements.set(row.index, row.title);
-            return;
-        }
-        const number = counters.slice(0, counterIndex + 1).join('.');
-        replacements.set(row.index, `${number}. ${row.title}`);
-    });
-
-    return lines
-        .map((line, index) => replacements.has(index) ? replacements.get(index) : line)
-        .join('\n')
-        .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-        .replace(/\\([.>\-])/g, '$1')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-}
+// restoreWordHeadingNumbers is now imported from ./document-preprocessor (which also strips Word bookmark anchors).
 
 // ═══════════════════════ 代码 / HTML / 系统截图反向分析 ═══════════════════════
 app.post(
@@ -2319,20 +2255,35 @@ app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req
 
         const ext = path.extname(req.file.originalname).toLowerCase();
         let text = '';
+        let rawText = '';
+        let preprocessing = null;
 
         console.log(`📄 解析文件: ${req.file.originalname}, 大小: ${req.file.size} bytes`);
 
         if (ext === '.docx') {
-            // Raw text drops Word's automatic heading numbers and all heading
-            // styles. Markdown keeps Heading 1/2/3 semantics so we can restore a
-            // stable visible outline before chapter detection.
-            const result = await mammoth.convertToMarkdown(
+            // Convert via HTML so Word table boundaries, TOC links, and bookmark
+            // anchors can be deterministically cleaned/compacted without losing
+            // functional requirements or field names.
+            const htmlResult = await mammoth.convertToHtml(
                 { path: uploadedPath },
                 { convertImage: mammoth.images.imgElement(() => ({ src: '' })) }
             );
-            text = restoreWordHeadingNumbers(result.value);
+            const processed = preprocessDocument({ html: htmlResult.value, restoreHeadings: true });
+            text = processed.text;
+            preprocessing = processed.stats;
+            if (preprocessing.applied && preprocessing.rawChars <= 500000) {
+                const rawMd = await mammoth.convertToMarkdown(
+                    { path: uploadedPath },
+                    { convertImage: mammoth.images.imgElement(() => ({ src: '' })) }
+                );
+                rawText = restoreWordHeadingNumbers(rawMd.value);
+            }
+            console.log(`   ✨ 自动无损预处理: ${preprocessing.rawChars}字 -> ${preprocessing.cleanedChars}字 (减负${preprocessing.savedPercent}%, 字典表压缩${preprocessing.compactedFieldTables}张, 折叠大表${preprocessing.foldedLargeTables}张, 保留功能表${preprocessing.preservedFunctionalTables}张, 去目录${preprocessing.removedTocLines}行, 去锚点${preprocessing.removedAnchors}处)`);
         } else if (ext === '.txt' || ext === '.md') {
-            text = await fs.promises.readFile(uploadedPath, 'utf-8');
+            rawText = await fs.promises.readFile(uploadedPath, 'utf-8');
+            const processed = preprocessDocument({ markdown: rawText, restoreHeadings: false });
+            text = processed.text;
+            preprocessing = processed.stats;
         } else if (ext === '.doc') {
             return res.status(400).json({ error: '不支持旧版.doc格式，请另存为.docx格式' });
         }
@@ -2344,9 +2295,12 @@ app.post('/api/parse-word', upload.single('file'), handleMulterError, async (req
         res.json({
             success: true,
             text,
+            rawText: rawText && rawText !== text && rawText.length <= 500000 ? rawText : undefined,
             filename: req.file.originalname,
             fileSize: req.file.size,
-            wordCount: text.length
+            wordCount: text.length,
+            rawWordCount: preprocessing?.rawChars || text.length,
+            preprocessing
         });
     } catch (error) {
         console.error('解析文档失败:', error);
@@ -3141,19 +3095,19 @@ async function recoverModuleData({ moduleData, documentContent, modelName, metho
 
 // AI 模块识别失败时，仍然基于文档原有标题生成一个可用的脚手架。
 // 这条路径不依赖模型，避免一次限流、超时或密钥配置问题直接把整个拆分流程打成 500。
-function buildDocumentHeadingFallbackModules(documentContent) {
-    const chapters = splitIntoChapters(documentContent);
-    const candidates = chapters
-        .filter(chapter => chapter?.title && chapter?.content && !chapter.referenceOnly)
+function buildDocumentHeadingModulesFromChapters(chapters, { degraded = false } = {}) {
+    const candidates = (Array.isArray(chapters) ? chapters : [])
+        .filter(chapter => chapter?.title && chapter?.content && chapter.title !== '全文' && chapter.title !== '文档开头' && !chapter.referenceOnly)
         .filter(chapter => String(chapter.content).replace(/\s/g, '').length >= 20)
-        .slice(0, 30);
+        .slice(0, 40);
 
     if (!candidates.length) {
         return {
             modules: [],
             totalEstimated: 0,
             summary: '未检测到可用章节标题，等待后续章节模式处理',
-            fallback: true
+            fallback: degraded,
+            localOutline: !degraded
         };
     }
 
@@ -3179,10 +3133,18 @@ function buildDocumentHeadingFallbackModules(documentContent) {
 
     return normalizeModuleData({
         modules,
-        summary: 'AI模块识别暂不可用，已根据文档标题生成模块脚手架',
-        fallback: true,
-        degraded: true
+        summary: degraded
+            ? 'AI模块识别暂不可用，已根据文档标题生成模块脚手架'
+            : '已按文档原生标题层级秒级生成模块结构',
+        fallback: degraded,
+        degraded,
+        localOutline: !degraded
     });
+}
+
+function buildDocumentHeadingFallbackModules(documentContent) {
+    const chapters = splitIntoChapters(documentContent);
+    return buildDocumentHeadingModulesFromChapters(chapters, { degraded: true });
 }
 
 function splitIntoChapters(text) {
@@ -3209,7 +3171,7 @@ function splitIntoChapters(text) {
         { pattern: /^第[一二三四五六七八九十百千\d]+[章节篇]\s*.+/, maxLen: 60 },
         { pattern: /^[（(][一二三四五六七八九十\d]+[）)]\s*.+/, maxLen: 40 },
         { pattern: /^[一二三四五六七八九十]+[、．.]\s*.+/, maxLen: 35 },
-        { pattern: /^\d+(\.\d+)*[\.、\s]\s*[^\d\s].+/, maxLen: 30 },
+        { pattern: /^\d+(\.\d+)*[\.、\s]\s*[^\d\s].+/, maxLen: 48 },
     ];
 
     // 以这些标点结尾 → 正文句子，不是标题
@@ -3225,11 +3187,15 @@ function splitIntoChapters(text) {
         // Markdown 的 # / ## / ### 是显式结构标记，优先级高于正文特征过滤。
         // 代码反向需求直接生成 Markdown，不经过 Mammoth，必须原生识别。
         if (parseMarkdownHeading(trimmed)) return true;
-        // Requirement headings commonly carry a trailing workload/count marker,
-        // e.g. "1.1 元数据采集（578）". A closing parenthesis normally looks
-        // sentence-like, but must not disqualify this numbered-heading form.
-        const hasTrailingCount = /[（(]\s*\d+\s*[）)]$/.test(trimmed);
-        if (BODY_ENDINGS.test(trimmed) && !hasTrailingCount) return false;
+        // Requirement headings commonly carry a trailing parenthetical code, count,
+        // or prototype reference, e.g. "1.1 元数据采集（578）", "2.1 自定义指标（WB-MET）",
+        // or "3.1. License使用详情（参照原型“License使用详情”界面）".
+        const hasTrailingParenQualifier = (
+            /^\d+(?:\.\d+)*[.、\s]\s*[^\d\s]/.test(trimmed)
+            && /[（(][^（）()]{1,28}[）)]$/.test(trimmed)
+            && !/[。，；：！？]/.test(trimmed)
+        );
+        if (BODY_ENDINGS.test(trimmed) && !hasTrailingParenQualifier) return false;
         if (BODY_INDICATORS.test(trimmed)) return false;
         for (const { pattern, maxLen } of HEADING_RULES) {
             if (trimmed.length <= maxLen && pattern.test(trimmed)) return true;
@@ -3271,14 +3237,26 @@ function splitIntoChapters(text) {
         return [{ title: '全文', content: text, charCount: text.length, selected: true }];
     }
 
-    // 普通文本标题过多时(>20)，只保留顶层标题。
-    // 显式 Markdown 标题可靠性更高，60个以内保留原层级，避免把代码反向需求
-    // 中几十个 ### 功能条目重新合并成一个大章节。
+    // 普通文本标题过多时(>20)，优先收敛到模块级标题（避免把“功能说明/涉及数据/业务规则/界面原型”
+    // 拆成几十个碎片微章，既减少调用次数又保留同一模块的完整上下文）。
+    // 显式 Markdown 标题可靠性更高，60个以内保留原层级。
     let finalPositions = headingPositions;
     const markdownHeadingCount = headingPositions.filter(pos => parseMarkdownHeading(lines[pos])).length;
     const preserveMarkdownOutline = markdownHeadingCount === headingPositions.length
         && markdownHeadingCount <= 60;
     if (headingPositions.length > 20 && !preserveMarkdownOutline) {
+        // 先检查二级模块级标题（如 2.1 / 3.1，从 candidatePositions 选取以保留紧接子标题的父模块标题）
+        const moduleLevelCandidates = candidatePositions.filter(pos => {
+            const t = lines[pos].trim();
+            const markdownHeading = parseMarkdownHeading(t);
+            if (markdownHeading) return markdownHeading.markdownLevel <= 2;
+            return /^\d+\.\d+[.、\s]\s*[^\d\s]/.test(t);
+        });
+        const moduleLevelWithBody = moduleLevelCandidates.filter((pos, idx) => {
+            const nextPos = idx < moduleLevelCandidates.length - 1 ? moduleLevelCandidates[idx + 1] : lines.length;
+            return lines.slice(pos + 1, nextPos).join('').replace(/\s/g, '').length > 0;
+        });
+
         const topLevel = headingPositions.filter(pos => {
             const t = lines[pos].trim();
             const markdownHeading = parseMarkdownHeading(t);
@@ -3288,21 +3266,26 @@ function splitIntoChapters(text) {
                 || /^[一二三四五六七八九十]+[、．.]/.test(t)
                 || /^\d+[.、\s]\s*[^\d\s]/.test(t);
         });
-        if (topLevel.length >= 2 && topLevel.length <= 20) {
+
+        if (moduleLevelWithBody.length >= 3 && moduleLevelWithBody.length <= 25) {
+            finalPositions = moduleLevelWithBody;
+            console.log(`📑 细粒度子标题过多(${headingPositions.length})，已收敛到 ${finalPositions.length} 个二级模块章节（保持单模块完整上下文）`);
+        } else if (topLevel.length >= 2 && topLevel.length <= 20) {
             finalPositions = topLevel;
             console.log(`📑 章节过多(${headingPositions.length})，已收敛到 ${finalPositions.length} 个顶层章节`);
         }
     }
 
-    // 标题前也可能有功能要求，不能静默丢掉。供用户明确选择是否提取。
+    // 标题前也可能有功能要求，不能静默丢掉。仅当属于纯封面/修订记录/目录等样板信息时默认取消勾选。
     const introduction = lines.slice(0, finalPositions[0]).join('\n').trim();
     if (introduction) {
+        const introIsBoilerplate = isBoilerplateIntro(introduction);
         chapters.push({
             title: '文档开头',
             content: introduction,
             charCount: introduction.length,
-            selected: true,
-            referenceOnly: false,
+            selected: !introIsBoilerplate,
+            referenceOnly: introIsBoilerplate,
             level1: '', level2: '', level3: '', headingDepth: 0
         });
     }
@@ -3348,6 +3331,15 @@ function splitIntoChapters(text) {
         });
     }
 
+    // Safety fallback: never return an all-unselected chapter list if non-empty chapters exist.
+    if (chapters.length > 0 && !chapters.some(ch => ch.selected)) {
+        chapters.forEach(ch => {
+            if (ch.content && ch.content.trim() && !/^(?:目\s*录|contents)$/i.test(ch.title)) {
+                ch.selected = true;
+            }
+        });
+    }
+
     return chapters;
 }
 
@@ -3385,7 +3377,14 @@ app.post('/api/split-chapters', (req, res) => {
             ? annotateDocumentChaptersWithModules(documentChapters, moduleStructure)
             : (moduleScaffoldChapters || documentChapters);
         const moduleAligned = Boolean(moduleScaffoldChapters);
-        console.log(`📑 章节识别完成: 共 ${chapters.length} 个章节`);
+        const selectedFunctionalChapters = chapters.filter(ch => (
+            ch.selected && ch.title !== '全文' && ch.title !== '文档开头' && !ch.referenceOnly
+        ));
+        const hasStructuredOutline = useDocumentChapters && selectedFunctionalChapters.length >= 2;
+        const localModuleStructure = hasStructuredOutline
+            ? buildDocumentHeadingModulesFromChapters(chapters, { degraded: false })
+            : null;
+        console.log(`📑 章节识别完成: 共 ${chapters.length} 个章节 (默认选中 ${chapters.filter(ch => ch.selected).length} 章, 结构化大纲=${hasStructuredOutline})`);
         if (useDocumentChapters) {
             console.log('   document-split: using source chapter boundaries');
         }
@@ -3396,7 +3395,14 @@ app.post('/api/split-chapters', (req, res) => {
             console.log(`   ${i + 1}. ${ch.title} (${ch.charCount}字${ch.selected ? '' : ', 跳过'})`);
         });
 
-        res.json({ success: true, chapters, count: chapters.length, moduleAligned });
+        res.json({
+            success: true,
+            chapters,
+            count: chapters.length,
+            moduleAligned,
+            hasStructuredOutline,
+            localModuleStructure
+        });
     } catch (error) {
         console.error('章节识别失败:', error);
         res.status(500).json({ error: '章节识别失败: ' + error.message });
@@ -3416,7 +3422,9 @@ async function executeFunctionExtraction(requestPayload, { signal, onProgress = 
             moduleStructure = null,
             quantityPlan = null,
             targetCount = 0,
-            quantityMaximize = false
+            quantityMaximize = false,
+            chunkConcurrency = 1,
+            reviewPolicy = 'always'
         } = requestPayload || {};
         if (!documentContent) {
             throw createHttpError('缺少文档内容', 400, 'MISSING_DOCUMENT');
@@ -3456,14 +3464,19 @@ async function executeFunctionExtraction(requestPayload, { signal, onProgress = 
                 systemPrompt: activePrompt,
                 callAIWithRetry,
                 signal,
-                onProgress
+                onProgress,
+                chunkConcurrency,
+                reviewPolicy
             });
             const functions = deduplicateGroundedFunctions(
                 chapterName && chapterName !== '全文'
                     ? qualifyFunctionNames(grounded.functions, chapterName, moduleStructure)
                     : grounded.functions
             );
-            onProgress({ phase: 'finalizing', message: `已处理并复核 ${grounded.sourceDiagnostics.completedChunks} 个原文片段，提取 ${functions.length} 个功能过程` });
+            const reviewSummary = grounded.sourceDiagnostics.skippedReviewChunks > 0
+                ? `已处理 ${grounded.sourceDiagnostics.completedChunks} 个原文片段（复核 ${grounded.sourceDiagnostics.reviewedChunks} 片，干净短片直通 ${grounded.sourceDiagnostics.skippedReviewChunks} 片），提取 ${functions.length} 个功能过程`
+                : `已处理并复核 ${grounded.sourceDiagnostics.completedChunks} 个原文片段，提取 ${functions.length} 个功能过程`;
+            onProgress({ phase: 'finalizing', message: reviewSummary });
             return {
                 success: true,
                 functionList: buildFunctionListText(functions),
@@ -3864,7 +3877,7 @@ const functionExtractionJobManager = createAsyncJobManager({
     name: 'function-extraction',
     ttlMs: 2 * 60 * 60 * 1000,
     maxJobs: 400,
-    maxConcurrent: 2,
+    maxConcurrent: 4,
     jobTimeoutMs: 35 * 60 * 1000,
     processor: (payload, updateProgress, signal) => executeFunctionExtraction(payload, {
         signal,
@@ -4599,7 +4612,7 @@ const cosmicSplitJobManager = createAsyncJobManager({
     name: 'cosmic-split-batch',
     ttlMs: 2 * 60 * 60 * 1000,
     maxJobs: 500,
-    maxConcurrent: 3,
+    maxConcurrent: 4,
     jobTimeoutMs: 40 * 60 * 1000,
     processor: (payload, updateProgress, signal) => executeCosmicSplitBatch(payload, {
         signal,
@@ -5820,6 +5833,26 @@ app.post('/api/export-excel', async (req, res) => {
 
 // ═══════════════════════ COSMIC 模块识别 ═══════════════════════
 
+function buildCompactModuleRecognitionDigest(documentContent, maxChars = 22000) {
+    const raw = String(documentContent || '');
+    if (raw.length <= maxChars) return raw;
+    const chapters = splitIntoChapters(raw);
+    const active = chapters.filter(ch => ch.selected && ch.content && ch.title !== '文档开头');
+    const sourceChapters = active.length > 0 ? active : chapters;
+    if (sourceChapters.length <= 1) {
+        return raw.slice(0, maxChars);
+    }
+    const perChapterBudget = Math.max(400, Math.floor((maxChars - 1200) / sourceChapters.length));
+    const outline = sourceChapters.map((ch, idx) => `${idx + 1}. ${ch.title} (${ch.charCount}字)`).join('\n');
+    const sections = sourceChapters.map(ch => {
+        const excerpt = ch.content.length <= perChapterBudget
+            ? ch.content
+            : `${ch.content.slice(0, perChapterBudget)}\n...（本章其余 ${ch.content.length - perChapterBudget} 字略）`;
+        return excerpt;
+    });
+    return `【文档功能章节目录】\n${outline}\n\n【各功能章节核心内容摘录】\n${sections.join('\n\n')}`.slice(0, maxChars);
+}
+
 async function executeCosmicModuleRecognition(requestPayload, { signal, onProgress = () => {} } = {}) {
     try {
         const { documentContent, userConfig = null } = requestPayload || {};
@@ -5830,11 +5863,15 @@ async function executeCosmicModuleRecognition(requestPayload, { signal, onProgre
         console.log('📑 开始COSMIC模块层级识别...');
         onProgress({ phase: 'recognizing', message: '正在识别文档的三级模块结构' });
         const modelName = getModelName(userConfig);
+        const recognitionInput = buildCompactModuleRecognitionDigest(documentContent, 24000);
+        if (recognitionInput.length < documentContent.length) {
+            console.log(`   ✨ 模块识别输入已自动聚焦有效章节摘要: ${documentContent.length}字 -> ${recognitionInput.length}字`);
+        }
 
         const completion = await callAIWithRetry({
             messages: [
                 { role: 'system', content: COSMIC_MODULE_RECOGNITION_PROMPT },
-                { role: 'user', content: `请分析以下需求文档的功能模块层级结构：\n\n${documentContent}` }
+                { role: 'user', content: `请分析以下需求文档的功能模块层级结构：\n\n${recognitionInput}` }
             ],
             model: modelName,
             temperature: 0.1,

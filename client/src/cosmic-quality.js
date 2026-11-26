@@ -290,8 +290,19 @@ export const orderCosmicTableData = (rows, functions = []) => {
         .flatMap(group => group.rows);
 };
 
-export const isReferenceOnlyChapterTitle = (title) => (
-    /(?:^|\s)(?:目录|阅读说明|数据与状态口径|功能拆分建议|验收核对清单|附录)(?:\s|$)/.test(
-        String(title || '').replace(/^\s*\d+(?:\.\d+)*[.、\s]*/, '')
-    )
-);
+const FUNCTIONAL_CHAPTER_GUARD_RE = /(?:功能需求|功能描述|功能说明|功能设计|功能列表|功能清单|业务功能|核心功能|系统功能|界面功能)/;
+const REFERENCE_CHAPTER_PREFIX_RE = /^(?:目\s*录|contents|文档说明|编写目的|文档目的|文档介绍|阅读说明|文档修订记录|修订记录|版本记录|版本历史|变更记录|术语与缩略语|术语定义|术语与定义|缩略语|名词解释|参考文档|参考资料|引用标准|数据与状态口径|功能拆分建议|验收核对清单|附\s*录|附\s*件|项目背景|业务背景|建设背景|需求背景|建设目标|项目目标|建设原则|背景与目标|项目概述|需求概述|干系人|组织保障|项目组织|实施计划|进度计划|里程碑|投资估算|预算估算|经费预算|效益分析|经济效益|社会效益|风险分析|风险管控|非功能性?(?:需求|指标|要求)|性能(?:需求|指标|要求)|安全性?(?:需求|指标|要求)|可靠性(?:需求|指标|要求)|可用性(?:需求|指标|要求)|兼容性(?:需求|指标|要求)|运维保障|部署架构|硬件配置|软硬件环境|资源需求|资源测算|验收标准|验收方案|培训方案|售后服务)(?:[\s（(【：:—–\-]|$)/i;
+
+export const isReferenceOnlyChapterTitle = (title) => {
+    const clean = String(title || '')
+        .normalize('NFKC')
+        .replace(/<a\b[^>]*>\s*<\/a>/gi, '')
+        .replace(/^#{1,6}\s+/, '')
+        .replace(/^__(.+)__$/, '$1')
+        .replace(/^\*\*(.+)\*\*$/, '$1')
+        .replace(/^\s*(?:第[一二三四五六七八九十百千\d]+[章节篇]|[（(][一二三四五六七八九十\d]+[）)]|[一二三四五六七八九十]+[、.．]|\d+(?:\.\d+)*[.、\s]+)\s*/, '')
+        .trim();
+    if (!clean) return false;
+    if (FUNCTIONAL_CHAPTER_GUARD_RE.test(clean)) return false;
+    return REFERENCE_CHAPTER_PREFIX_RE.test(clean);
+};

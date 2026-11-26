@@ -448,20 +448,26 @@ function deduplicateGroundedFunctions(functions) {
 async function extractGroundedFunctions({
     documentContent, chapterName = '', userGuidelines = '', moduleNames = [],
     modelName, systemPrompt, callAIWithRetry, signal, onProgress = () => {},
-    chunkChars = 6000, maxSplitDepth = 3
+    chunkChars = 6000, maxSplitDepth = 3,
+    chunkConcurrency = 1, reviewPolicy = 'always'
 }) {
     const source = String(documentContent || '');
     if (!source.trim()) throw extractionError('缺少文档内容', 'MISSING_DOCUMENT');
     const ranges = splitSourceRanges(source, chunkChars);
+    const effectiveChunkConcurrency = Math.max(1, Math.min(4, Math.floor(Number(chunkConcurrency) || 1)));
+    const effectiveReviewPolicy = reviewPolicy === 'smart' ? 'smart' : 'always';
     const diagnostics = {
         sourceChars: source.length,
         chunkCount: ranges.length,
         completedChunks: 0,
         reviewedChunks: 0,
+        skippedReviewChunks: 0,
         recoveredChunks: 0,
         rejectedCandidateCount: 0,
         droppedUnsupportedCount: 0,
         droppedUnsupportedNames: [],
+        reviewPolicy: effectiveReviewPolicy,
+        chunkConcurrency: effectiveChunkConcurrency,
         sourceComplete: false,
         warnings: []
     };
@@ -479,11 +485,24 @@ async function extractGroundedFunctions({
         }
     }
 
-    async function processRange(range, depth = 0) {
-        checkAbort(signal);
+    function shouldRunReviewPass(chunkText, initialFunctions, hadValidationRetry, depth) {
+        if (effectiveReviewPolicy !== 'smart') return true;
+        // Smart review skips the second pass ONLY on short, clean, non-table chunks
+        // that extracted cleanly on the first attempt with reasonable density.
+        if (depth > 0 || hadValidationRetry) return true;
+        if (chunkText.length >= 3000) return true;
+        if (/(?:^|\n)\|.+\|/.test(chunkText)) return true;
+        if (initialFunctions.length === 0 && chunkText.length >= 600) return true;
+        if (initialFunctions.length >= 6) return true;
+        return false;
+    }
+
+    async function processRange(range, depth = 0, activeSignal = signal) {
+        checkAbort(activeSignal);
         const scope = `章节：${chapterName || '全文'}；当前范围：第${range.start + 1}~${range.end}字符`;
         const reference = moduleNames.length ? `\n模块名称参考（不代表必需功能或数量）：${moduleNames.join('、').slice(0, 1500)}` : '';
-        const original = `${scope}${reference}\n\n【前文，仅作上下文】\n${source.slice(Math.max(0, range.start - 400), range.start)}\n【当前原文】\n${source.slice(range.start, range.end)}\n【后文，仅作上下文】\n${source.slice(range.end, range.end + 400)}`;
+        const chunkText = source.slice(range.start, range.end);
+        const original = `${scope}${reference}\n\n【前文，仅作上下文】\n${source.slice(Math.max(0, range.start - 400), range.start)}\n【当前原文】\n${chunkText}\n【后文，仅作上下文】\n${source.slice(range.end, range.end + 400)}`;
         const messages = [
             { role: 'system', content: `${systemPrompt}\n${SOURCE_RULES}` },
             { role: 'user', content: `${original}${userGuidelines ? `\n\n用户要求（不得据此编造原文未要求的业务）：${userGuidelines}` : ''}\n逐段提取当前原文的实际功能，短文允许只有0个或1个，数量以证据为准。` }
@@ -491,12 +510,13 @@ async function extractGroundedFunctions({
         const canSplitFurther = depth < maxSplitDepth && range.end - range.start > 800;
 
         async function callAndValidate(stage, requestMessages) {
+            let hadRetry = false;
             for (let attempt = 0; attempt < 2; attempt += 1) {
-                checkAbort(signal);
+                checkAbort(activeSignal);
                 if (++calls > maxCalls) throw extractionError('提取自动恢复达到请求上限，请重试当前章节');
                 onProgress({ phase: stage, message: `${stage === 'reviewing' ? '核对遗漏和过拆' : '提取原文功能'}：${scope}（已处理${diagnostics.completedChunks}/${diagnostics.chunkCount}片段）` });
-                const completion = await callAIWithRetry({ messages: requestMessages, model: modelName, temperature: 0.1, max_tokens: 12000, signal }, 2);
-                checkAbort(signal);
+                const completion = await callAIWithRetry({ messages: requestMessages, model: modelName, temperature: 0.1, max_tokens: 12000, signal: activeSignal }, 2);
+                checkAbort(activeSignal);
                 const choice = completion?.choices?.[0];
                 if (isTruncatedFinishReason(choice?.finish_reason || completion?.stop_reason)) {
                     throw extractionError('模型输出被截断', 'TRUNCATED_FUNCTION_EXTRACTION');
@@ -505,7 +525,7 @@ async function extractGroundedFunctions({
                 try {
                     const parsed = parseGroundedFunctionList(content);
                     const { grounded, unsupported } = evaluateGrounding(parsed, source, range, chapterName);
-                    if (!unsupported.length) return grounded;
+                    if (!unsupported.length) return { items: grounded, hadRetry };
 
                     const names = unsupported.slice(0, 5).map(item => `“${item.functionName}”`).join('、');
                     const extra = unsupported.length > 5 ? `等${unsupported.length}项` : '';
@@ -514,15 +534,16 @@ async function extractGroundedFunctions({
                         // once retry has already run: keep verified items and warn clearly.
                         if (grounded.length > 0) {
                             recordDroppedUnsupported(unsupported);
-                            return grounded;
+                            return { items: grounded, hadRetry: true };
                         }
                         if (!canSplitFurther && (depth > 0 || ranges.length > 1)) {
                             recordDroppedUnsupported(unsupported);
-                            return [];
+                            return { items: [], hadRetry: true };
                         }
                         throw extractionError(`功能${names}${extra}缺少可在当前原文核对的依据`, 'UNSUPPORTED_FUNCTION_EVIDENCE');
                     }
 
+                    hadRetry = true;
                     diagnostics.rejectedCandidateCount += 1;
                     requestMessages = [...requestMessages,
                         { role: 'assistant', content },
@@ -530,6 +551,7 @@ async function extractGroundedFunctions({
                     ];
                 } catch (error) {
                     if (attempt === 1) throw error;
+                    hadRetry = true;
                     diagnostics.rejectedCandidateCount += 1;
                     requestMessages = [...requestMessages,
                         { role: 'assistant', content },
@@ -539,8 +561,13 @@ async function extractGroundedFunctions({
             }
         }
         try {
-            const initial = await callAndValidate('extracting', messages);
-            const reviewed = await callAndValidate('reviewing', [
+            const { items: initial, hadRetry } = await callAndValidate('extracting', messages);
+            if (!shouldRunReviewPass(chunkText, initial, hadRetry, depth)) {
+                diagnostics.completedChunks += 1;
+                diagnostics.skippedReviewChunks += 1;
+                return initial;
+            }
+            const { items: reviewed } = await callAndValidate('reviewing', [
                 ...messages,
                 { role: 'assistant', content: functionListText(initial, true) || EMPTY_RESULT },
                 { role: 'user', content: `请对照同一段原文逐句复核候选清单，输出修正后的完整清单（包含保留项）：\n1. 补上原文明确要求却漏掉的独立触发/业务结果，特别检查段末和表格行。\n2. 删除没有原文支持的新增、删除、导入导出、审批、定时、通知等扩展；不能仅因行业常见或闭环需要而添加。\n3. 同一请求中的筛选条件、指标列、内部计算和展示步骤不单拆；原文明确独立的新增/修改/删除或不同触发过程也不能机械合并。\n4. 检查引用确实支撑该动作和对象，不接受只引用实体名或标题。\n5. 不以数量多少判断质量，不向预估数补齐。保留每项五行与逐字原文依据。没有实际功能时输出“${EMPTY_RESULT}”。` }
@@ -549,7 +576,7 @@ async function extractGroundedFunctions({
             diagnostics.reviewedChunks += 1;
             return reviewed;
         } catch (error) {
-            checkAbort(signal);
+            checkAbort(activeSignal);
             const recoverable = ['TRUNCATED_FUNCTION_EXTRACTION', 'INVALID_EXTRACTION_FORMAT', 'UNSUPPORTED_FUNCTION_EVIDENCE'].includes(error.code);
             if (recoverable && canSplitFurther) {
                 // Recovery must be binary: paragraph-based splitting can
@@ -560,7 +587,7 @@ async function extractGroundedFunctions({
                 diagnostics.recoveredChunks += 1;
                 onProgress({ phase: 'recovering', message: `${scope}输出不完整，正在缩小片段重提，已截断结果不会计入成功` });
                 const recovered = [];
-                for (const half of halves) recovered.push(...await processRange(half, depth + 1));
+                for (const half of halves) recovered.push(...await processRange(half, depth + 1, activeSignal));
                 return recovered;
             }
             error.message = `${scope}提取未完成：${error.message}`;
@@ -568,7 +595,49 @@ async function extractGroundedFunctions({
         }
     }
     const functions = [];
-    for (const range of ranges) functions.push(...await processRange(range));
+    if (effectiveChunkConcurrency <= 1 || ranges.length <= 1) {
+        for (const range of ranges) functions.push(...await processRange(range, 0, signal));
+    } else {
+        const workerController = new AbortController();
+        const onExternalAbort = () => workerController.abort(signal?.reason);
+        if (signal?.aborted) workerController.abort(signal.reason);
+        else signal?.addEventListener('abort', onExternalAbort, { once: true });
+
+        const chunkResults = new Array(ranges.length);
+        let nextIndex = 0;
+        let firstError = null;
+        const workerCount = Math.min(effectiveChunkConcurrency, ranges.length);
+
+        const runWorker = async () => {
+            while (!firstError) {
+                const idx = nextIndex;
+                nextIndex += 1;
+                if (idx >= ranges.length) break;
+                try {
+                    chunkResults[idx] = await processRange(ranges[idx], 0, workerController.signal);
+                } catch (err) {
+                    if (!firstError) {
+                        firstError = err;
+                        workerController.abort(err);
+                    }
+                    break;
+                }
+            }
+        };
+
+        try {
+            await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+        } finally {
+            signal?.removeEventListener('abort', onExternalAbort);
+        }
+        if (firstError) {
+            if (signal?.aborted) checkAbort(signal);
+            throw firstError;
+        }
+        for (const items of chunkResults) {
+            if (Array.isArray(items)) functions.push(...items);
+        }
+    }
     diagnostics.sourceComplete = diagnostics.completedChunks === diagnostics.chunkCount;
     if (diagnostics.rejectedCandidateCount) diagnostics.warnings.push(`有${diagnostics.rejectedCandidateCount}次输出因格式或原文依据校验未通过而重新生成。`);
     if (diagnostics.droppedUnsupportedCount) {

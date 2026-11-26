@@ -40,28 +40,29 @@ import { attachFunctionEvidence, buildFunctionSourceContext } from './cosmic-sou
 const MAX_UPLOAD_MB = 300;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const COSMIC_EXCEL_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
-// 与服务端 AI_MAX_CONCURRENCY 对齐，避免 Render 上快速模式同时压入过多长请求。
-const COSMIC_FAST_CONCURRENCY = 2;
+// 与服务端 AI_MAX_CONCURRENCY(默认5) 对齐：常规模型默认 3 路并发，后端信号量与 429 退避统一兜底。
+const COSMIC_FAST_CONCURRENCY = 3;
 // NVIDIA 免费原型端点先固定单路，避免长任务触发试用配额限流。
 const COSMIC_FAST_CONCURRENCY_NVIDIA = 1;
 // UnlimitDS 长任务先固定单路，降低连接中断与配额限流的风险。
 const COSMIC_FAST_CONCURRENCY_UNLIMITDS = 1;
 // 内网网关的上游存在公平使用与资源包限制，固定单路以避免并发放大限流。
 const COSMIC_FAST_CONCURRENCY_GLM = 1;
-const COSMIC_LARGE_DOCUMENT_CHARS = 12000;
-const COSMIC_LARGE_FUNCTION_COUNT = 40;
-const COSMIC_MANY_CHAPTERS = 8;
+// 仅对极端超大文档（>=30万字）自动退回串行；常规 1万~15万字需求文档保持并发提速。
+const COSMIC_EXTREME_DOCUMENT_CHARS = 300000;
 const NVIDIA_MODEL_ALIAS = 'nvidia-deepseek-v4-pro';
 const UNLIMITDS_MODEL_ALIAS = 'unlimitds-deepseek-v4-pro';
 const SILICONFLOW_MODEL_ALIAS = 'siliconflow-deepseek-v4-flash';
 const INTRANET_GLM_MODEL_ALIAS = 'intranet-glm';
 
-const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0, functionCount = 0, chapterCount = 0 }) => {
-    const autoStabilized = mode === 'fast' && (
-        documentChars >= COSMIC_LARGE_DOCUMENT_CHARS
-        || functionCount >= COSMIC_LARGE_FUNCTION_COUNT
-        || chapterCount >= COSMIC_MANY_CHAPTERS
-    );
+const isStrictlyRateLimitedModel = (model = '') => (
+    model === NVIDIA_MODEL_ALIAS
+    || model === UNLIMITDS_MODEL_ALIAS
+    || model === INTRANET_GLM_MODEL_ALIAS
+);
+
+const resolveCosmicConcurrency = ({ mode, model = '', documentChars = 0 }) => {
+    const autoStabilized = mode === 'fast' && documentChars >= COSMIC_EXTREME_DOCUMENT_CHARS;
     const baseConcurrency = model === NVIDIA_MODEL_ALIAS
         ? COSMIC_FAST_CONCURRENCY_NVIDIA
         : model === UNLIMITDS_MODEL_ALIAS
@@ -393,10 +394,20 @@ function App({ user, token, onLogout }) {
     const [splitExecutionMode, setSplitExecutionMode] = useState(() => {
         if (typeof window !== 'undefined') {
             const savedMode = window.localStorage.getItem('cosmicSplitExecutionMode');
-            return savedMode === 'fast' ? 'fast' : 'stable';
+            return savedMode === 'stable' ? 'stable' : 'fast';
         }
-        return 'stable';
+        return 'fast';
     });
+    const [reviewPolicy, setReviewPolicy] = useState(() => {
+        if (typeof window !== 'undefined') {
+            return window.localStorage.getItem('cosmicReviewPolicy') === 'smart' ? 'smart' : 'always';
+        }
+        return 'always';
+    });
+    const [rawDocumentContent, setRawDocumentContent] = useState('');
+    const [cleanedDocumentContent, setCleanedDocumentContent] = useState('');
+    const [documentPreprocessing, setDocumentPreprocessing] = useState(null);
+    const [usingRawDocument, setUsingRawDocument] = useState(false);
     const [isGeneratingDiagrams, setIsGeneratingDiagrams] = useState(false);
     const [diagramProgress, setDiagramProgress] = useState('');
     const wordExportBusyRef = useRef(false);
@@ -504,9 +515,10 @@ function App({ user, token, onLogout }) {
             window.localStorage.setItem('analysisMode', analysisMode);
             window.localStorage.setItem('useEnhancedCosmicExperience', useEnhancedCosmicExperience ? 'true' : 'false');
             window.localStorage.setItem('cosmicSplitExecutionMode', splitExecutionMode);
+            window.localStorage.setItem('cosmicReviewPolicy', reviewPolicy);
             window.localStorage.setItem('cosmicQuantityMaximize', quantityMaximize ? 'true' : 'false');
         }
-    }, [selectedModel, minFunctionCount, analysisMode, useEnhancedCosmicExperience, splitExecutionMode, quantityMaximize]);
+    }, [selectedModel, minFunctionCount, analysisMode, useEnhancedCosmicExperience, splitExecutionMode, reviewPolicy, quantityMaximize]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1182,12 +1194,26 @@ function App({ user, token, onLogout }) {
             });
 
             if (res.data.success) {
+                const prep = res.data.preprocessing || null;
                 setDocumentContent(res.data.text);
+                setCleanedDocumentContent(res.data.text);
+                setRawDocumentContent(res.data.rawText || '');
+                setDocumentPreprocessing(prep);
+                setUsingRawDocument(false);
                 setDocumentName(res.data.filename);
                 setUploadProgress(100);
+                const prepHighlights = [];
+                if (prep?.compactedFieldTables > 0) prepHighlights.push(`压缩字段字典表 ${prep.compactedFieldTables} 张（保留全部字段名与规则）`);
+                if (prep?.foldedLargeTables > 0) prepHighlights.push(`折叠超大静态明细表 ${prep.foldedLargeTables} 张`);
+                if (prep?.removedMetadataTables > 0) prepHighlights.push(`去除修订/版本表 ${prep.removedMetadataTables} 张`);
+                if (prep?.removedTocLines > 0) prepHighlights.push(`去除目录行 ${prep.removedTocLines} 条`);
+                if (prep?.removedAnchors > 0) prepHighlights.push(`清理 Word 锚点 ${prep.removedAnchors} 处`);
+                const prepSummary = prep?.applied
+                    ? `\n✨ **已自动无损预处理**：原 ${prep.rawChars.toLocaleString()} 字 → ${prep.cleanedChars.toLocaleString()} 字${prep.savedPercent > 0 ? `（减负 **${prep.savedPercent}%**）` : ''}${prepHighlights.length ? `；${prepHighlights.join('、')}` : ''}。功能需求原文 100% 保留。`
+                    : '';
                 setMessages(prev => [...prev,
-                { role: 'system', content: `已导入文档: ${res.data.filename}\n大小: ${(res.data.fileSize / 1024).toFixed(1)} KB | 字符数: ${res.data.wordCount}\n\n${res.data.text.substring(0, 600)}${res.data.text.length > 600 ? '\n\n...(点击"预览文档"查看完整内容)' : ''}` },
-                { role: 'assistant', content: '文档已就绪。您可以在下方输入**特殊拆分要求**，或直接点击**「开始智能拆分」**按钮。' }
+                { role: 'system', content: `已导入文档: ${res.data.filename}\n大小: ${(res.data.fileSize / 1024).toFixed(1)} KB | 有效字符数: ${res.data.wordCount.toLocaleString()}${prepSummary}\n\n${res.data.text.substring(0, 600)}${res.data.text.length > 600 ? '\n\n...(点击"预览文档"查看完整内容)' : ''}` },
+                { role: 'assistant', content: '文档已就绪。您可以在下方输入**特殊拆分要求**，或直接点击**「两步骤拆分」** / **「一键拆分」**按钮。' }
                 ]);
                 setIsWaitingForAnalysis(true);
                 // 自动创建对话记录
@@ -1482,8 +1508,8 @@ function App({ user, token, onLogout }) {
 
     // ═══════════ 两步骤模式：阶段1 - 章节识别 + 功能过程提取 ═══════════
 
-    // 步骤1a: 模块识别 + 章节识别
-    const startChapterRecognition = async () => {
+    // 步骤1a: 章节识别 + 模块结构识别（先本地秒级分章过滤，有规范标题时精准模式跳过慢速 AI 全文模块预读）
+    const startChapterRecognition = async ({ forceAiModules = false } = {}) => {
         if (!documentContent) { showToast('请先上传文档'); return; }
 
         if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -1496,115 +1522,175 @@ function App({ user, token, onLogout }) {
         setCurrentStep(1);
         updateAnalysisProgress({
             title: 'COSMIC analysis',
-            phase: 'Module recognition',
-            percent: 8,
+            phase: 'Chapter detection',
+            percent: 12,
             current: 1,
             total: 5,
-            detail: 'Analyzing level 1/2/3 module structure...',
+            detail: 'Splitting the document into chapters and filtering reference/non-functional sections...',
             stats: `${documentContent.length.toLocaleString()} chars`
         });
-        setMessages([{ role: 'system', content: '**三级模块识别中...**\n正在分析文档的一级/二级/三级模块层级结构...' }]);
+        setMessages([{ role: 'system', content: '📑 **章节识别与过滤中...**\n正在按文档原生标题结构秒级切分章节并自动过滤封面/背景/非功能/附录章节...' }]);
 
-        let recognizedModules = null;
-
-        // ── 第一步：三级模块结构识别（借鉴NESMA） ──
         try {
-            const moduleResult = await runCosmicModuleRecognitionJob({
-                httpClient: axios,
-                payload: {
-                    documentContent,
-                    userConfig: getUserConfig()
-                },
-                requestKey: `${moduleRunId}:document`,
-                signal,
-                onStatus: job => {
-                    const message = job?.progress?.message || job?.message;
-                    if (message) updateAnalysisProgress({ detail: message });
-                }
-            });
-            const modRes = { data: moduleResult };
-            if (modRes.data.degraded) {
-                setMessages(prev => [...prev, {
-                    role: 'system',
-                    content: `⚠️ ${modRes.data.warning || 'AI模块识别暂不可用，已根据文档标题生成模块脚手架。'}`
-                }]);
-            }
-            if (modRes.data.success && modRes.data.moduleData?.modules?.length > 0) {
-                recognizedModules = modRes.data.moduleData;
-                setModuleStructure(recognizedModules);
+            // ── 第一步：先本地毫秒级切分章节（不消耗 AI 时间） ──
+            const initialSplitRes = await axios.post('/api/split-chapters', {
+                documentContent,
+                moduleStructure: null
+            }, { signal });
+
+            const initialChapters = initialSplitRes.data?.success ? (initialSplitRes.data.chapters || []) : [];
+            const hasStructuredOutline = Boolean(initialSplitRes.data?.hasStructuredOutline);
+            const localModuleStructure = initialSplitRes.data?.localModuleStructure || null;
+
+            const canSkipAiModules = (
+                extractionMode === 'precise'
+                && !forceAiModules
+                && hasStructuredOutline
+                && localModuleStructure?.modules?.length > 0
+            );
+
+            if (canSkipAiModules) {
+                setModuleStructure(localModuleStructure);
+                setChapters(initialChapters);
+                const selectedChapters = initialChapters.filter(ch => ch.selected);
+                const skippedChapters = initialChapters.filter(ch => !ch.selected);
+                const selectedChars = selectedChapters.reduce((sum, ch) => sum + (ch.charCount || 0), 0);
+                const totalChars = initialChapters.reduce((sum, ch) => sum + (ch.charCount || 0), 0);
+                const savedRatio = totalChars > 0 ? Math.round(((totalChars - selectedChars) / totalChars) * 100) : 0;
+
                 updateAnalysisProgress({
-                    phase: 'Module recognition complete',
-                    percent: 24,
-                    current: 1,
+                    status: 'waiting',
+                    phase: 'Waiting for chapter confirmation',
+                    percent: 40,
+                    current: 2,
                     total: 5,
-                    detail: `Found ${recognizedModules.modules.length} modules. Preparing extraction structure.`,
-                    stats: `${recognizedModules.modules.length} modules`
+                    detail: `Found ${initialChapters.length} chapters via native headings (skipped AI full-doc scan). Confirm selection to extract.`,
+                    stats: `selected ${selectedChapters.length}/${initialChapters.length}`
                 });
 
-                // 如果是数量优先模式，自动生成数量规划
-                let generatedPlan = null;
-                if (extractionMode === 'quantity') {
-                    const mods = recognizedModules.modules;
-                    const targets = allocateQuantityTargets(mods, totalTargetCount);
-                    const plan = mods.map(m => ({
-                        level1: m.level1,
-                        level2: m.level2,
-                        level3: m.level3,
-                        businessObjects: m.businessObjects || [],
-                        triggerTypes: m.triggerTypes || [],
-                        estimated: m.estimatedFunctions || 8,
-                        target: targets[mods.indexOf(m)] || 0
-                    }));
-                    generatedPlan = plan;
-                    setQuantityPlan(plan);
-                }
-
-                const modSummary = recognizedModules.modules.map((m, i) =>
-                    `${i + 1}. **${m.level3}**（${m.level1} > ${m.level2}）: ${m.businessObjects?.join('、') || '若干业务对象'
-                    }${generatedPlan ? (generatedPlan[i]?.target > 0 ? `，目标 **${generatedPlan[i]?.target}** 个功能过程` : `，本轮 **跳过**`) : `，预估 ~${m.estimatedFunctions || '?'} 个功能过程`}`
+                const chapterSummary = initialChapters.map((ch, i) =>
+                    `${ch.selected ? '☑' : '☐'} **${i + 1}.** ${ch.title} (${ch.charCount.toLocaleString()}字${!ch.selected && ch.referenceOnly ? ' · 参考/非功能已自动跳过' : ''})`
                 ).join('\n');
 
-                const skippedModules = generatedPlan ? generatedPlan.filter(p => (p.target || 0) <= 0) : [];
-                const planTip = generatedPlan
-                    ? `\n\n**已生成数量规划**（总目标 ${totalTargetCount} 个）。可点击「**调整规划**」按钮修改各模块目标数量。${skippedModules.length > 0 ? `\n\n注意：因目标数小于模块数，本轮将跳过 ${skippedModules.length} 个模块：${skippedModules.map(m => m.level3).join('、')}` : ''}`
-                    : '';
+                const filterNote = skippedChapters.length > 0
+                    ? `\n\n⚡ 已按文档原生标题秒级识别章节与三级模块结构（精准模式跳过慢速 AI 全文预读），自动跳过 **${skippedChapters.length}** 个封面/背景/非功能/附录章节${savedRatio > 0 ? `（再减负 **${savedRatio}%**，仅提取 ${selectedChars.toLocaleString()}/${totalChars.toLocaleString()} 字）` : ''}。如需纳入或取消任意章节，可点击「查看/编辑章节」微调。`
+                    : `\n\n⚡ 已按文档原生标题秒级识别章节与三级模块结构（精准模式跳过慢速 AI 全文预读，直接进入提取确认）。`;
 
-                const moduleTitle = modRes.data.degraded ? '模块脚手架降级生成' : '三级模块结构识别完成';
                 setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `## ${moduleTitle}\n\n共得到 **${recognizedModules.modules.length}** 个三级模块节点：\n\n${modSummary}${planTip}\n\n这些模块将作为"脚手架"指导功能过程提取。数量目标不足覆盖全部模块时，系统会明确标记本轮跳过的模块。`
+                    content: `## 章节识别完成\n\n共识别到 **${initialChapters.length}** 个章节（已选 **${selectedChapters.length}** 章）：\n\n${chapterSummary}${filterNote}`,
+                    showChapterActions: true,
+                    usedLocalModules: true
                 }]);
-            }
-        } catch (e) {
-            if (e.name === 'AbortError' || e.name === 'CanceledError' || signal.aborted) {
-                setIsLoading(false);
+                setCurrentStep(2);
                 return;
             }
-            console.warn('COSMIC模块识别失败，将跳过模块脚手架:', e.message);
-            setMessages(prev => [...prev, {
-                role: 'system',
-                content: '三级模块识别失败，将使用默认章节模式（功能过程可能略有遗漏）。'
-            }]);
-        }
 
-        // ── 第二步：章节分割 ──
-        setMessages(prev => [...prev, {
-            role: 'system',
-            content: '📑 **章节识别中...**\n正在按标题结构切分章节...'
-        }]);
+            // ── 数量优先模式 / 无标题散文 / 用户主动要求 AI 重建模块树：仅将有效功能章节送入 AI 模块识别 ──
+            const selectedForModules = initialChapters.filter(ch => ch.selected && ch.title !== '文档开头');
+            const moduleRecognitionContent = selectedForModules.length > 0
+                ? selectedForModules.map(ch => ch.content).join('\n\n')
+                : documentContent;
 
-        try {
             updateAnalysisProgress({
-                phase: 'Chapter detection',
-                percent: 32,
-                current: 2,
+                title: 'COSMIC analysis',
+                phase: 'Module recognition',
+                percent: 18,
+                current: 1,
                 total: 5,
-                detail: 'Splitting the document into chapters and selecting likely functional sections.'
+                detail: 'Analyzing level 1/2/3 module structure...',
+                stats: `${moduleRecognitionContent.length.toLocaleString()} chars`
             });
-            const res = await axios.post('/api/split-chapters', {
-                documentContent,
-                moduleStructure: recognizedModules || null
-            }, { signal });
+            setMessages(prev => [...prev, { role: 'system', content: '**三级模块识别中...**\n正在分析文档有效章节的一级/二级/三级模块层级结构...' }]);
+
+            let recognizedModules = null;
+            try {
+                const moduleResult = await runCosmicModuleRecognitionJob({
+                    httpClient: axios,
+                    payload: {
+                        documentContent: moduleRecognitionContent,
+                        userConfig: getUserConfig()
+                    },
+                    requestKey: `${moduleRunId}:document`,
+                    signal,
+                    onStatus: job => {
+                        const message = job?.progress?.message || job?.message;
+                        if (message) updateAnalysisProgress({ detail: message });
+                    }
+                });
+                const modRes = { data: moduleResult };
+                if (modRes.data.degraded) {
+                    setMessages(prev => [...prev, {
+                        role: 'system',
+                        content: `⚠️ ${modRes.data.warning || 'AI模块识别暂不可用，已根据文档标题生成模块脚手架。'}`
+                    }]);
+                }
+                if (modRes.data.success && modRes.data.moduleData?.modules?.length > 0) {
+                    recognizedModules = modRes.data.moduleData;
+                    setModuleStructure(recognizedModules);
+                    updateAnalysisProgress({
+                        phase: 'Module recognition complete',
+                        percent: 28,
+                        current: 1,
+                        total: 5,
+                        detail: `Found ${recognizedModules.modules.length} modules. Preparing extraction structure.`,
+                        stats: `${recognizedModules.modules.length} modules`
+                    });
+
+                    // 如果是数量优先模式，自动生成数量规划
+                    let generatedPlan = null;
+                    if (extractionMode === 'quantity') {
+                        const mods = recognizedModules.modules;
+                        const targets = allocateQuantityTargets(mods, totalTargetCount);
+                        const plan = mods.map(m => ({
+                            level1: m.level1,
+                            level2: m.level2,
+                            level3: m.level3,
+                            businessObjects: m.businessObjects || [],
+                            triggerTypes: m.triggerTypes || [],
+                            estimated: m.estimatedFunctions || 8,
+                            target: targets[mods.indexOf(m)] || 0
+                        }));
+                        generatedPlan = plan;
+                        setQuantityPlan(plan);
+                    }
+
+                    const modSummary = recognizedModules.modules.map((m, i) =>
+                        `${i + 1}. **${m.level3}**（${m.level1} > ${m.level2}）: ${m.businessObjects?.join('、') || '若干业务对象'
+                        }${generatedPlan ? (generatedPlan[i]?.target > 0 ? `，目标 **${generatedPlan[i]?.target}** 个功能过程` : `，本轮 **跳过**`) : `，预估 ~${m.estimatedFunctions || '?'} 个功能过程`}`
+                    ).join('\n');
+
+                    const skippedModules = generatedPlan ? generatedPlan.filter(p => (p.target || 0) <= 0) : [];
+                    const planTip = generatedPlan
+                        ? `\n\n**已生成数量规划**（总目标 ${totalTargetCount} 个）。可点击「**调整规划**」按钮修改各模块目标数量。${skippedModules.length > 0 ? `\n\n注意：因目标数小于模块数，本轮将跳过 ${skippedModules.length} 个模块：${skippedModules.map(m => m.level3).join('、')}` : ''}`
+                        : '';
+
+                    const moduleTitle = modRes.data.degraded ? '模块脚手架降级生成' : '三级模块结构识别完成';
+                    setMessages(prev => [...prev, {
+                        role: 'assistant',
+                        content: `## ${moduleTitle}\n\n共得到 **${recognizedModules.modules.length}** 个三级模块节点：\n\n${modSummary}${planTip}\n\n这些模块将作为"脚手架"指导功能过程提取。数量目标不足覆盖全部模块时，系统会明确标记本轮跳过的模块。`
+                    }]);
+                }
+            } catch (e) {
+                if (e.name === 'AbortError' || e.name === 'CanceledError' || signal.aborted) {
+                    setIsLoading(false);
+                    return;
+                }
+                console.warn('COSMIC模块识别失败，将跳过模块脚手架:', e.message);
+                setMessages(prev => [...prev, {
+                    role: 'system',
+                    content: '三级模块识别失败，将使用默认章节模式（功能过程可能略有遗漏）。'
+                }]);
+            }
+
+            // ── 第二步：结合模块脚手架更新章节映射 ──
+            const res = recognizedModules
+                ? await axios.post('/api/split-chapters', {
+                    documentContent,
+                    moduleStructure: recognizedModules
+                }, { signal })
+                : initialSplitRes;
+
             if (res.data.success) {
                 const chapterList = res.data.chapters;
                 setChapters(chapterList);
@@ -1619,7 +1705,7 @@ function App({ user, token, onLogout }) {
                 });
 
                 const chapterSummary = chapterList.map((ch, i) =>
-                    `${ch.selected ? '☑' : '☐'} **${i + 1}.** ${ch.title} (${ch.charCount}字)`
+                    `${ch.selected ? '☑' : '☐'} **${i + 1}.** ${ch.title} (${ch.charCount.toLocaleString()}字${!ch.selected && ch.referenceOnly ? ' · 参考/非功能已自动跳过' : ''})`
                 ).join('\n');
 
                 setMessages(prev => [...prev, {
@@ -1662,18 +1748,23 @@ function App({ user, token, onLogout }) {
         abortControllerRef.current = new AbortController();
         const signal = abortControllerRef.current.signal;
         const extractionRunId = createCosmicRunId('function-extraction');
+        const selectedCharsTotal = selectedChapters.reduce((sum, ch) => sum + String(ch?.content || '').length, 0);
         const extractionProfile = resolveCosmicConcurrency({
             mode: splitExecutionMode,
             model: selectedModel,
-            documentChars: documentContent.length,
-            chapterCount: selectedChapters.length
+            documentChars: selectedCharsTotal || documentContent.length
         });
         const extractionConcurrency = extractionProfile.concurrency;
+        // 单章多片时也允许切片级并发，总并发统一由后端 AI_MAX_CONCURRENCY 护航。
+        const effectiveChunkConcurrency = extractionConcurrency > 1
+            ? (selectedChapters.length === 1 ? 3 : 2)
+            : 1;
+        const effectiveReviewPolicy = extractionMode === 'precise' ? reviewPolicy : 'always';
         const extractionModeLabel = extractionProfile.autoStabilized
-            ? '大文档自动稳健模式（串行）'
+            ? '超大文档自动稳健模式（串行）'
             : extractionConcurrency > 1
-            ? `快速模式（${extractionConcurrency} 路并发）`
-            : '稳健模式（串行）';
+            ? `快速模式（${extractionConcurrency} 路章节并发${effectiveChunkConcurrency > 1 ? ` · ${effectiveChunkConcurrency} 路切片` : ''}${effectiveReviewPolicy === 'smart' ? ' · 智能复核' : ' · 深度复核'}）`
+            : `稳健模式（串行${effectiveReviewPolicy === 'smart' ? ' · 智能复核' : ' · 深度复核'}）`;
 
         setIsLoading(true);
         setCurrentStep(2);
@@ -1784,7 +1875,9 @@ function App({ user, token, onLogout }) {
                             moduleStructure: moduleStructure || null,
                             quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
                             targetCount: chapterTargetCount,
-                            quantityMaximize: extractionMode === 'quantity' && quantityMaximize
+                            quantityMaximize: extractionMode === 'quantity' && quantityMaximize,
+                            chunkConcurrency: effectiveChunkConcurrency,
+                            reviewPolicy: effectiveReviewPolicy
                         }, {
                             signal,
                             requestKey: `${extractionRunId}:chapter-${index + 1}`,
@@ -1822,48 +1915,65 @@ function App({ user, token, onLogout }) {
                     return result;
                 };
 
-                for (let windowStart = 0; windowStart < selectedChapters.length; windowStart += extractionConcurrency) {
-                    if (signal.aborted) return;
-                    const windowIndexes = [];
-                    for (let index = windowStart; index < Math.min(windowStart + extractionConcurrency, selectedChapters.length); index++) {
-                        windowIndexes.push(index);
-                    }
-                    const activeDescriptions = windowIndexes.map(index => {
-                        const chapter = selectedChapters[index];
-                        const target = quantityChapterTargets[index] || 0;
-                        return extractionMode === 'quantity' && target > 0
-                            ? `${chapter.title}（目标 ${target}）`
-                            : chapter.title;
-                    });
+                // 滑动工作池：任意一章完成后立即接取下一章，不因同批次慢章阻塞其余并发槽。
+                const activeTitles = new Set();
+                let nextChapterIdx = 0;
+                let fatalError = null;
+                const workerCount = Math.min(extractionConcurrency, selectedChapters.length);
 
+                const refreshActiveChapterStatus = () => {
+                    const activeList = Array.from(activeTitles);
+                    if (activeList.length === 0) return;
                     updateAnalysisProgress({
                         phase: 'Function extraction',
                         percent: 42 + Math.round((completedChapters / Math.max(selectedChapters.length, 1)) * 22),
                         current: completedChapters,
                         total: selectedChapters.length,
-                        detail: `Analyzing ${activeDescriptions.length} chapters concurrently: ${activeDescriptions.join('、')}`,
+                        detail: `Analyzing ${activeList.length} chapters concurrently: ${activeList.join('、')}`,
                         stats: `${completedFunctionCount} functions found · ${extractionModeLabel}`
                     });
                     setMessages(prev => {
                         const filtered = prev.filter(m => !m.content.startsWith('🔍'));
                         return [...filtered, {
                             role: 'system',
-                            content: `🔍 **功能过程提取（已完成 ${completedChapters}/${selectedChapters.length}）**\n正在并发分析章节: ${activeDescriptions.join('、')}...`
+                            content: `🔍 **功能过程提取（已完成 ${completedChapters}/${selectedChapters.length}）**\n正在并发分析章节: ${activeList.join('、')}...`
                         }];
                     });
+                };
 
-                    const windowResults = await Promise.allSettled(
-                        windowIndexes.map(index => extractChapterConcurrently(index))
-                    );
-                    allFunctions = chapterResults
-                        .map(result => result?.functionList || '')
-                        .filter(Boolean)
-                        .join('\n');
-                    totalCount = chapterResults.reduce((sum, result) => sum + (result?.count || 0), 0);
-                    const failedResult = windowResults.find(result => result.status === 'rejected');
-                    if (failedResult) throw failedResult.reason;
-                }
+                const runChapterWorker = async () => {
+                    while (!fatalError && !signal.aborted) {
+                        const index = nextChapterIdx;
+                        nextChapterIdx += 1;
+                        if (index >= selectedChapters.length) break;
+                        const chapter = selectedChapters[index];
+                        const target = quantityChapterTargets[index] || 0;
+                        const label = extractionMode === 'quantity' && target > 0
+                            ? `${chapter.title}（目标 ${target}）`
+                            : chapter.title;
+                        activeTitles.add(label);
+                        refreshActiveChapterStatus();
+                        try {
+                            await extractChapterConcurrently(index);
+                        } catch (err) {
+                            if (!fatalError) fatalError = err;
+                            break;
+                        } finally {
+                            activeTitles.delete(label);
+                            refreshActiveChapterStatus();
+                        }
+                    }
+                };
+
+                await Promise.all(Array.from({ length: workerCount }, () => runChapterWorker()));
+                allFunctions = chapterResults
+                    .map(result => result?.functionList || '')
+                    .filter(Boolean)
+                    .join('\n');
+                totalCount = chapterResults.reduce((sum, result) => sum + (result?.count || 0), 0);
+                if (fatalError) throw fatalError;
             } else {
+                const serialChapterDelayMs = isStrictlyRateLimitedModel(selectedModel) ? 4000 : 300;
                 for (let i = 0; i < selectedChapters.length; i++) {
                     if (signal.aborted) return;
                     const chapter = selectedChapters[i];
@@ -1907,7 +2017,9 @@ function App({ user, token, onLogout }) {
                         moduleStructure: moduleStructure || null,
                         quantityPlan: extractionMode === 'quantity' ? quantityPlan : null,
                         targetCount: chapterTargetCount,
-                        quantityMaximize: extractionMode === 'quantity' && quantityMaximize
+                        quantityMaximize: extractionMode === 'quantity' && quantityMaximize,
+                        chunkConcurrency: 1,
+                        reviewPolicy: effectiveReviewPolicy
                     }, {
                         signal,
                         requestKey: `${extractionRunId}:chapter-${i + 1}`,
@@ -1933,11 +2045,11 @@ function App({ user, token, onLogout }) {
                         });
                     }
 
-                    // 稳健模式保留章节间等待，避免严格限流平台连续请求。
-                    if (i < selectedChapters.length - 1) {
+                    // 严格限流平台保留较长间隔，硅基流动/火山引擎等常规平台缩短为轻量节拍。
+                    if (i < selectedChapters.length - 1 && serialChapterDelayMs > 0) {
                         try {
                             await new Promise((resolve, reject) => {
-                                const t = setTimeout(resolve, 4000);
+                                const t = setTimeout(resolve, serialChapterDelayMs);
                                 signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                             });
                         } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
@@ -2079,21 +2191,17 @@ function App({ user, token, onLogout }) {
             if (activeFunctions.length === 0) { showToast('未找到功能过程'); return; }
         }
 
-        // Lock the selected mode for this run. Large documents and long
-        // function lists automatically fall back to serial execution even if
-        // the user previously selected fast mode.
         const splitProfile = resolveCosmicConcurrency({
             mode: splitExecutionMode,
             model: selectedModel,
-            documentChars: documentContent.length,
-            functionCount: activeFunctions.length
+            documentChars: documentContent.length
         });
         const batchConcurrency = splitProfile.concurrency;
-        // 稳健模式逐功能提交，缩短单个后台任务；快速模式仍保留每批2个。
+        // 稳健模式逐功能提交，缩短单个后台任务；快速模式每批2个。
         const cosmicBatchSize = batchConcurrency > 1 ? 2 : 1;
         const splitRunId = createCosmicRunId('full-split');
         const executionModeLabel = splitProfile.autoStabilized
-            ? '大文档自动稳健模式（串行）'
+            ? '超大文档自动稳健模式（串行）'
             : batchConcurrency > 1
                 ? `快速模式（${batchConcurrency} 路并发）`
                 : '稳健模式（串行）';
@@ -2359,11 +2467,12 @@ function App({ user, token, onLogout }) {
                         continue;
                     }
 
-                    // 批次间等待，避免限流（DeepSeek平台限流严格，需要较长间隔）
-                    if (bi < totalBatches - 1) {
+                    // 严格限流平台保留较长等待，常规平台缩短为轻量间隔（429 由服务端自动退避处理）。
+                    const serialBatchDelayMs = isStrictlyRateLimitedModel(selectedModel) ? 5000 : 300;
+                    if (bi < totalBatches - 1 && serialBatchDelayMs > 0) {
                         try {
                             await new Promise((resolve, reject) => {
-                                const t = setTimeout(resolve, 5000);
+                                const t = setTimeout(resolve, serialBatchDelayMs);
                                 signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); });
                             });
                         } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
@@ -2372,39 +2481,47 @@ function App({ user, token, onLogout }) {
 
                 // 最终汇总
             } else {
-                for (let windowStart = 0; windowStart < totalBatches; windowStart += batchConcurrency) {
-                    if (signal.aborted) return;
+                // 滑动工作池：任意批次完成立即补充下一批，不再空等整窗且去掉固定 5 秒休眠。
+                const activeBatchMap = new Map();
+                let nextBatchIdx = 0;
+                const workerCount = Math.min(batchConcurrency, totalBatches);
 
-                    const windowIndexes = [];
-                    for (let bi = windowStart; bi < Math.min(windowStart + batchConcurrency, totalBatches); bi++) {
-                        windowIndexes.push(bi);
-                    }
-                    const activeNames = windowIndexes
-                        .map(bi => `${bi + 1}: ${batches[bi].functions.map(f => f.functionName).join(', ')}`)
-                        .join(' | ');
-
+                const refreshActiveBatchUI = () => {
+                    const activeEntries = Array.from(activeBatchMap.entries()).sort((a, b) => a[0] - b[0]);
+                    if (activeEntries.length === 0) return;
+                    const activeNames = activeEntries.map(([idx, label]) => `${idx + 1}: ${label}`).join(' | ');
                     updateAnalysisProgress({
                         phase: 'Batch splitting',
                         percent: 70 + Math.round((completedBatches / Math.max(totalBatches, 1)) * 27),
                         current: completedBatches,
                         total: totalBatches,
-                        detail: `Processing ${windowIndexes.length} batch(es): ${activeNames}`,
+                        detail: `Processing ${activeEntries.length} batch(es): ${activeNames}`,
                         stats: `${completedBatches}/${totalBatches} done, ${allTableData.length} CFP`
                     });
-
                     setMessages(prev => {
                         const filtered = prev.filter(m => !m.content.startsWith('**批次'));
                         return [...filtered, {
                             role: 'system',
-                            content: `**批次 ${windowIndexes.map(i => i + 1).join(', ')}/${totalBatches}** | 并发拆分中\n\n${activeNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
+                            content: `**批次 ${activeEntries.map(([idx]) => idx + 1).join(', ')}/${totalBatches}** | 并发拆分中\n\n${activeNames}\n\n进度：${completedBatches}/${totalBatches} 批次完成，已获得 ${allTableData.length} 个子过程`
                         }];
                     });
+                };
 
-                    const previousResultsSnapshot = [...allTableData];
-                    const windowResults = await Promise.all(windowIndexes.map(bi => runCosmicBatch(bi, previousResultsSnapshot)));
-                    windowResults.sort((a, b) => a.index - b.index);
+                const runSplitWorker = async () => {
+                    while (!signal.aborted) {
+                        const bi = nextBatchIdx;
+                        nextBatchIdx += 1;
+                        if (bi >= totalBatches) break;
 
-                    for (const result of windowResults) {
+                        activeBatchMap.set(bi, batches[bi].functions.map(f => f.functionName).join(', '));
+                        refreshActiveBatchUI();
+
+                        const previousResultsSnapshot = [...allTableData];
+                        const result = await runCosmicBatch(bi, previousResultsSnapshot);
+                        activeBatchMap.delete(bi);
+
+                        if (signal.aborted) return;
+
                         if (result.ok) {
                             const newData = result.data || [];
                             if (newData.length > 0) {
@@ -2415,6 +2532,7 @@ function App({ user, token, onLogout }) {
                                 const deduped = deduplicateData(allTableData, newData, expectedNames);
                                 if (deduped.length > 0) {
                                     allTableData = orderCosmicTableData([...allTableData, ...deduped], activeFunctions, moduleStructure);
+                                    setTableData(allTableData);
                                 }
                             }
                             completedBatches++;
@@ -2453,20 +2571,18 @@ function App({ user, token, onLogout }) {
                                 }];
                             });
                         }
+                        refreshActiveBatchUI();
                     }
+                };
 
-                    allTableData = orderCosmicTableData(allTableData, activeFunctions, moduleStructure);
-                    setTableData(allTableData);
+                await Promise.all(Array.from({ length: workerCount }, () => runSplitWorker()));
+                if (signal.aborted) return;
 
-                    if (completedBatches === 0 && failedBatches.length === totalBatches) {
-                        throw new Error(failedBatches[0]?.error || 'All COSMIC batches failed');
-                    }
+                allTableData = orderCosmicTableData(allTableData, activeFunctions, moduleStructure);
+                setTableData(allTableData);
 
-                    if (windowStart + batchConcurrency < totalBatches) {
-                        try {
-                            await waitWithAbort(5000);
-                        } catch (e) { if (e.name === 'AbortError' || signal.aborted) return; }
-                    }
+                if (completedBatches === 0 && failedBatches.length === totalBatches) {
+                    throw new Error(failedBatches[0]?.error || 'All COSMIC batches failed');
                 }
             }
 
@@ -2822,12 +2938,33 @@ function App({ user, token, onLogout }) {
         if (!documentContent) { showToast('请先上传文档'); return; }
 
         if (extractionMode === 'precise') {
-            const fullDocument = [{ title: '全文', content: documentContent, charCount: documentContent.length, selected: true }];
             setIsWaitingForAnalysis(false);
             setTableData([]);
-            setChapters(fullDocument);
-            setMessages([{ role: 'system', content: '**正在按原文提取功能过程**\n长文档将分片处理并复核，随后按已确认的功能过程自动进行 COSMIC 拆分。' }]);
-            const extraction = await startFunctionExtractionFromChapters(fullDocument, { autoContinue: true });
+            let targetChapters = [{ title: '全文', content: documentContent, charCount: documentContent.length, selected: true }];
+            try {
+                const splitRes = await axios.post('/api/split-chapters', {
+                    documentContent,
+                    moduleStructure: null
+                });
+                const detected = splitRes.data?.success ? (splitRes.data.chapters || []) : [];
+                const activeDetected = detected.filter(ch => ch.selected);
+                if (activeDetected.length > 0 && !(detected.length === 1 && detected[0].title === '全文')) {
+                    targetChapters = detected;
+                    if (splitRes.data.localModuleStructure?.modules?.length > 0) {
+                        setModuleStructure(splitRes.data.localModuleStructure);
+                    }
+                }
+            } catch (splitErr) {
+                console.warn('一键拆分预切章失败，退回全文模式:', splitErr.message);
+            }
+            const selectedCount = targetChapters.filter(ch => ch.selected).length;
+            const skippedCount = targetChapters.length - selectedCount;
+            setChapters(targetChapters);
+            setMessages([{
+                role: 'system',
+                content: `**正在按原文提取功能过程**\n已自动切分 **${targetChapters.length}** 章（提取 **${selectedCount}** 章${skippedCount > 0 ? `，自动跳过 ${skippedCount} 个封面/非功能/附录章节` : ''}），长章节将并发分片提取并复核，随后自动进行 COSMIC 拆分。`
+            }]);
+            const extraction = await startFunctionExtractionFromChapters(targetChapters, { autoContinue: true });
             if (!extraction?.success) return;
             if (extraction.functions.length === 0) {
                 setCurrentStep(0);
@@ -3546,8 +3683,8 @@ function App({ user, token, onLogout }) {
             role="group"
             aria-label="COSMIC 执行模式"
             title={splitExecutionMode === 'fast'
-                ? `短文档最多 ${resolveCosmicConcurrency({ mode: 'fast', model: selectedModel }).concurrency} 路并发；大文档、40个以上功能或多章节会自动改为串行`
-                : '功能提取和COSMIC拆分均串行执行，适合容易限流或更看重稳定性的模型'}
+                ? `常规模型最多 ${resolveCosmicConcurrency({ mode: 'fast', model: selectedModel }).concurrency} 路章节/批次滑动并发 + 切片并发（后端统一并发池与 429 自动退避护航）`
+                : '功能提取和COSMIC拆分均串行执行，适合严格限流或更看重单路稳定性的模型'}
         >
             <span className="split-execution-label">执行模式</span>
             <button
@@ -3568,6 +3705,45 @@ function App({ user, token, onLogout }) {
             </button>
         </div>
     );
+
+    const renderReviewPolicyToggle = () => (
+        <div
+            className="split-execution-toggle"
+            role="group"
+            aria-label="精准模式复核策略"
+            title={reviewPolicy === 'always'
+                ? '深度复核（默认推荐）：每个原文片段都执行“提取+逐句复核”双轮核验，拆分质量零妥协'
+                : '智能复核：干净短片单轮直通，长段落/表格/高密度/告警片段自动补跑逐句复核，可再提速约30%~40%'}
+        >
+            <span className="split-execution-label">复核</span>
+            <button
+                type="button"
+                className={reviewPolicy === 'always' ? 'active stable' : ''}
+                onClick={() => setReviewPolicy('always')}
+                disabled={isLoading}
+            >
+                深度
+            </button>
+            <button
+                type="button"
+                className={reviewPolicy === 'smart' ? 'active fast' : ''}
+                onClick={() => setReviewPolicy('smart')}
+                disabled={isLoading}
+            >
+                智能
+            </button>
+        </div>
+    );
+
+    const togglePreprocessedDocumentSource = () => {
+        if (!rawDocumentContent || !cleanedDocumentContent) return;
+        const nextUseRaw = !usingRawDocument;
+        setUsingRawDocument(nextUseRaw);
+        setDocumentContent(nextUseRaw ? rawDocumentContent : cleanedDocumentContent);
+        showToast(nextUseRaw
+            ? `已切换为原始未瘦身文本（${rawDocumentContent.length.toLocaleString()}字）`
+            : `已切回自动无损瘦身版（${cleanedDocumentContent.length.toLocaleString()}字）`);
+    };
 
     // ═══════════ 补充功能描述 ═══════════
     const supplementDescription = async () => {
@@ -3613,6 +3789,10 @@ function App({ user, token, onLogout }) {
         setMessages([]);
         setTableData([]);
         setDocumentContent('');
+        setRawDocumentContent('');
+        setCleanedDocumentContent('');
+        setDocumentPreprocessing(null);
+        setUsingRawDocument(false);
         setDocumentName('');
         setFunctionListText('');
         setParsedFunctions([]);
@@ -4295,6 +4475,10 @@ function App({ user, token, onLogout }) {
         setMessages([]);
         setTableData([]);
         setDocumentContent('');
+        setRawDocumentContent('');
+        setCleanedDocumentContent('');
+        setDocumentPreprocessing(null);
+        setUsingRawDocument(false);
         setDocumentName('');
         setFunctionListText('');
         setParsedFunctions([]);
@@ -4878,6 +5062,16 @@ function App({ user, token, onLogout }) {
                                                         <button className="btn btn-secondary btn-sm" onClick={() => setShowChapterView(true)}>
                                                             <Eye size={14} /> 查看/编辑章节
                                                         </button>
+                                                        {msg.usedLocalModules && (
+                                                            <button
+                                                                className="btn btn-secondary btn-sm"
+                                                                onClick={() => startChapterRecognition({ forceAiModules: true })}
+                                                                disabled={isLoading}
+                                                                title="当前已按原生标题秒级生成模块树；如文档标题不规范，可点击改用 AI 重新识别三级模块"
+                                                            >
+                                                                <Brain size={14} /> AI重识模块
+                                                            </button>
+                                                        )}
                                                         <button className="btn btn-primary btn-sm" onClick={() => startFunctionExtractionFromChapters()} disabled={isLoading}>
                                                             <Target size={14} /> 确认·开始提取
                                                         </button>
@@ -4951,6 +5145,22 @@ function App({ user, token, onLogout }) {
                                         <button onClick={() => handleExtractionModeChange('quantity')} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 12, border: 'none', cursor: 'pointer', background: extractionMode === 'quantity' ? '#f59e0b' : 'var(--bg-tertiary)', color: extractionMode === 'quantity' ? '#fff' : 'var(--text-secondary)', fontWeight: extractionMode === 'quantity' ? 600 : 400, transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 5 }}><BarChart3 size={12} /> 数量优先</button>
                                         {renderEnhancedExperienceToggle()}
                                         {renderSplitExecutionModeToggle()}
+                                        {extractionMode === 'precise' && renderReviewPolicyToggle()}
+                                        {rawDocumentContent && documentPreprocessing?.applied && (
+                                            <button
+                                                type="button"
+                                                onClick={togglePreprocessedDocumentSource}
+                                                disabled={isLoading}
+                                                title={usingRawDocument
+                                                    ? '当前正在使用未瘦身的原始文本；点击切回自动无损瘦身版（更快更稳）'
+                                                    : `已自动无损预处理（${documentPreprocessing.rawChars.toLocaleString()}字 → ${documentPreprocessing.cleanedChars.toLocaleString()}字），点击可切回原始文本对比`}
+                                                style={{ padding: '3px 10px', borderRadius: 12, fontSize: 11, border: '1px solid var(--border-subtle)', cursor: 'pointer', background: usingRawDocument ? 'rgba(245,158,11,0.16)' : 'rgba(16,185,129,0.12)', color: usingRawDocument ? '#d97706' : '#059669', fontWeight: 500, whiteSpace: 'nowrap' }}
+                                            >
+                                                {usingRawDocument
+                                                    ? '当前：原始文本（点此切回瘦身版）'
+                                                    : `✓ 已无损瘦身${documentPreprocessing.savedPercent > 0 ? ` -${documentPreprocessing.savedPercent}%` : ''}（切回原文）`}
+                                            </button>
+                                        )}
                                         {extractionMode === 'quantity' && (
                                             <>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '3px 8px' }}>
